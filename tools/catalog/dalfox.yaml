@@ -1,0 +1,22 @@
+id: dalfox
+name: dalfox
+description: >
+  XSS scanner and parameter analysis utility (hahwul). Authorized in-scope
+  targets only. Install recipe and RoE-trusted source_urls are defined below.
+tier: catalog
+binary: dalfox
+install:
+  - type: github_release
+    repo: hahwul/dalfox
+    binary: dalfox
+    # Prefer musl static build for slim/container sandboxes.
+    asset_substr: linux-x86_64-musl
+    source_urls:
+      - https://github.com/hahwul/dalfox
+      - https://api.github.com/repos/hahwul/dalfox
+      - https://objects.githubusercontent.com
+      - https://codeload.github.com
+verify:
+  - command: "dalfox version"
+skills: []
+tags: [web, xss]

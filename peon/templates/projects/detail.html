@@ -1,0 +1,404 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}{{ project.title }} — Peon{% endblock %}
+{% block body_class %}war-room{% endblock %}
+{% block content %}
+<p class="meta war-back"><a href="{% url 'project_list' %}">← Projects</a></p>
+
+<div class="war-room-shell">
+{# 1 — Mission HUD #}
+<header class="mission-banner war-hud" id="project-status-line">
+  <div class="mission-banner-main">
+    <p class="mission-eyebrow">War room · engagement</p>
+    <h1>{{ project.title }}</h1>
+    <p class="lead">{{ project.summary|default:"(no summary)" }}</p>
+    <div class="mission-meta">
+      <span class="status-pill" id="project-status" data-status="{{ project.status }}">{{ project.status }}</span>
+      <span class="meta" id="project-phase-wrap">Phase <code id="project-phase">{{ ops.project.phase|default:"—" }}</code></span>
+      <code class="mission-id">{{ project.id }}</code>
+    </div>
+  </div>
+  <div class="mission-banner-side">
+    <div class="sandbox-chip" id="sandbox-chip" title="Project sandbox container">
+      <span class="sandbox-label">Sandbox</span>
+      <code id="sandbox-name">{{ ops.project.sandbox.name }}</code>
+      <span class="sandbox-mode status" id="sandbox-mode">{{ ops.project.sandbox.mode }}</span>
+    </div>
+    <div class="progress-block" id="project-progress" aria-label="Project progress">
+      <div class="progress-label meta">
+        <span>Progress</span>
+        <span id="progress-label">
+          {{ ops.project.progress.objectives_done }}/{{ ops.project.progress.objectives_total }} objectives
+          · {{ ops.project.progress.jobs_done }}/{{ ops.project.progress.jobs_total }} agents
+        </span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="progress-fill"
+             style="width: {% widthratio ops.project.progress.ratio 1 100 %}%"></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+{# 2 — Controls #}
+<div class="bar project-control-bar war-controls" id="project-control-bar" data-project-status="{{ project.status }}">
+  {% if project.status == "paused" %}
+  <form method="post" action="{% url 'project_control' project.pk %}" data-control="resume">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="resume">
+    <button type="submit" class="secondary">Resume project</button>
+  </form>
+  {% elif project.status == "active" %}
+  <form method="post" action="{% url 'project_control' project.pk %}" data-control="pause">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="pause">
+    <button type="submit" class="secondary">Pause project</button>
+  </form>
+  {% endif %}
+  {% if project.status != "cancelled" %}
+  <form method="post" action="{% url 'project_control' project.pk %}" data-control="run-next">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="run_next">
+    <button type="submit" class="secondary" id="run-next-objective"
+            {% if not has_next_objective %}disabled title="No ready next objective"{% endif %}>
+      Run next objective
+    </button>
+  </form>
+  <form method="post" action="{% url 'project_control' project.pk %}">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="replan">
+    <button type="submit" class="secondary">Replan</button>
+  </form>
+  {% endif %}
+  <form method="post" action="{% url 'project_control' project.pk %}"
+        onsubmit="return confirm('Delete this project and its Docker sandbox (if any)?');">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="delete">
+    <button type="submit">Delete project</button>
+  </form>
+</div>
+
+{# 3 — Skills used #}
+<section class="war-zone console-skills" aria-labelledby="skills-heading">
+  <h4 id="skills-heading">Skills used by agents</h4>
+  <div id="skills-used" class="skill-card-grid">
+    {% for s in ops.skills_used %}
+    <article class="skill-card">
+      <div class="skill-card-name">{{ s.name }}</div>
+      {% if s.category %}<div class="skill-card-cat">{{ s.category }}</div>{% endif %}
+      {% if s.description %}<div class="skill-card-desc">{{ s.description }}</div>{% endif %}
+      {% if s.tags %}
+      <div class="skill-card-tags">{% for t in s.tags %}<span class="chip">{{ t }}</span>{% endfor %}</div>
+      {% endif %}
+    </article>
+    {% empty %}
+    <span class="meta empty-skills">No skills queued yet.</span>
+    {% endfor %}
+  </div>
+</section>
+
+{# 4 — Rules of engagement #}
+<section class="war-zone stack-forms" id="roe" aria-labelledby="roe-heading">
+  <h2 id="roe-heading">Rules of engagement</h2>
+  <form method="post" action="{% url 'project_roe' project.pk %}">
+    {% csrf_token %}
+    <input type="hidden" name="roe_action" value="save">
+    <label for="seed">Seed / intent (optional — company name, person, sample path…)</label>
+    <textarea id="seed" name="seed" placeholder="domain:acme.com &#10;asset: admon.acme.com &#10;person:Alice &#10; other: ACME">{% if roe %}{% for t in roe.seed %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
+{% endfor %}{% endif %}</textarea>
+    <label for="in_scope">In-scope targets (values authorize; optional type:value hints)</label>
+    <textarea id="in_scope" name="in_scope" placeholder="8.8.8.8&#10;ip:8.8.8.8&#10;person:Alice&#10;person:Bob">{% if roe %}{% for t in roe.in_scope %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
+{% endfor %}{% endif %}</textarea>
+    <label for="exclusions">Exclusions (same typing)</label>
+    <textarea id="exclusions" name="exclusions">{% if roe %}{% for t in roe.exclusions %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
+{% endfor %}{% endif %}</textarea>
+    <label for="authorization">Authorization note</label>
+    <input id="authorization" name="authorization" value="{% if roe %}{{ roe.authorization_note }}{% endif %}">
+    <button type="submit">Save RoE</button>
+  </form>
+  {% if roe and roe.candidates %}
+  <form method="post" action="{% url 'project_roe' project.pk %}" class="roe-candidates">
+    {% csrf_token %}
+    <input type="hidden" name="roe_action" value="promote">
+    <h3 class="roe-candidates-title">Candidates</h3>
+    <p class="meta roe-candidates-hint">
+      Assets discovered during the engagement (from findings / scan text). They are
+      <strong>not</strong> authorized until you promote them into in-scope.
+      Promote moves the checked rows into <em>In-scope targets</em> and removes them from this list.
+    </p>
+    <ul class="roe-candidates-list">
+      {% for t in roe.candidates %}
+      <li class="roe-candidate-row">
+        <label class="roe-candidate-label">
+          <input type="checkbox" name="promote_idx" value="{{ forloop.counter0 }}">
+          <span class="roe-candidate-value">
+            <code>{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}</code>
+          </span>
+        </label>
+      </li>
+      {% endfor %}
+    </ul>
+    <div class="roe-candidates-actions">
+      <button type="submit" class="secondary">Promote selected</button>
+      <button type="submit" name="promote_all" value="1" class="secondary">Promote all</button>
+    </div>
+  </form>
+  {% endif %}
+</section>
+
+{# 4b — Project files (inputs/ — this project only) #}
+<section class="war-zone project-files-panel" id="project-files"
+         aria-labelledby="project-files-heading"
+         data-inputs-url="{% url 'project_inputs' project.pk %}"
+         data-inputs-delete-url="{% url 'project_input_delete' project.pk %}">
+  <h2 id="project-files-heading">Project files <span class="panel-hint">inputs · this project only</span></h2>
+  <p class="meta upload-disclaimer">
+    Peon does not validate file types or content. Upload files at your own responsibility.
+    Files stay under this project's workspace and are not shared with other projects.
+  </p>
+  <ul class="project-files-list" id="project-files-list">
+    {% for f in project_inputs %}
+    <li class="project-file-row" data-name="{{ f.name }}">
+      <div class="project-file-meta">
+        <code class="project-file-name">{{ f.name }}</code>
+        <span class="meta">{{ f.size }} B · <code>{{ f.sandbox_path }}</code></span>
+      </div>
+      <button type="button" class="secondary project-file-remove" data-name="{{ f.name }}"
+              aria-label="Remove {{ f.name }}">Remove</button>
+    </li>
+    {% empty %}
+    <li class="meta project-files-empty" id="project-files-empty">No files uploaded yet — use + in Live activity.</li>
+    {% endfor %}
+  </ul>
+</section>
+
+{# 5 — Agent graph #}
+<section class="war-zone console-graph" data-expandable aria-labelledby="agents-heading">
+  <h2 id="agents-heading">Agent graph <span class="panel-hint">select a node</span></h2>
+  <div id="agents-list" class="agent-tree" data-project-pk="{{ project.pk }}">
+    <p class="meta agents-empty">Loading agents…</p>
+  </div>
+</section>
+
+{# 6 — Context + live feed #}
+<div class="console-split war-ops" id="console-ops-row">
+  <section class="war-zone console-context" data-expandable aria-labelledby="context-heading" id="agent-context">
+    <h2 id="context-heading">Agent context <span class="panel-hint">selected</span></h2>
+    <div id="context-body" class="context-body">
+      <p class="meta">Select an agent in the graph.</p>
+    </div>
+    <div id="context-actions" class="job-actions context-actions"></div>
+  </section>
+
+  <section class="war-zone console-feed feed-panel" data-expandable aria-labelledby="stream-heading">
+    <h2 id="stream-heading">Live activity <span class="panel-hint">instruct · 1s</span></h2>
+    <div id="project-stream-log" class="stream-log" aria-live="polite">
+      {% if not stream_bootstrap or stream_bootstrap == "[]" %}
+        <p class="empty">Waiting for worker / skill stream lines…</p>
+      {% endif %}
+    </div>
+    {% if project.status != "cancelled" %}
+    <form class="project-chat-composer" id="project-chat-form"
+          data-chat-url="{% url 'project_chat' project.pk %}"
+          data-inputs-url="{% url 'project_inputs' project.pk %}"
+          {% if project.status == "paused" %}data-disabled="1"{% endif %}>
+      <div class="project-chat-shell">
+        <button type="button" class="project-chat-plus" id="project-chat-plus"
+                title="Attach file" aria-label="Attach file">
+          <span class="project-chat-plus-icon" aria-hidden="true">+</span>
+        </button>
+        <input type="file" id="project-chat-file" name="uploads" multiple class="visually-hidden"
+               tabindex="-1" aria-hidden="true">
+        <textarea id="project-chat-input" rows="1"
+                  placeholder="Replan project — describe what to do next…"
+                  aria-label="Project replan instruction"
+                  {% if project.status == "paused" %}disabled{% endif %}></textarea>
+        <button type="submit" class="secondary project-chat-send" id="project-chat-send"
+                {% if project.status == "paused" %}disabled{% endif %}>Replan</button>
+      </div>
+    </form>
+    <p class="meta project-chat-hint" id="project-chat-hint">
+      {% if project.status == "paused" %}
+      Resume the project to replan from chat
+      {% else %}
+      + attaches files · Enter replans the whole project from your prompt (not a single-job re-run)
+      {% endif %}
+    </p>
+    {% endif %}
+  </section>
+</div>
+
+{# 7 — Findings + objectives #}
+<div class="console-split war-results" id="console-results-row">
+  <section class="war-zone findings-panel" data-expandable id="findings" aria-labelledby="findings-heading"
+           data-findings-url="{% url 'project_findings_json' project.pk %}">
+    <div class="page-header tight">
+      <h2 id="findings-heading">
+        Findings
+        <span class="panel-hint" id="findings-counts">
+          {{ finding_counts.open }} open · {{ finding_counts.confirmed }} confirmed · {{ finding_counts.all }} total
+        </span>
+      </h2>
+      <form class="filter-bar" id="findings-filter" data-no-reload>
+        <label class="meta" for="finding_status">Filter status</label>
+        <select id="finding_status" name="finding_status">
+          <option value="all" {% if finding_status == "all" %}selected{% endif %}>All</option>
+          {% for value, label in finding_statuses %}
+          <option value="{{ value }}" {% if finding_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <label class="meta" for="finding_severity">Severity</label>
+        <select id="finding_severity" name="finding_severity">
+          <option value="all" {% if finding_severity == "all" %}selected{% endif %}>All</option>
+          {% for value, label in finding_severities %}
+          <option value="{{ value }}" {% if finding_severity == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
+    <div class="table-scroll" id="findings-table-wrap">
+      <table class="findings-table">
+        <thead>
+          <tr>
+            <th>#</th><th>Title</th><th>Sev</th><th>Kind</th><th>Asset</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="findings-body" data-project-pk="{{ project.pk }}">
+        {% for f in findings %}
+          <tr data-finding-id="{{ f.id }}" data-status="{{ f.status }}" data-severity="{{ f.severity }}">
+            <td class="meta">FIND-{{ f.seq }}</td>
+            <td>
+              <strong>{{ f.title }}</strong>
+              {% if f.host %}<div class="meta">{{ f.host }}{% if f.port %}:{{ f.port }}{% endif %}</div>{% endif %}
+              {% if f.evidence %}<div class="meta finding-evidence">{{ f.evidence|truncatechars:120 }}</div>{% endif %}
+            </td>
+            <td><span class="sev-pill" data-severity="{{ f.severity }}">{{ f.severity }}</span></td>
+            <td class="meta"><code>{{ f.kind }}</code></td>
+            <td class="meta">{% if f.asset_type %}<code>{{ f.asset_type }}</code>{% else %}—{% endif %}</td>
+            <td class="finding-status-cell">
+              <select class="finding-status-select" aria-label="Finding status"
+                      data-finding-id="{{ f.id }}" data-prev="{{ f.status }}">
+                {% for value, label in finding_statuses %}
+                <option value="{{ value }}" {% if f.status == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </td>
+          </tr>
+        {% empty %}
+          <tr class="findings-empty-row"><td colspan="6" class="meta findings-empty">No findings yet — agents write structured findings here.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="war-zone objectives-panel" data-expandable id="objectives-panel" aria-labelledby="objectives-heading">
+    <h2 id="objectives-heading">
+      Objectives
+      <span class="panel-hint"><span id="objectives-count">{{ objectives|length }}</span> planned</span>
+    </h2>
+    {% if objectives %}
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>#</th><th>Title</th><th>Phase</th><th>Skill</th><th>Status</th></tr></thead>
+        <tbody id="objectives-body">
+        {% for o in objectives %}
+          <tr data-objective-id="{{ o.id }}">
+            <td class="meta">{{ o.seq }}</td>
+            <td>{{ o.title }}</td>
+            <td class="meta">{{ o.phase }}</td>
+            <td><code>{{ o.skill_suggestion|default:"—" }}</code></td>
+            <td class="meta status" data-objective-status>{{ o.status }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="meta">None yet — planning runs automatically when the project is created.</p>
+    {% endif %}
+  </section>
+</div>
+
+{# 8 — Report hub #}
+<section class="war-zone" id="reports" aria-labelledby="reports-heading">
+  <div class="page-header tight">
+    <h2 id="reports-heading">Report hub <span class="panel-hint">workspace deliverables</span></h2>
+    <span id="reports-final-cta">
+    {% for r in reports %}
+      {% if r.kind == "final" %}
+      <a class="btn" href="{% url 'project_report_view' project.id r.relative_path %}">Open final report</a>
+      {% endif %}
+    {% endfor %}
+    </span>
+  </div>
+  <div id="reports-body-wrap">
+  {% if reports %}
+  <table>
+    <thead>
+      <tr><th>Report</th><th>Type</th><th>Modified</th><th>Size</th><th></th></tr>
+    </thead>
+    <tbody id="reports-body">
+    {% for r in reports %}
+      <tr {% if r.kind == "final" %}class="report-final"{% endif %} data-report-path="{{ r.relative_path }}">
+        <td>
+          {% if r.is_markdown %}
+          <a href="{% url 'project_report_view' project.id r.relative_path %}">{{ r.display_name }}</a>
+          {% else %}
+          <a href="{% url 'project_report_file' project.id r.relative_path %}?view=1" target="_blank" rel="noopener">{{ r.display_name }}</a>
+          {% endif %}
+          <div class="meta"><code>{{ r.relative_path }}</code></div>
+        </td>
+        <td class="meta status">
+          {% if r.kind == "final" %}Final{% elif r.kind == "plan" %}Plan{% else %}Finding{% endif %}
+        </td>
+        <td class="meta">{% if r.modified_at %}{{ r.modified_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
+        <td class="meta">{{ r.size }} B</td>
+        <td>
+          {% if r.is_markdown %}
+          <a class="btn secondary" href="{% url 'project_report_view' project.id r.relative_path %}">View</a>
+          {% endif %}
+          <a class="btn secondary" href="{% url 'project_report_file' project.id r.relative_path %}">Download</a>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="meta" id="reports-empty">No reports yet — the analyzer writes <code>findings/report.md</code> when reporting runs. False positives are omitted from the report.</p>
+  <table hidden id="reports-table-template">
+    <thead>
+      <tr><th>Report</th><th>Type</th><th>Modified</th><th>Size</th><th></th></tr>
+    </thead>
+    <tbody id="reports-body"></tbody>
+  </table>
+  {% endif %}
+  </div>
+</section>
+</div>
+
+{% csrf_token %}
+<a href="#findings" hidden data-palette-extra data-palette-id="page-findings"
+   data-palette-label="Findings board" data-palette-group="Page" data-palette-keywords="status triage"></a>
+<a href="#reports" hidden data-palette-extra data-palette-id="page-reports"
+   data-palette-label="Report hub" data-palette-group="Page" data-palette-keywords="report md"></a>
+<a href="#roe" hidden data-palette-extra data-palette-id="page-roe"
+   data-palette-label="Rules of engagement" data-palette-group="Page" data-palette-keywords="scope seed"></a>
+<a href="#objectives-panel" hidden data-palette-extra data-palette-id="page-objectives"
+   data-palette-label="Objectives" data-palette-group="Page" data-palette-keywords="plan"></a>
+{% endblock %}
+{% block scripts %}
+<script src="{% static 'js/agent-graph.js' %}?v=20260913i"></script>
+<script src="{% static 'js/project-ops.js' %}?v=20260913i"></script>
+<script>
+  PeonProjectOps.init({
+    projectPk: "{{ project.pk }}",
+    bootstrap: {{ stream_bootstrap|safe }},
+    findingStatuses: [
+      {% for value, label in finding_statuses %}
+      { value: "{{ value }}", label: "{{ label }}" }{% if not forloop.last %},{% endif %}
+      {% endfor %}
+    ]
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} — live — Peon{% endblock %}
+{% block content %}
+<p class="meta">
+  <a href="{% url 'project_detail' project.pk %}">← {{ project.title }}</a>
+</p>
+<h1>{{ job.title }}</h1>
+<p class="lead">Live job status (polls every 1s). Steer with pause / resume / kill.</p>
+<p class="meta">
+  status <code id="status" class="status">{{ job.status }}</code>
+  · id <code>{{ job.id }}</code>
+  · skills <code>{{ job.skill_names|join:", "|default:"—" }}</code>
+</p>
+
+<div class="bar">
+  <form method="post" action="{% url 'job_steer' project.pk job.pk %}" style="display:inline">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="pause">
+    <button type="submit" class="secondary">Pause</button>
+  </form>
+  <form method="post" action="{% url 'job_steer' project.pk job.pk %}" style="display:inline">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="resume">
+    <button type="submit" class="secondary">Resume</button>
+  </form>
+  <form method="post" action="{% url 'job_steer' project.pk job.pk %}" style="display:inline">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="kill">
+    <button type="submit">Kill</button>
+  </form>
+</div>
+
+<h2>Output</h2>
+<p id="error" class="msg err" {% if not job.error %}hidden{% endif %}>{{ job.error }}</p>
+<pre id="result">{{ job.result|default:"(waiting for worker…)" }}</pre>
+
+<script>
+(function () {
+  const url = "{% url 'job_live_json' project.pk job.pk %}";
+  const statusEl = document.getElementById("status");
+  const resultEl = document.getElementById("result");
+  const errorEl = document.getElementById("error");
+  let timer = null;
+  async function tick() {
+    try {
+      const res = await fetch(url, { headers: { "Accept": "application/json" } });
+      if (!res.ok) return;
+      const data = await res.json();
+      statusEl.textContent = data.status;
+      resultEl.textContent = data.result || "(waiting for worker…)";
+      if (data.error) {
+        errorEl.hidden = false;
+        errorEl.textContent = data.error;
+      } else {
+        errorEl.hidden = true;
+      }
+      if (data.terminal && timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    } catch (_) { /* ignore transient poll errors */ }
+  }
+  timer = setInterval(tick, 1000);
+  tick();
+})();
+</script>
+{% endblock %}

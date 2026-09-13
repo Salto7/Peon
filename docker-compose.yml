@@ -1,0 +1,130 @@
+# Peon — Compose stack. Images/entrypoints live under Docker/.
+#
+# From repo root:
+#   docker compose up -d --build
+#
+# Browser: https://localhost:${WEB_PORT:-8000}/  (self-signed cert via edge)
+
+name: peon
+
+services:
+  # Build-only profile: image used by per-project job sandboxes (not a long-running service).
+  #   docker compose --profile build build sandbox
+  sandbox:
+    build:
+      context: .
+      dockerfile: Docker/sandbox/Dockerfile
+    image: peon-sandbox:local
+    profiles: ["build"]
+
+  # Message broker for Dramatiq — queues long-running job actors for the worker.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Django app (control plane + operator UI). Listens on HTTP :8000 inside the network only.
+  web:
+    build:
+      context: .
+      dockerfile: Docker/Dockerfile
+    image: peon-web:local
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: peon.config.settings
+      DEBUG: ${DEBUG:-true}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,web,edge}
+      PEON_DATA_DIR: /data
+      PUBLIC_URL: ${PUBLIC_URL:-https://localhost:8000}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://localhost:8000,https://127.0.0.1:8000}
+      STREAM_SOCKET_PATH: /tmp/peon/stream.sock
+      SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-peon-sandbox:local}
+      PROJECT_SANDBOX_PREFIX: ${PROJECT_SANDBOX_PREFIX:-peon-project}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DRAMATIQ_ENABLED: ${DRAMATIQ_ENABLED:-true}
+    volumes:
+      - peon_data:/data
+      - peon_sockets:/tmp/peon
+      # Learn install-lab create/test/delete (AJAX). Project sandbox cleanup stays on worker.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./skills:/app/skills:ro
+      - ./tools:/app/tools:ro
+    expose:
+      - "8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  # Background runner: Dramatiq consumers + Unix stream socket; starts project sandboxes via docker.sock.
+  worker:
+    image: peon-web:local
+    build:
+      context: .
+      dockerfile: Docker/Dockerfile
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: peon.config.settings
+      DEBUG: ${DEBUG:-true}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,web,edge}
+      PEON_DATA_DIR: /data
+      PUBLIC_URL: ${PUBLIC_URL:-https://localhost:8000}
+      STREAM_SOCKET_PATH: /tmp/peon/stream.sock
+      ORCHESTRATOR_STREAM_SOCKET: /tmp/peon/stream.sock
+      SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-peon-sandbox:local}
+      PROJECT_SANDBOX_PREFIX: ${PROJECT_SANDBOX_PREFIX:-peon-project}
+      SANDBOX_SOCKETS_VOLUME: ${SANDBOX_SOCKETS_VOLUME:-peon_sockets}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DRAMATIQ_ENABLED: ${DRAMATIQ_ENABLED:-true}
+      DRAMATIQ_TIME_LIMIT_MS: ${DRAMATIQ_TIME_LIMIT_MS:-21600000}
+    volumes:
+      - peon_data:/data
+      - peon_sockets:/tmp/peon
+      - ./skills:/app/skills:ro
+      - ./tools:/app/tools:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["/entrypoint-worker.sh"]
+    depends_on:
+      web:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # HTTPS edge / reverse proxy (Caddy): only host-facing service. Terminates TLS and
+  # forwards to web:8000. "Edge" = the network edge between the internet/host and the app.
+  edge:
+    build:
+      context: ./Docker/edge
+    image: peon-edge:local
+    ports:
+      - "${WEB_PORT:-8000}:443"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+    volumes:
+      - edge_certs:/certs
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  peon_data:
+    name: peon_data
+  edge_certs:
+    name: peon_edge_certs
+  peon_sockets:
+    name: peon_sockets

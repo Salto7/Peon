@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ report_name }} — {{ project.title }}{% endblock %}
+{% block content %}
+<p class="meta"><a href="{% url 'project_detail' project.id %}#reports">← {{ project.title }}</a></p>
+<header class="page-header">
+  <div>
+    <h1>{{ report_name }}</h1>
+    <p class="meta"><code>{{ report_path }}</code></p>
+  </div>
+  <div class="bar">
+    <a class="btn secondary" href="{{ download_url }}">Download</a>
+    <a class="btn secondary" href="{% url 'project_detail' project.id %}#reports">Back</a>
+  </div>
+</header>
+
+{% if is_markdown %}
+<article class="panel md-report" id="md-report">
+  <div class="md-report-body" id="md-report-body">Loading…</div>
+</article>
+{{ report_text|json_script:"report-markdown-source" }}
+<script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js" crossorigin="anonymous"></script>
+<script>
+(function () {
+  const el = document.getElementById("md-report-body");
+  const raw = document.getElementById("report-markdown-source");
+  if (!el || !raw) return;
+  let text = "";
+  try { text = JSON.parse(raw.textContent || '""'); } catch (_) { text = raw.textContent || ""; }
+  if (window.marked && typeof window.marked.parse === "function") {
+    window.marked.setOptions({ gfm: true, breaks: true });
+    el.innerHTML = window.marked.parse(text);
+  } else {
+    el.innerHTML = "<pre class=\"md-fallback\"></pre>";
+    el.querySelector("pre").textContent = text;
+  }
+})();
+</script>
+{% else %}
+<article class="panel">
+  <pre class="report-pre">{{ report_text }}</pre>
+</article>
+{% endif %}
+{% endblock %}

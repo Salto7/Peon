@@ -1,0 +1,21 @@
+id: feroxbuster
+name: feroxbuster
+description: >
+  Fast recursive content discovery / directory enumeration (epi052). Authorized
+  in-scope URLs only. Install recipe and RoE-trusted source_urls are defined below.
+tier: catalog
+binary: feroxbuster
+install:
+  - type: github_release
+    repo: epi052/feroxbuster
+    binary: feroxbuster
+    asset_substr: x86_64-linux
+    source_urls:
+      - https://github.com/epi052/feroxbuster
+      - https://api.github.com/repos/epi052/feroxbuster
+      - https://objects.githubusercontent.com
+      - https://codeload.github.com
+verify:
+  - command: "feroxbuster --version"
+skills: []
+tags: [recon, web]

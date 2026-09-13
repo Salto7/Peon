@@ -1,0 +1,14 @@
+id: sqlmap
+name: sqlmap
+description: >
+  Automated SQL injection detection and exploitation (sqlmapproject). Authorized
+  in-scope targets only. Install via apt below.
+tier: catalog
+binary: sqlmap
+install:
+  - type: apt
+    packages: [sqlmap]
+verify:
+  - command: "sqlmap --version"
+skills: []
+tags: [web, sqli]

@@ -1,0 +1,16 @@
+id: playwright-deps
+name: playwright-deps
+description: >
+  Browser dependencies for Playwright-based automation in the sandbox.
+  Linked skill: browser-automation. Install via apt + pip below.
+tier: catalog
+binary: playwright
+install:
+  - type: apt
+    packages: [python3-pip, libnss3, libatk-bridge2.0-0, libdrm2, libxkbcommon0, libgbm1]
+  - type: pip
+    packages: [playwright]
+verify:
+  - command: "python3 -c 'import playwright' 2>/dev/null"
+skills: [browser-automation]
+tags: [web]

@@ -1,0 +1,18 @@
+id: theharvester
+name: theHarvester
+description: >
+  OSINT harvester for emails, hosts, and related public intel (laramies).
+  Linked skill: domain-enum. Pinned release tag for Python 3.12 sandbox compat
+  (upstream master may require newer Python).
+tier: catalog
+binary: theHarvester
+binaries: [theHarvester, theharvester]
+install:
+  - type: apt
+    packages: [git]
+  - type: pip
+    packages: ["git+https://github.com/laramies/theHarvester.git@4.11.1"]
+verify:
+  - command: "theHarvester -h"
+skills: [domain-enum]
+tags: [recon, osint]

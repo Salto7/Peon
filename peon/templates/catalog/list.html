@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Catalog — Peon{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Catalog</h1>
+    <p class="lead">Skills from <code>SkillRegistry</code> and sandbox tools from <code>tools/catalog</code>.</p>
+  </div>
+</header>
+
+<nav class="catalog-jump bar" aria-label="Catalog sections">
+  <a class="btn secondary" href="#skills">Skills ({{ skills|length }})</a>
+  <a class="btn secondary" href="#tools">Tools ({{ tools|length }})</a>
+</nav>
+
+<section class="catalog-section" id="skills" aria-labelledby="skills-heading">
+  <div class="catalog-section-head">
+    <h2 id="skills-heading">Skills</h2>
+    <div class="bar catalog-section-actions">
+      <span class="meta">{{ skills|length }} skill{{ skills|length|pluralize }}</span>
+      {% if show_all %}
+        <a class="btn secondary" href="{% url 'catalog' %}#skills">Jobable only</a>
+      {% else %}
+        <a class="btn secondary" href="{% url 'catalog' %}?all=1#skills">Show all</a>
+      {% endif %}
+      <form method="post" action="{{ skills_reload.url }}" class="catalog-reload-form">
+        {% csrf_token %}
+        {% if show_all %}<input type="hidden" name="all" value="1">{% endif %}
+        <button type="submit" class="btn secondary" title="{{ skills_reload.title }}">{{ skills_reload.label }}</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="catalog-grid skill-card-grid">
+    {% for s in skills %}
+    <article class="skill-card catalog-card{% if not s.compatible %} catalog-card-incompatible{% endif %}" id="skill-{{ s.name }}">
+      <div class="skill-card-name">
+        <a href="{% url 'catalog_api_skill' s.name %}"><code>{{ s.name }}</code></a>
+        {% if not s.compatible %}
+        <span
+          class="skill-lint-warn"
+          title="{% for issue in s.lint_issues %}{{ issue }}{% if not forloop.last %} &#10;{% endif %}{% empty %}SKILL.md failed lint{% endfor %}"
+          aria-label="Lint issues: {% for issue in s.lint_issues %}{{ issue }}{% if not forloop.last %}; {% endif %}{% empty %}incompatible{% endfor %}"
+        >⚠</span>
+        {% endif %}
+      </div>
+      {% if not s.compatible and s.lint_issues %}
+      <ul class="skill-lint-issues" aria-label="Missing or invalid">
+        {% for issue in s.lint_issues %}<li>{{ issue }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if s.category %}<div class="skill-card-cat">{{ s.category }}</div>{% endif %}
+      {% if s.lifecycle %}<div class="meta skill-card-life">lifecycle {{ s.lifecycle }}</div>{% endif %}
+      <div class="skill-card-desc">{{ s.description|default:"(no description)" }}</div>
+      {% if s.tags %}
+      <div class="skill-card-tags" aria-label="Tags">
+        {% for t in s.tags %}<span class="chip">{{ t }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      {% if s.aliases %}
+      <div class="meta skill-card-aliases">aliases: {{ s.aliases|join:", " }}</div>
+      {% endif %}
+    </article>
+    {% empty %}
+    <p class="meta">No skills found under SKILLS_DIR.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="catalog-section" id="tools" aria-labelledby="tools-heading">
+  <div class="catalog-section-head">
+    <h2 id="tools-heading">Tools</h2>
+    <div class="bar catalog-section-actions">
+      <span class="meta">{{ tools|length }} tool{{ tools|length|pluralize }}</span>
+      <form method="post" action="{{ tools_reload.url }}" class="catalog-reload-form">
+        {% csrf_token %}
+        <button type="submit" class="btn secondary" title="{{ tools_reload.title }}">{{ tools_reload.label }}</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="catalog-grid skill-card-grid">
+    {% for t in tools %}
+    <article class="skill-card catalog-card catalog-card-tool" id="tool-{{ t.id }}">
+      <div class="skill-card-name">
+        <a href="{% url 'catalog_api_tool' t.id %}"><code>{{ t.id }}</code></a>
+      </div>
+      {% if t.tier %}<div class="skill-card-cat">tier {{ t.tier }}</div>{% endif %}
+      {% if t.binary %}<div class="meta skill-card-life">binary <code>{{ t.binary }}</code></div>{% endif %}
+      <div class="skill-card-desc">{{ t.description|default:"(no description)" }}</div>
+      {% if t.tags %}
+      <div class="skill-card-tags" aria-label="Tags">
+        {% for tag in t.tags %}<span class="chip">{{ tag }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      {% if t.skills %}
+      <div class="meta skill-card-aliases">skills: {{ t.skills|join:", " }}</div>
+      {% endif %}
+    </article>
+    {% empty %}
+    <p class="meta">No tools found under TOOLS_CATALOG_DIR.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<p class="meta catalog-foot">
+  Resolve skills for a Job: <code>GET/POST /catalog/api/resolve/?brief=…</code>
+</p>
+{% endblock %}

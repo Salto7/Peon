@@ -1,0 +1,16 @@
+api
+app
+portal
+login
+auth
+sso
+vpn
+dev
+staging
+test
+admin
+mail
+smtp
+mx
+ns1
+ns2

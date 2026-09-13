@@ -1,0 +1,31 @@
+<div class="skill-picker">
+  <div class="skill-picker-head">
+    <span class="skill-picker-title">Skills</span>
+    <span class="meta skill-picker-hint">{{ hint|default:"Core skills stay on; add optional focus skills for the planner" }}</span>
+  </div>
+  <div class="skill-picker-grid">
+    {% for skill in available_skills %}
+    {% if skill.required %}
+    <input type="hidden" name="skill_names" value="{{ skill.name }}">
+    {% endif %}
+    <label class="skill-chip{% if skill.required %} skill-chip-required{% endif %}">
+      <input type="checkbox" {% if not skill.required %}name="skill_names" value="{{ skill.name }}"{% endif %}
+        {% if skill.required or skill.name in selected_skills %}checked{% endif %}
+        {% if skill.required %}disabled aria-disabled="true"{% endif %}>
+      <span class="skill-chip-face" title="{{ skill.description }}{% if skill.required %} (always included){% endif %}">
+        <span class="skill-chip-name">{{ skill.name }}</span>
+        {% if skill.required %}<span class="skill-chip-lock">Required</span>{% endif %}
+        {% if skill.category %}<span class="skill-chip-cat">{{ skill.category }}</span>{% endif %}
+        {% if skill.description %}<span class="skill-chip-desc">{{ skill.description }}</span>{% endif %}
+        {% if skill.tags %}
+        <span class="skill-card-tags">
+          {% for t in skill.tags %}<span class="chip">{{ t }}</span>{% endfor %}
+        </span>
+        {% endif %}
+      </span>
+    </label>
+    {% empty %}
+    <p class="meta">No jobable skills in the catalog.</p>
+    {% endfor %}
+  </div>
+</div>

@@ -1,0 +1,21 @@
+{
+	auto_https off
+	admin off
+}
+
+# TLS terminates here; Django (web) speaks plain HTTP on the compose network.
+:443 {
+	tls ${SSL_CERT_FILE} ${SSL_KEY_FILE}
+
+	handle {
+		reverse_proxy web:8000 {
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {host}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+}
+
+:80 {
+	redir https://{host}{uri} permanent
+}

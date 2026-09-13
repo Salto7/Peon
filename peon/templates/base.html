@@ -1,0 +1,51 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Peon{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'css/peon.css' %}?v=20260913q">
+  {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <nav>
+    <a class="brand" href="{% url 'project_list' %}">Peon</a>
+    <a href="{% url 'project_list' %}" {% if nav == "projects" %}class="active"{% endif %}>Projects</a>
+    <a href="{% url 'catalog' %}" {% if nav == "catalog" %}class="active"{% endif %}>Catalog</a>
+    <a href="{% url 'learn' %}" {% if nav == "learn" %}class="active"{% endif %}>Learn</a>
+    <a href="{% url 'settings_page' %}" {% if nav == "settings" %}class="active"{% endif %}>Settings</a>
+    <a href="/admin/">Admin</a>
+    <button type="button" class="nav-search" id="palette-open" title="Search (Shift+S)">
+      Search <kbd>⇧S</kbd>
+    </button>
+  </nav>
+  <main class="shell">
+    {% if messages %}
+      {% for message in messages %}
+        <div class="msg {% if message.tags %}{{ message.tags }}{% endif %}" data-toast-source>{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+
+  <dialog id="palette-dialog" class="palette-dialog" aria-label="Command palette">
+    <form method="dialog" class="palette-form" id="palette-form">
+      <input type="search" id="palette-input" placeholder="Search projects, skills, tools, findings…" autocomplete="off">
+      <ul id="palette-results" class="palette-results" role="listbox"></ul>
+      <p class="meta palette-hint">↑↓ navigate · Enter open · Esc close · ⇧S open</p>
+    </form>
+  </dialog>
+
+  <script src="{% static 'js/peon-ui.js' %}?v=20260913c"></script>
+  <script>
+    PeonUI.init({ searchUrl: "{% url 'search_json' %}" });
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

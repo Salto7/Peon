@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Settings — Peon{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Settings</h1>
+    <p class="lead">Runtime caps and agent governors. .env values are defaults; saves update the live DB row.</p>
+  </div>
+</header>
+
+{% if restart_needed %}
+<div class="msg warning" data-toast-source>
+  Dramatiq thread count changed. Restart the <code>worker</code> service for it to take effect.
+</div>
+{% endif %}
+
+<section class="panel">
+  <form method="post" action="{% url 'settings_page' %}">
+    {% csrf_token %}
+    {% for f in fields %}
+      <label for="{{ f.key }}">{{ f.label }}{% if f.restart_required %} <span class="meta">(restart required)</span>{% endif %}</label>
+      {% if f.kind == "bool" %}
+      <select id="{{ f.key }}" name="{{ f.key }}">
+        <option value="true" {% if f.value %}selected{% endif %}>true</option>
+        <option value="false" {% if not f.value %}selected{% endif %}>false</option>
+      </select>
+      {% else %}
+      <input id="{{ f.key }}" name="{{ f.key }}" type="number"
+             min="{{ f.min }}" max="{{ f.max }}" value="{{ f.value }}" required>
+      {% endif %}
+      <p class="meta">{{ f.help }} Default from .env: <code>{{ f.env_default }}</code></p>
+    {% endfor %}
+    <div class="bar">
+      <button type="submit">Save</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Projects — Peon{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Projects</h1>
+    <p class="lead">Open an engagement or start a new one.</p>
+  </div>
+  <p class="bar">
+    <a class="btn" href="{% url 'project_create' %}">New project</a>
+  </p>
+</header>
+
+<section class="panel">
+  <div class="page-header tight">
+    <h2>Recent</h2>
+    <form id="projects-bulk" method="post" action="{% url 'projects_bulk' %}" class="bulk-bar">
+      {% csrf_token %}
+      <span class="bulk-count meta" data-bulk-count>0 selected</span>
+      <button type="submit" name="action" value="pause" class="secondary" data-bulk-btn disabled>Pause</button>
+      <button type="submit" name="action" value="resume" class="secondary" data-bulk-btn disabled>Resume</button>
+      <button type="submit" name="action" value="delete" data-bulk-btn disabled
+              data-confirm="Delete selected projects and their sandboxes?">Delete</button>
+    </form>
+  </div>
+  {% if projects %}
+  <table class="select-table">
+    <thead>
+      <tr>
+        <th class="col-check"><input type="checkbox" data-select-all aria-label="Select all projects"></th>
+        <th>Title</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in projects %}
+      <tr>
+        <td class="col-check">
+          <input type="checkbox" name="project_ids" value="{{ p.pk }}" form="projects-bulk" data-bulk-row>
+        </td>
+        <td><a href="{% url 'project_detail' p.pk %}">{{ p.title }}</a></td>
+        <td class="meta status">{{ p.status }}</td>
+        <td class="meta">{{ p.created_at }}</td>
+        <td class="job-actions">
+          {% if p.status == "paused" %}
+          <form method="post" action="{% url 'project_control' p.pk %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="resume">
+            <button type="submit" class="secondary">Resume</button>
+          </form>
+          {% elif p.status == "active" %}
+          <form method="post" action="{% url 'project_control' p.pk %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="pause">
+            <button type="submit" class="secondary">Pause</button>
+          </form>
+          {% endif %}
+          <form method="post" action="{% url 'project_control' p.pk %}"
+                onsubmit="return confirm('Delete project {{ p.title|escapejs }} and its sandbox?');">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="delete">
+            <button type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="meta">No projects yet. <a href="{% url 'project_create' %}">Start one</a>.</p>
+  {% endif %}
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="{% static 'js/bulk-select.js' %}"></script>
+<script>PeonBulk.init(document.getElementById("projects-bulk"));</script>
+{% endblock %}

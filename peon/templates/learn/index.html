@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Learn — Peon{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Learn</h1>
+    <p class="lead">
+      Suggest a catalog tool or draft a skill, edit the result, then save
+      (<code>tools-suggestor</code> / <code>skill-writer</code>).
+    </p>
+  </div>
+</header>
+
+{% if not llm_ready %}
+<p class="msg warning">Configure an LLM API key under Settings before using Learn.</p>
+{% endif %}
+
+<div id="learn-app"
+     data-suggest-tool="{% url 'learn_api_tool' %}"
+     data-suggest-skill="{% url 'learn_api_skill' %}"
+     data-save-tool="{% url 'learn_api_tool_save' %}"
+     data-test-tool="{% url 'learn_api_tool_test' %}"
+     data-replan-tool="{% url 'learn_api_tool_replan' %}"
+     data-lint-skill="{% url 'learn_api_skill_lint' %}"
+     data-save-skill="{% url 'learn_api_skill_save' %}"
+     data-lab-create="{% url 'learn_api_lab_create' %}"
+     data-lab-delete="{% url 'learn_api_lab_delete' %}"
+     data-lab-status="{% url 'learn_api_lab' %}"
+     data-lab-exists="{% if lab.exists %}1{% else %}0{% endif %}"
+     data-lab-running="{% if lab.running %}1{% else %}0{% endif %}"
+     data-lab-name="{{ lab.name }}">
+
+  <div class="learn-mode-switch" role="tablist" aria-label="Learn mode">
+    <button type="button" class="learn-mode-btn is-active" data-mode="tool" role="tab" aria-selected="true">Tool</button>
+    <button type="button" class="learn-mode-btn" data-mode="skill" role="tab" aria-selected="false">Skill</button>
+  </div>
+
+  <section class="war-zone learn-panel" id="learn-prompt-panel" aria-labelledby="prompt-heading">
+    <h2 id="prompt-heading">Prompt</h2>
+    <form id="learn-generate-form" class="stack-forms">
+      <label for="learn-prompt">Describe what to author</label>
+      <textarea id="learn-prompt" name="prompt" rows="4"
+                placeholder="e.g. Add ProjectDiscovery nuclei for authorized vulnerability scanning"
+                {% if not llm_ready %}disabled{% endif %}></textarea>
+
+      <div id="skill-tools-wrap" class="learn-skill-only" hidden>
+        <label for="skill-tools">Prefer catalog tools (optional)</label>
+        <select id="skill-tools" name="tools" multiple size="6" {% if not llm_ready %}disabled{% endif %}>
+          {% for t in tools %}
+          <option value="{{ t.id }}">{{ t.id }}{% if t.binary and t.binary != t.id %} ({{ t.binary }}){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="bar learn-generate-row">
+        <button type="submit" id="learn-generate-btn" {% if not llm_ready %}disabled{% endif %}>Suggest tool</button>
+        <div id="learn-thinking" class="learn-thinking" hidden aria-live="polite">
+          <span class="learn-thinking-dots" aria-hidden="true"></span>
+          <span class="learn-thinking-label">Thinking</span>
+        </div>
+      </div>
+    </form>
+  </section>
+
+  <section class="war-zone learn-panel learn-tool-only" id="tool-result" hidden aria-labelledby="tool-result-heading">
+    <h2 id="tool-result-heading">Tool draft</h2>
+    <p class="meta">Edit YAML (and optional <code>{id}.sh</code>) before saving or testing.</p>
+
+    <label for="tool-yaml">Catalog YAML</label>
+    <textarea id="tool-yaml" class="learn-edit" rows="16" spellcheck="false"></textarea>
+
+    <label for="tool-script">Install script (<code>{id}.sh</code>, optional)</label>
+    <textarea id="tool-script" class="learn-edit" rows="8" spellcheck="false"
+              placeholder="#!/usr/bin/env bash&#10;# only needed for type: custom with a .sh file"></textarea>
+
+    <div id="tool-notes" class="meta learn-notes"></div>
+
+    <div class="learn-lab-panel" id="learn-lab-panel">
+      <div class="learn-lab-name-row">
+        <span class="meta">Test docker</span>
+        <code id="tool-lab-name">{{ lab.name }}</code>
+      </div>
+      <label class="learn-lab-switch" for="tool-lab-toggle">
+        <input type="checkbox" id="tool-lab-toggle"
+               {% if lab.running %}checked{% endif %}
+               {% if not lab.docker %}disabled{% endif %} />
+        <span class="learn-lab-slider" aria-hidden="true"></span>
+        <span id="tool-lab-switch-label" class="learn-lab-switch-label">
+          {% if lab.running %}Running — turn off to delete{% else %}Off — turn on to create{% endif %}
+        </span>
+      </label>
+      <p id="tool-lab-status" class="meta">
+        {% if lab.error %}{{ lab.error }}{% elif lab.running %}Running on image <code>{{ lab.image }}</code>
+        {% elif lab.exists %}Exists but stopped · image <code>{{ lab.image }}</code>
+        {% elif not lab.docker %}Docker unavailable from web
+        {% else %}Not created · image <code>{{ lab.image }}</code>{% endif %}
+      </p>
+    </div>
+
+    <div class="bar learn-actions">
+      <button type="button" id="tool-save-btn" class="btn">Save</button>
+      <button type="button" id="tool-test-btn" class="btn secondary">Test installation</button>
+    </div>
+
+    <pre id="tool-test-log" class="learn-code" hidden></pre>
+
+    <div id="tool-replan-panel" class="learn-replan-panel" hidden>
+      <h3 class="learn-result-title">Replan installation</h3>
+      <p class="meta">
+        Install test failed. Edit the replan prompt (and YAML/script above), then replan.
+      </p>
+      <label for="tool-replan-prompt">Replan prompt</label>
+      <textarea id="tool-replan-prompt" class="learn-edit" rows="5" spellcheck="true"
+                placeholder="Describe how to fix the install recipe…"></textarea>
+      <div class="bar learn-actions">
+        <button type="button" id="tool-replan-btn" class="btn secondary">Replan installation</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="war-zone learn-panel learn-skill-only" id="skill-result" hidden aria-labelledby="skill-result-heading">
+    <h2 id="skill-result-heading">Skill draft</h2>
+    <p class="meta">Edit <code>SKILL.md</code> and companion files, then lint or save under <code>skills/</code>.</p>
+
+    <label for="skill-name">Skill name</label>
+    <input id="skill-name" type="text" autocomplete="off" spellcheck="false" />
+
+    <p id="skill-lint" class="meta"></p>
+
+    <label for="skill-md">SKILL.md</label>
+    <textarea id="skill-md" class="learn-edit" rows="16" spellcheck="false"></textarea>
+
+    <div id="skill-files" class="learn-files"></div>
+    <div id="skill-notes" class="meta learn-notes"></div>
+
+    <div class="bar learn-actions">
+      <button type="button" id="skill-lint-btn" class="btn secondary">Lint</button>
+      <button type="button" id="skill-save-btn" class="btn">Save</button>
+    </div>
+  </section>
+
+  <section class="war-zone learn-panel" id="docs" aria-labelledby="docs-heading">
+    <h2 id="docs-heading">Catalog format</h2>
+    <p class="meta">
+      Full reference: <code>tools/CATALOG.md</code>.
+      Install priority: <strong>custom</strong> → <strong>apt</strong> → <strong>github_release</strong> → pip / git_clone.
+      Tool install tests use a minimal isolated container (<code>{{ lab.image }}</code>), not project sandboxes.
+    </p>
+    <pre class="learn-code">{% verbatim %}install:
+  - type: custom
+    command: oddtool.sh          # or inline shell
+  - type: apt
+    packages: [curl]
+  - type: github_release
+    repo: org/oddtool
+    binary: oddtool
+    asset_substr: linux_amd64
+verify:
+  - command: "oddtool --version"{% endverbatim %}</pre>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{% static 'js/learn.js' %}?v=20260913s"></script>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}New project — Peon{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>New project</h1>
+    <p class="lead">Title, brief, optional RoE targets, then skill picks for the planner (core skills are always included).</p>
+  </div>
+  <p class="bar">
+    <a class="btn secondary" href="{% url 'project_list' %}">← Projects</a>
+  </p>
+</header>
+
+<section class="panel create-panel">
+  <form method="post" action="{% url 'project_create' %}" enctype="multipart/form-data">
+    {% csrf_token %}
+    <label for="title">Title</label>
+    <input id="title" name="title" required placeholder="lab" autofocus>
+    <label for="summary">Summary</label>
+    <textarea id="summary" name="summary" placeholder="What success looks like"></textarea>
+    <label for="in_scope">In-scope targets (optional — values authorize; type:value hints OK)</label>
+    <textarea id="in_scope" name="in_scope" placeholder="domain:app.lab&#10;person:Alice&#10;path:/tmp/sample.bin"></textarea>
+    <label for="uploads">Sample files (optional — stored under this project only)</label>
+    <div class="file-field">
+      <input id="uploads" name="uploads" type="file" multiple>
+    </div>
+    <p class="meta upload-disclaimer">
+      Peon does not validate file types or content. Upload files at your own responsibility.
+    </p>
+    {% include "includes/skill_picker.html" with available_skills=available_skills selected_skills=selected_skills %}
+    <div class="bar">
+      <button type="submit">Create</button>
+      <a class="btn secondary" href="{% url 'project_list' %}">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,24 @@
+id: mfasweep
+name: MFASweep
+description: >
+  Check MFA / Conditional Access coverage across Microsoft services (dafthack).
+  Linux entrypoint is upstream mfasweep.py. Authorized accounts only — repeated
+  login attempts can lock out accounts.
+tier: catalog
+binary: mfasweep
+install:
+  - type: apt
+    packages: [git]
+  - type: pip
+    packages: [requests]
+  - type: git_clone
+    repo: dafthack/MFASweep
+    entrypoint: mfasweep.py
+    binary: mfasweep
+    source_urls:
+      - https://github.com/dafthack/MFASweep
+      - https://codeload.github.com
+verify:
+  - command: "mfasweep --help"
+skills: []
+tags: [osint, entra, mfa]

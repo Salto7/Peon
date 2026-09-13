@@ -1,0 +1,267 @@
+"""Provision-time Peon SKILL.md checks (agentskills layout + product metadata).
+
+Required: ``SKILL.md`` with YAML frontmatter ``name`` + ``description``, and
+directory name matching ``name``. Optional resource roots (``scripts/``,
+``assets/``, ``references/``) are never required — only broken in-body refs fail.
+"""
+
+from __future__ import annotations
+
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from orchestrator.skills.misc.utils import (
+    LINT_LIFECYCLES,
+    SKILL_NAME_RE,
+    MAX_COMPATIBILITY_LEN,
+    MAX_DESCRIPTION_LEN,
+    MAX_NAME_LEN,
+    SPEC_FIELDS,
+    LintIssue,
+    extract_file_refs,
+    find_manifest,
+    normalize_category,
+    resolve_resource,
+    split_frontmatter,
+)
+from orchestrator.utils.service import SharedService
+
+# Product fields that belong under ``metadata:`` (Peon layout), not top-level.
+# Legacy top-level ``taskable`` — prefer ``jobable`` under metadata.
+_LEGACY_TOP_LEVEL = frozenset(
+    {
+        "category",
+        "tags",
+        "aliases",
+        "lifecycle",
+        "jobable",
+        "taskable",
+        "tools",
+        "capabilities",
+        "requires_clis",
+        "toolkit",
+        "version",
+        "manually_created",
+        "protected",
+        "direct_answer",
+        "max_iterations",
+        "mcp",
+        "allowed_tools",
+    }
+)
+
+
+class SkillLinter(SharedService):
+    def lint_dir(self, skill_dir: Path) -> dict[str, Any]:
+        skill_dir = Path(skill_dir)
+        manifest = find_manifest(skill_dir)
+        if manifest is None:
+            issue = LintIssue("error", "missing_manifest", "Missing required file: SKILL.md")
+            return {"ok": False, "skill_dir": str(skill_dir), "issues": [issue.to_dict()]}
+        try:
+            text = manifest.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {
+                "ok": False,
+                "skill_dir": str(skill_dir),
+                "issues": [LintIssue("error", "read_error", str(exc)).to_dict()],
+            }
+        issues = self.lint_text(text, skill_dir=skill_dir)
+        return {
+            "ok": not any(i.level == "error" for i in issues),
+            "skill_dir": str(skill_dir),
+            "skill_name": skill_dir.name,
+            "issues": [i.to_dict() for i in issues],
+        }
+
+    def check(self, skill_dir: Path) -> dict[str, Any]:
+        """Lint a skill directory; ``compatible`` is True when there are no errors."""
+        result = self.lint_dir(skill_dir)
+        issues = list(result.get("issues") or [])
+        errors = [i for i in issues if i.get("level") == "error"]
+        warnings = [i for i in issues if i.get("level") == "warning"]
+        return {
+            "compatible": bool(result.get("ok")),
+            "skill_name": result.get("skill_name") or Path(skill_dir).name,
+            "skill_dir": result.get("skill_dir") or str(skill_dir),
+            "issues": issues,
+            "errors": errors,
+            "warnings": warnings,
+        }
+
+    def is_compatible(self, skill_dir: Path) -> bool:
+        """True when the skill meets Peon SKILL.md lint requirements (no errors)."""
+        return bool(self.check(skill_dir)["compatible"])
+
+    def lint_text(self, text: str, *, skill_dir: Path | None = None) -> list[LintIssue]:
+        if not (text or "").strip():
+            return [LintIssue("error", "empty", "SKILL.md is empty.")]
+        split = split_frontmatter(text)
+        if not split:
+            return [
+                LintIssue(
+                    "error",
+                    "missing_frontmatter",
+                    "Missing YAML frontmatter (file must start with --- … ---).",
+                )
+            ]
+        fm_raw, body = split
+        try:
+            data = yaml.safe_load(fm_raw)
+        except yaml.YAMLError as exc:
+            return [LintIssue("error", "yaml_syntax", f"Frontmatter YAML error: {exc}")]
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            return [LintIssue("error", "yaml_mapping", "Frontmatter must be a YAML mapping.")]
+
+        issues = self._spec_issues(data, skill_dir)
+        issues.extend(self._meta_issues(data.get("metadata") or {}))
+        if not (body or "").strip():
+            issues.append(LintIssue("warning", "empty_body", "Skill body is empty."))
+        if skill_dir is not None:
+            for ref in extract_file_refs(body):
+                if resolve_resource(skill_dir, ref) is None:
+                    issues.append(
+                        LintIssue("error", "broken_ref", f"File reference `{ref}` not found.")
+                    )
+        return issues
+
+    def _spec_issues(self, fm: dict[str, Any], skill_dir: Path | None) -> list[LintIssue]:
+        issues: list[LintIssue] = []
+        for key in sorted(set(fm) - SPEC_FIELDS):
+            if key in _LEGACY_TOP_LEVEL:
+                hint = (
+                    "Use `jobable` under `metadata:` instead of top-level `taskable`."
+                    if key == "taskable"
+                    else f"Move `{key}` under `metadata:` (Peon SKILL.md format)."
+                )
+                issues.append(LintIssue("warning", "legacy_top_level", hint))
+            else:
+                issues.append(
+                    LintIssue(
+                        "warning",
+                        "unexpected_field",
+                        f"Unexpected top-level field `{key}`.",
+                    )
+                )
+        name = fm.get("name")
+        if name is None or not str(name).strip():
+            issues.append(LintIssue("error", "missing_name", "Missing required field: name"))
+        else:
+            issues.extend(self._name_issues(str(name), skill_dir))
+        desc = fm.get("description")
+        if desc is None or not str(desc).strip():
+            issues.append(
+                LintIssue("error", "missing_description", "Missing required field: description")
+            )
+        elif not isinstance(desc, str):
+            issues.append(
+                LintIssue("warning", "description_type", "`description` should be a string.")
+            )
+        elif len(str(desc)) > MAX_DESCRIPTION_LEN:
+            issues.append(
+                LintIssue(
+                    "error",
+                    "description_length",
+                    f"Description exceeds {MAX_DESCRIPTION_LEN} chars.",
+                )
+            )
+        compat = fm.get("compatibility")
+        if compat is not None and not isinstance(compat, str):
+            issues.append(
+                LintIssue("error", "compatibility_type", "`compatibility` must be a string")
+            )
+        elif isinstance(compat, str) and len(compat) > MAX_COMPATIBILITY_LEN:
+            issues.append(
+                LintIssue(
+                    "error",
+                    "compatibility_length",
+                    f"Compatibility exceeds {MAX_COMPATIBILITY_LEN} chars.",
+                )
+            )
+        if fm.get("metadata") is not None and not isinstance(fm["metadata"], dict):
+            issues.append(LintIssue("error", "metadata_type", "`metadata` must be a mapping"))
+        if fm.get("allowed-tools") is not None and not isinstance(fm["allowed-tools"], str):
+            issues.append(
+                LintIssue("error", "allowed_tools_type", "`allowed-tools` must be a string")
+            )
+        return issues
+
+    def _name_issues(self, name: str, skill_dir: Path | None) -> list[LintIssue]:
+        issues: list[LintIssue] = []
+        name = unicodedata.normalize("NFKC", name.strip())
+        if len(name) > MAX_NAME_LEN:
+            issues.append(LintIssue("error", "name_length", f"Name exceeds {MAX_NAME_LEN} chars."))
+        if name != name.lower() or name.startswith("-") or name.endswith("-") or "--" in name:
+            issues.append(
+                LintIssue("error", "name_format", f"Invalid skill name '{name}'.")
+            )
+        if not SKILL_NAME_RE.match(name):
+            issues.append(LintIssue("error", "name_chars", f"Invalid skill name '{name}'."))
+        if skill_dir and unicodedata.normalize("NFKC", skill_dir.name) != name:
+            issues.append(
+                LintIssue(
+                    "error",
+                    "name_dir_mismatch",
+                    f"Directory '{skill_dir.name}' must match name '{name}'.",
+                )
+            )
+        return issues
+
+    def _meta_issues(self, meta: Any) -> list[LintIssue]:
+        if not isinstance(meta, dict):
+            return []
+        issues: list[LintIssue] = []
+        lc = str(meta.get("lifecycle") or "").strip().lower()
+        if lc and lc not in LINT_LIFECYCLES:
+            issues.append(
+                LintIssue("error", "lifecycle_unknown", f"Unknown lifecycle {lc!r}.")
+            )
+        raw = meta.get("max_iterations")
+        if raw is not None and str(raw).strip():
+            try:
+                if int(raw) < 1:
+                    raise ValueError
+            except (TypeError, ValueError):
+                issues.append(
+                    LintIssue(
+                        "error",
+                        "max_iterations_type",
+                        "`metadata.max_iterations` must be a positive integer.",
+                    )
+                )
+        cat_raw = meta.get("category")
+        if cat_raw is not None and str(cat_raw).strip():
+            if not normalize_category(cat_raw):
+                issues.append(
+                    LintIssue(
+                        "warning",
+                        "category_slug",
+                        f"`metadata.category` should be a kebab-case slug (got {cat_raw!r}).",
+                    )
+                )
+        if "taskable" in meta:
+            issues.append(
+                LintIssue(
+                    "warning",
+                    "legacy_taskable",
+                    "Use `metadata.jobable` instead of `metadata.taskable`.",
+                )
+            )
+        return issues
+
+    @classmethod
+    def lint_root(cls, root: Path) -> list[dict[str, Any]]:
+        """Lint every skill directory under ``root`` that has a manifest."""
+        self = cls.shared()
+        if not root.is_dir():
+            return []
+        return [
+            self.lint_dir(child)
+            for child in sorted(root.iterdir())
+            if child.is_dir() and not child.name.startswith(".") and find_manifest(child)
+        ]
