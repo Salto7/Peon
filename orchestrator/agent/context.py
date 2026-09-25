@@ -12,7 +12,7 @@ from orchestrator.agent.config import AgentRunConfig
 
 
 class AgentPorts(ABC):
-    """Callbacks peon registers so orchestrator never imports Django."""
+    """Callbacks the host registers so orchestrator never imports the control plane."""
 
     @abstractmethod
     def emit(
@@ -100,7 +100,8 @@ def get_context() -> AgentRunContext:
     return ctx
 
 
-def get_config() -> AgentRunConfig:
+def get_agent_config() -> AgentRunConfig:
+    """Bound ``AgentRunConfig`` for the current job (not ``orchestrator.config.get_config``)."""
     cfg = _cfg.get()
     if cfg is None:
         return AgentRunConfig()

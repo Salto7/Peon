@@ -1,17 +1,17 @@
-"""Job workspace path helpers used by BasePlanner.persist (keyed like peon workspaces)."""
+"""Job workspace path helpers used by BasePlanner.persist."""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-from django.conf import settings
+from orchestrator.config import get_config
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def workspaces_root() -> Path:
-    root = Path(getattr(settings, "PROJECT_WORKSPACES_DIR", "project_workspaces")).resolve()
+    root = Path(get_config().workspaces_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
 

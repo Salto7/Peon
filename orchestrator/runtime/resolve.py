@@ -4,34 +4,19 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from orchestrator.utils.service import SharedService
 from orchestrator.utils.llm import chat_json, llm_config
+from orchestrator.utils.install_docs import install_steps_from_fences
+from orchestrator.prompts import INSTALL_CASCADE, PLANNER_INSTALL_SYSTEM
 from orchestrator.tools.catalog.catalog import AptInstallStep, InstallStep
 from orchestrator.tools.catalog import CatalogProvisioner, ToolCatalog
 from orchestrator.skills.misc.registry import SkillRegistry
 from orchestrator.sandbox import SandboxSession
 
 logger = logging.getLogger(__name__)
-
-_INSTALL_FENCE = re.compile(
-    r"```(?:ya?ml)?\s*\n((?:install:|verify:)[\s\S]*?)```", re.IGNORECASE
-)
-_APT = re.compile(
-    r"apt(?:-get)?\s+install\s+(?:-[yY]\s+)*(?:--no-install-recommends\s+)*([^\n`]+)",
-    re.IGNORECASE,
-)
-_PIP = re.compile(r"pip(?:3)?\s+install\s+([^\n`]+)", re.IGNORECASE)
-_GH = re.compile(
-    r"(?:github(?:_release)?|install(?:_github)?_release)\s*[:(]?\s*"
-    r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
-    re.IGNORECASE,
-)
 
 
 class InstallResolver(SharedService):
@@ -47,7 +32,6 @@ class InstallResolver(SharedService):
         name = (binary or "").strip()
         if not name:
             return True, "no binary to provision"
-
 
         if SandboxSession.current().which(name):
             return True, f"{name} already installed"
@@ -84,14 +68,16 @@ class InstallResolver(SharedService):
         if plan is not None:
             return plan
 
-        hint = "add tools/catalog YAML, skill Install section, or set an LLM key for planner"
+        hint = (
+            f"add tools/catalog YAML, skill INSTALL.md, or set an LLM key "
+            f"({INSTALL_CASCADE})"
+        )
         detail = "; ".join(errors) or f"no install recipe for {name!r}"
         return False, f"{detail}; {hint}"
 
     @staticmethod
     def _from_catalog(binary: str) -> tuple[bool, str] | None:
         try:
-
             if ToolCatalog.shared().by_binary(binary) is None:
                 return None
             return CatalogProvisioner.shared().provision_binary(binary)
@@ -110,20 +96,10 @@ class InstallResolver(SharedService):
         self, binary: str, *, skill: str, prior_error: str
     ) -> tuple[bool, str] | None:
         try:
-
             if not llm_config().api_key:
                 return None
             payload = chat_json(
-                "You install missing CLI tools in an Ubuntu/Debian sandbox. "
-                "Reply with JSON only: "
-                '{"install":[{"type":"custom"|"apt"|"github_release"|"pip"|"git_clone",...}],'
-                '"verify":[{"command":"..."}]}. '
-                "Install priority (try in order, stop when verify passes): "
-                "1) type=custom (inline shell or {binary}.sh beside the catalog YAML), "
-                "2) type=apt, "
-                "3) type=github_release, "
-                "then pip / git_clone. "
-                "No prose.",
+                PLANNER_INSTALL_SYSTEM,
                 f"binary={binary!r} skill={skill!r} prior_error={prior_error!r}",
             )
         except Exception as exc:
@@ -142,7 +118,7 @@ class InstallResolver(SharedService):
             return []
         steps: list[dict[str, Any]] = []
         for text in texts:
-            steps.extend(self._parse_install_docs(text, binary=binary))
+            steps.extend(self._parse_install_docs(text))
         seen: set[str] = set()
         out: list[dict[str, Any]] = []
         for step in steps:
@@ -184,43 +160,9 @@ class InstallResolver(SharedService):
                         continue
         return texts
 
-    def _parse_install_docs(self, text: str, *, binary: str) -> list[dict[str, Any]]:
-        steps: list[dict[str, Any]] = []
-        for match in _INSTALL_FENCE.finditer(text or ""):
-            try:
-                raw = yaml.safe_load(match.group(1))
-            except yaml.YAMLError:
-                continue
-            if isinstance(raw, dict) and isinstance(raw.get("install"), list):
-                steps.extend(s for s in raw["install"] if isinstance(s, dict))
-        for match in _APT.finditer(text or ""):
-            pkgs = [
-                p.strip().strip("'\"")
-                for p in match.group(1).split()
-                if p.strip() and not p.startswith("-")
-            ]
-            if pkgs:
-                steps.append({"type": "apt", "packages": pkgs})
-        for match in _PIP.finditer(text or ""):
-            pkgs = [
-                p.strip().strip("'\"")
-                for p in match.group(1).split()
-                if p.strip() and not p.startswith("-")
-            ]
-            if pkgs:
-                steps.append({"type": "pip", "packages": pkgs})
-        for match in _GH.finditer(text or ""):
-            repo = match.group(1).strip()
-            if repo:
-                steps.append(
-                    {
-                        "type": "github_release",
-                        "repo": repo,
-                        "binary": binary,
-                        "asset_substr": "linux_amd64",
-                    }
-                )
-        return steps
+    @staticmethod
+    def _parse_install_docs(text: str) -> list[dict[str, Any]]:
+        return install_steps_from_fences(text)
 
     def _apply_steps(
         self, steps: list[dict[str, Any]], *, binary: str, source: str

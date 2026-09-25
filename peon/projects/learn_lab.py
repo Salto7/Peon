@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import tempfile
 from pathlib import Path
@@ -15,8 +14,6 @@ from orchestrator.tools.catalog import ToolCatalog
 from orchestrator.tools.catalog.catalog import CatalogProvisioner
 from orchestrator.utils.service import SharedService
 
-logger = logging.getLogger(__name__)
-
 LEARN_LAB_LABEL = "peon.role=learn-lab"
 LEARN_LAB_FILTER = "label=peon.learn_lab=1"
 
@@ -25,7 +22,8 @@ class LearnLab(SharedService):
     """Minimal throwaway container for testing catalog install recipes.
 
     At most one lab exists: fixed name ``LEARN_LAB_CONTAINER`` (default
-    ``peon-learn-lab``). Create/ensure always reconnects if present.
+    ``peon-learn-lab``). ``ensure`` always recreates it so each start is a
+    clean image with no leftover installs.
     """
 
     def image(self) -> str:
@@ -45,40 +43,6 @@ class LearnLab(SharedService):
 
     def _cli(self) -> DockerCli:
         return DockerCli.shared()
-
-    def _adopt_or_dedupe(self, name: str) -> None:
-        """Ensure at most one lab: prefer ``name``, drop extra labeled containers."""
-        cli = self._cli()
-        exists, _ = cli.inspect_running(name)
-        labeled = cli.ps_ids(LEARN_LAB_FILTER)
-        if not labeled:
-            return
-
-        if exists:
-            for cid in labeled:
-                inspect_name = cli.inspect_format(cid, "{{.Name}}", timeout=15)
-                cname = (inspect_name.stdout or "").strip().lstrip("/")
-                if cname == name:
-                    continue
-                logger.warning(
-                    "Removing duplicate Learn lab container %s (%s)", cname or cid, cid
-                )
-                cli.rm_force(cid)
-            return
-
-        keep = labeled[0]
-        rename = cli.rename(keep, name)
-        if not rename.ok:
-            logger.warning(
-                "Could not rename Learn lab %s → %s: %s",
-                keep,
-                name,
-                (rename.stderr or rename.stdout or "").strip()[:200],
-            )
-            return
-        for cid in labeled[1:]:
-            logger.warning("Removing duplicate Learn lab container %s", cid)
-            cli.rm_force(cid)
 
     def status(self) -> dict[str, Any]:
         name = self.container_name()
@@ -105,14 +69,19 @@ class LearnLab(SharedService):
         }
 
     def ensure(self) -> SandboxInfo:
-        """Create the lab only if missing; otherwise reconnect / start the same one."""
+        """Wipe any prior lab and create a fresh container (no leftover tools)."""
         cli = self._cli()
         if not cli.available():
             raise RuntimeError("docker CLI missing — cannot run Learn lab tests")
         name = self.container_name()
         image = self.image()
         cli.require_daemon()
-        self._adopt_or_dedupe(name)
+        # Always recreate so apt/git_clone/pip from a previous test cannot leak.
+        wiped = self.delete()
+        if not wiped.get("ok"):
+            raise RuntimeError(
+                f"Failed to reset Learn lab {name}: {wiped.get('error') or 'unknown'}"
+            )
 
         action = cli.ensure_running(
             name,
@@ -134,7 +103,7 @@ class LearnLab(SharedService):
         return info
 
     def create(self) -> dict[str, Any]:
-        """Explicit create/start for the Learn UI switch (idempotent)."""
+        """Explicit create/start for the Learn UI switch (always clean slate)."""
         info = self.ensure()
         return {
             "ok": True,
@@ -182,6 +151,8 @@ class LearnLab(SharedService):
         os.environ["ORCHESTRATOR_SANDBOX_WORKDIR"] = work
         if JobEnv.current():
             JobEnv.bind({**JobEnv.current(), "ORCHESTRATOR_SANDBOX_WORKDIR": work})
+        else:
+            JobEnv.bind({"ORCHESTRATOR_SANDBOX_WORKDIR": work})
         SandboxSession.bind(
             DockerSandbox(info, docker_bin=self._cli().require_bin())
         )
@@ -241,7 +212,7 @@ class LearnLab(SharedService):
         log_lines: list[str] = []
         try:
             try:
-                info = self.connect()
+                info = self.ensure()
             except RuntimeError as exc:
                 return {
                     "ok": False,

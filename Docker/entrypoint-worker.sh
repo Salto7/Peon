@@ -1,10 +1,12 @@
 #!/bin/bash
-# Compose worker: stream socket + Dramatiq (1 process / N threads from settings).
+# Compose worker: stream + RPC sockets + Dramatiq (1 process / N threads).
 set -euo pipefail
 python manage.py run_stream_server &
 STREAM_PID=$!
+python manage.py run_rpc_server &
+RPC_PID=$!
 cleanup() {
-  kill "$STREAM_PID" 2>/dev/null || true
+  kill "$STREAM_PID" "$RPC_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 

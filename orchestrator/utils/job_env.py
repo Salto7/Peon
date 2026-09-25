@@ -45,21 +45,15 @@ class JobEnv:
         return (os.environ.get(key) or default).strip() or default
 
     @classmethod
-    def merged(cls, *extra: dict[str, str]) -> dict[str, str]:
-        out = dict(cls.current())
-        for block in extra:
-            for k, v in (block or {}).items():
-                if v is None or str(v) == "":
-                    out.pop(str(k), None)
-                else:
-                    out[str(k)] = str(v)
-        return out
-
-    @classmethod
     @contextmanager
     def overlay(cls, updates: dict[str, str]) -> Iterator[None]:
         """Temporarily merge keys for the current context (skill name/command)."""
-        merged = cls.merged(updates)
+        merged = dict(cls.current())
+        for k, v in (updates or {}).items():
+            if v is None or str(v) == "":
+                merged.pop(str(k), None)
+            else:
+                merged[str(k)] = str(v)
         token = cls.bind(merged)
         try:
             yield

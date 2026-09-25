@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Home — Peon{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Operations</h1>
+    <p class="lead">Control-plane status across projects, agents, and sandboxes.</p>
+  </div>
+  <p class="bar">
+    <a class="btn" href="{% url 'project_create' %}">New project</a>
+    <a class="btn secondary" href="{% url 'project_list' %}">All projects</a>
+  </p>
+</header>
+
+{% if notices %}
+<section class="home-notices" aria-label="Notices">
+  {% for note in notices %}
+  <p class="msg warning">{{ note }}</p>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="home-kpis" aria-label="Key metrics">
+  <div class="home-kpi">
+    <span class="home-kpi-value">{{ kpis.active_projects }}</span>
+    <span class="home-kpi-label">Active projects</span>
+  </div>
+  <div class="home-kpi">
+    <span class="home-kpi-value">{{ kpis.running_jobs }}</span>
+    <span class="home-kpi-label">Running agents</span>
+  </div>
+  <div class="home-kpi">
+    <span class="home-kpi-value">{{ kpis.paused_projects }}</span>
+    <span class="home-kpi-label">Paused</span>
+  </div>
+  <div class="home-kpi{% if kpis.failed_jobs %} home-kpi-warn{% endif %}">
+    <span class="home-kpi-value">{{ kpis.failed_jobs }}</span>
+    <span class="home-kpi-label">Failed jobs</span>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="page-header tight">
+    <h2>Projects</h2>
+    <p class="meta">Sandbox: {% if sandbox_per_project %}per-project{% else %}shared{% endif %}</p>
+  </div>
+  {% if project_rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Title</th>
+        <th>Status</th>
+        <th>Sandbox</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in project_rows %}
+      <tr>
+        <td><a href="{% url 'project_detail' row.project.pk %}">{{ row.project.title }}</a></td>
+        <td class="meta status">{{ row.project.status }}</td>
+        <td class="meta"><code>{{ row.sandbox_name }}</code>
+          <span class="home-sandbox-mode">{{ row.sandbox_mode }}</span></td>
+        <td class="meta">{{ row.project.created_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="meta">No projects yet. <a href="{% url 'project_create' %}">Start one</a>.</p>
+  {% endif %}
+</section>
+
+{% if failed_recent or stream_errors %}
+<section class="panel home-alerts" aria-label="Recent errors">
+  <h2>Alerts</h2>
+  {% if failed_recent %}
+  <h3 class="home-alert-sub">Failed jobs</h3>
+  <ul class="home-alert-list">
+    {% for job in failed_recent %}
+    <li>
+      {% if job.project %}
+      <a href="{% url 'project_detail' job.project_id %}">{{ job.project.title }}</a>
+      ·
+      {% endif %}
+      <span class="meta">{{ job.title }}</span>
+      <pre class="home-alert-detail">{{ job.error|truncatechars:240 }}</pre>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if stream_errors %}
+  <h3 class="home-alert-sub">Stream errors</h3>
+  <ul class="home-alert-list">
+    {% for msg in stream_errors %}
+    <li>
+      {% if msg.job.project_id %}
+      <a href="{% url 'project_detail' msg.job.project_id %}">{{ msg.job.project.title }}</a>
+      ·
+      {% endif %}
+      <span class="meta">{{ msg.created_at }}</span>
+      <pre class="home-alert-detail">{{ msg.content|truncatechars:240 }}</pre>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

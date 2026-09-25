@@ -10,6 +10,19 @@ from dataclasses import dataclass, field
 from orchestrator.utils.service import SharedService
 
 _BASE_CMDS_FILE = "/etc/peon/base-commands"
+# Modes where skill/CLI execution is allowed (bound Docker backends).
+DOCKER_BOUND_MODES = frozenset({"docker", "shared"})
+
+
+def require_docker_bound(mode: str | None) -> str | None:
+    """Return an error string if ``mode`` is not a Docker-bound sandbox."""
+    m = (mode or "").strip().lower()
+    if m not in DOCKER_BOUND_MODES:
+        return (
+            "Error: no Docker sandbox bound (host execution disabled). "
+            f"mode={m!r}"
+        )
+    return None
 
 
 @dataclass(frozen=True)

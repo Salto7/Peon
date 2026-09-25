@@ -62,3 +62,10 @@ class SandboxSession(SharedService):
             return
         if _backend.get() is not None:
             _backend.set(None)
+
+    @classmethod
+    def require_bound(cls) -> str | None:
+        """Error string when no Docker/shared sandbox is bound; else None."""
+        from orchestrator.sandbox.backend import require_docker_bound
+
+        return require_docker_bound(cls.current().info.mode)

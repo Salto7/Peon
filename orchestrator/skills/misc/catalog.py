@@ -13,14 +13,10 @@ def filter_skills(
     skills: Iterable[Skill],
     *,
     jobable_only: bool = False,
-    tags: list[str] | None = None,
 ) -> list[Skill]:
     out = list(skills)
     if jobable_only:
         out = [s for s in out if s.jobable]
-    if tags:
-        tag_set = {str(t).strip() for t in tags if str(t).strip()}
-        out = [s for s in out if tag_set.intersection(s.tags or [])]
     return out
 
 

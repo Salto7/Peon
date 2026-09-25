@@ -12,7 +12,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from peon.projects.models import Job, StreamMessage, StreamMessageType
+from peon.projects.models import Job, Project, StreamMessage, StreamMessageType
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,88 @@ def record_stream_message(
     msg._payload_status = status  # type: ignore[attr-defined]
     msg._payload_title = title or jid  # type: ignore[attr-defined]
     msg._payload_project = project_uuid  # type: ignore[attr-defined]
+    return msg
+
+
+def emit_job_stream(
+    job: Job | str,
+    message_type: str,
+    content: str,
+    metadata: dict | None = None,
+    *,
+    swallow_errors: bool = False,
+) -> StreamMessage | None:
+    """Persist a stream line for a Job (or job id). Optional soft-fail for workers."""
+    jid = str(getattr(job, "id", job) or "").strip()
+    if not jid:
+        return None
+    try:
+        return record_stream_message(jid, message_type, content, metadata)
+    except Exception:
+        if swallow_errors:
+            logger.debug("emit_job_stream soft-failed for %s", jid, exc_info=True)
+            return None
+        raise
+
+
+def stream_meta(
+    project: Project | str | None,
+    *,
+    role: str = "assistant",
+    tag: str = "",
+    event: str = "",
+    **extra: Any,
+) -> dict[str, Any]:
+    """Standard console/feed metadata blob for ``record_stream_message``."""
+    meta: dict[str, Any] = {"role": role}
+    if tag:
+        meta["tag"] = tag
+    if event:
+        meta["event"] = event
+    pid = str(getattr(project, "id", project) or "").strip()
+    if pid:
+        meta["project_id"] = pid
+    meta.update(extra)
+    return meta
+
+
+def project_message_dicts(
+    project: Project,
+    *,
+    after_id: int = 0,
+    limit: int = 200,
+    newest_first: bool = False,
+) -> list[dict[str, Any]]:
+    """Serialize project stream lines for bootstrap or poll."""
+    qs = (
+        StreamMessage.objects.filter(job__project=project)
+        .select_related("job")
+    )
+    if after_id > 0:
+        qs = qs.filter(id__gt=after_id).order_by("id")
+    elif newest_first:
+        qs = qs.order_by("-id")
+    else:
+        qs = qs.order_by("id")
+    rows = list(qs[: max(1, min(limit, 500))])
+    if newest_first:
+        rows = list(reversed(rows))
+    return [message_to_dict(attach_job_context(m, project)) for m in rows]
+
+
+def attach_job_context(
+    msg: StreamMessage,
+    project: Project | None = None,
+) -> StreamMessage:
+    """Ensure payload title/status/project attrs for ``message_to_dict``."""
+    job = getattr(msg, "job", None)
+    if job is not None:
+        msg._payload_title = job.title  # type: ignore[attr-defined]
+        msg._payload_status = job.status  # type: ignore[attr-defined]
+    if project is not None:
+        msg._payload_project = str(project.id)  # type: ignore[attr-defined]
+    elif job is not None and getattr(job, "project_id", None):
+        msg._payload_project = str(job.project_id)  # type: ignore[attr-defined]
     return msg
 
 
@@ -254,3 +336,39 @@ class StreamSocketServer:
                 conn.close()
             except OSError:
                 pass
+
+
+def start_stream_server(
+    path: str | None = None,
+    *,
+    on_message: Callable[[dict], None] | None = None,
+) -> StreamSocketServer:
+    """Build and start the Unix NDJSON stream listener (settings path by default)."""
+    from django.conf import settings
+
+    sock = path or getattr(settings, "STREAM_SOCKET_PATH", "/tmp/peon/stream.sock")
+    server = StreamSocketServer(sock, on_message or handle_incoming_message)
+    server.start()
+    return server
+
+
+def run_until_signal(*, on_stop: Callable[[], None] | None = None) -> None:
+    """Block until SIGINT/SIGTERM, then optionally call ``on_stop``."""
+    import signal
+    import time
+
+    stop = False
+
+    def _stop(*_args: object) -> None:
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+    try:
+        while not stop:
+            time.sleep(0.5)
+    finally:
+        if on_stop is not None:
+            on_stop()
+

@@ -40,48 +40,6 @@ class ProjectLifecycle:
 
 
     @classmethod
-    def mark_objectives_for_skill(cls, 
-        project: Project | None,
-        skill: str,
-        status: str,
-        *,
-        reason: str = "",
-    ) -> int:
-        """Update project objectives whose skill_suggestion matches ``skill``."""
-        if project is None:
-            return 0
-        name = (skill or "").strip()
-        if not name:
-            return 0
-        qs = project.objectives.filter(skill_suggestion=name).exclude(
-            status=ObjectiveStatus.CANCELLED
-        )
-        now = dj_tz.now()
-        n = 0
-        for obj in qs:
-            fields = ["status", "updated_at"]
-            obj.status = status
-            if status == ObjectiveStatus.IN_PROGRESS:
-                if obj.started_at is None:
-                    obj.started_at = now
-                    fields.append("started_at")
-            elif status == ObjectiveStatus.BLOCKED:
-                obj.blocked_reason = (reason or "").strip()[:2000]
-                fields.append("blocked_reason")
-            elif status == ObjectiveStatus.COMPLETED:
-                obj.blocked_reason = ""
-                fields.append("blocked_reason")
-                obj.completed_at = now
-                fields.append("completed_at")
-                if obj.started_at is None:
-                    obj.started_at = now
-                    fields.append("started_at")
-            obj.save(update_fields=fields)
-            n += 1
-        return n
-
-
-    @classmethod
     def cancel_open_objectives_for_skills(cls, 
         project: Project | None, skills: Iterable[str]
     ) -> int:
@@ -254,7 +212,7 @@ class ProjectLifecycle:
 
     @classmethod
     def project_allows_operator(cls, project: Project | None) -> None:
-        """Raise if the project cannot accept operator actions (re-run / replan)."""
+        """Raise if the project cannot accept instruct / re-run (not replan/stop)."""
         if project is None:
             return
         if project.status == ProjectStatus.CANCELLED:
@@ -318,7 +276,7 @@ class ProjectLifecycle:
                     obj.save(update_fields=["commands", "updated_at"])
                 cls.enqueue_job_directive(
                     job,
-                    "OPERATOR RE-RUN — execute this exact command under current RoE "
+                    "OPERATOR RE-RUN — execute this exact command under current Rules of Engagement "
                     f"(re-scan / re-run is requested):\n{shell}",
                     kind=JobDirectiveKind.FOLLOWUP,
                 )
@@ -335,21 +293,22 @@ class ProjectLifecycle:
                     obj.save(update_fields=["commands", "updated_at"])
                 cls.enqueue_job_directive(
                     job,
-                    "OPERATOR RE-RUN — execute under current RoE using this command/"
+                    "OPERATOR RE-RUN — execute under current Rules of Engagement using this command/"
                     f"approach:\n{cmd}",
                     kind=JobDirectiveKind.FOLLOWUP,
                 )
         return cls.queue_job(job)
 
     @classmethod
-    def replan_from_prompt(cls, project: Project, message: str) -> dict:
-        """Live-feed / operator prompt → full project replan (supersedes open objectives)."""
+    def replan_from_prompt(cls, project: Project, message: str = "") -> dict:
+        """Operator replan (chat or control bar). Allowed while paused; not when cancelled."""
         from peon.projects.services import PlanningService
 
-        text = (message or "").strip()
+        if project.status == ProjectStatus.CANCELLED:
+            raise RuntimeError("Project is cancelled — cannot replan")
+        text = (message or "").strip() or (project.summary or project.title or "").strip()
         if not text:
             raise ValueError("Message is required")
-        cls.project_allows_operator(project)
         result = PlanningService.replan_project(project, description=text)
         job = result.job
         return {
@@ -380,12 +339,28 @@ class ProjectLifecycle:
         return JobDirective.objects.create(job=job, kind=k, content=text)
 
     @classmethod
-    def route_operator_instruction(cls, project: Project, message: str) -> dict:
-        """Steer active root jobs, or re-queue the latest finished job with a follow-up.
+    def route_operator_instruction(
+        cls,
+        project: Project,
+        message: str,
+        *,
+        job_id: str | None = None,
+        record_stream: bool = True,
+    ) -> dict:
+        """Inject an operator instruction into running objective jobs / agents.
 
-        Returns a dict: mode, job_ids, primary_job_id.
+        Prefers:
+        1. Explicit ``job_id`` (and its non-terminal children)
+        2. Jobs linked to in-progress objectives (running/pending)
+        3. All running root jobs
+
+        Raises RuntimeError when nothing is live — callers should replan for
+        new work instead of silently FOLLOWUP-ing the last finished job.
+
+        When ``record_stream`` is False, the caller owns chat/feed lines
+        (console chat already records user + assistant replies).
         """
-        from peon.projects.models import JobDirectiveKind
+        from peon.projects.models import JobDirectiveKind, ObjectiveStatus
         from peon.projects.streaming import record_stream_message
 
         text = (message or "").strip()
@@ -393,24 +368,86 @@ class ProjectLifecycle:
             raise ValueError("Message is required")
         cls.project_allows_operator(project)
 
-        live = list(
-            project.jobs.filter(
-                parent__isnull=True,
-                status__in={JobStatus.RUNNING, JobStatus.PENDING, JobStatus.PAUSED},
-            ).order_by("-updated_at")
-        )
-        # Prefer long-lived / currently running roots.
-        running = [j for j in live if j.status == JobStatus.RUNNING]
-        targets = running or live
-
-        steered: list[str] = []
-        mode = "steer"
-        primary = None
-
         note = (
-            "OPERATOR PROJECT INSTRUCTION — revise the plan and continue under RoE:\n"
+            "OPERATOR INSTRUCTION — revise your approach and continue under Rules of Engagement:\n"
             f"{text}"
         )
+
+        targets: list[Job] = []
+        mode = "instruct"
+
+        if job_id:
+            selected = (
+                project.jobs.filter(pk=str(job_id).strip())
+                .exclude(status__in=TERMINAL_JOB_STATUSES)
+                .first()
+            )
+            if selected is None:
+                raise RuntimeError("Selected agent is not running (or not on this project)")
+            targets = [selected]
+            # Also steer non-terminal children of the selected agent.
+            targets.extend(
+                list(
+                    selected.children.exclude(status__in=TERMINAL_JOB_STATUSES).order_by(
+                        "created_at"
+                    )
+                )
+            )
+            mode = "instruct_selected"
+        else:
+            in_progress = list(
+                project.objectives.filter(status=ObjectiveStatus.IN_PROGRESS).values_list(
+                    "id", flat=True
+                )
+            )
+            if in_progress:
+                targets = list(
+                    project.jobs.filter(
+                        objective_id__in=in_progress,
+                        status__in={
+                            JobStatus.RUNNING,
+                            JobStatus.PENDING,
+                            JobStatus.PAUSED,
+                        },
+                    ).order_by("-updated_at")
+                )
+            if not targets:
+                running = list(
+                    project.jobs.filter(
+                        parent__isnull=True,
+                        status=JobStatus.RUNNING,
+                    ).order_by("-updated_at")
+                )
+                live = list(
+                    project.jobs.filter(
+                        parent__isnull=True,
+                        status__in={
+                            JobStatus.RUNNING,
+                            JobStatus.PENDING,
+                            JobStatus.PAUSED,
+                        },
+                    ).order_by("-updated_at")
+                )
+                targets = running or live
+                # Include active children of those roots.
+                extra: list[Job] = []
+                for root in targets:
+                    extra.extend(
+                        list(
+                            root.children.exclude(
+                                status__in=TERMINAL_JOB_STATUSES
+                            ).order_by("created_at")
+                        )
+                    )
+                # Dedupe while preserving order.
+                seen: set[str] = {str(j.id) for j in targets}
+                for j in extra:
+                    if str(j.id) not in seen:
+                        targets.append(j)
+                        seen.add(str(j.id))
+
+        steered: list[str] = []
+        primary = None
 
         if targets:
             primary = targets[0]
@@ -418,51 +455,43 @@ class ProjectLifecycle:
                 cls.enqueue_job_directive(job, note, kind=JobDirectiveKind.STEER)
                 steered.append(str(job.id))
         else:
-            finished = (
-                project.jobs.filter(
-                    parent__isnull=True,
-                    status__in=TERMINAL_JOB_STATUSES,
-                )
-                .order_by("-updated_at")
-                .first()
+            # No live agents — refuse silent FOLLOWUP on the last finished job.
+            # New scans / checks belong in replan (new objectives), not re-running
+            # the report analyzer or whatever finished last.
+            raise RuntimeError(
+                "No running agents to instruct — use Chat or Replan for new work "
+                "(e.g. rescan a port) instead of re-running the last finished job"
             )
-            if finished is None:
-                raise RuntimeError(
-                    "No jobs on this project yet — start a job, then send instructions"
-                )
-            primary = finished
-            mode = "continue"
-            cls.enqueue_job_directive(
-                finished, note, kind=JobDirectiveKind.FOLLOWUP
-            )
-            cls.queue_job(finished)
-            steered.append(str(finished.id))
 
-        record_stream_message(
-            str(primary.id),
-            "log",
-            text,
-            {
-                "event": "project_instruction",
-                "role": "user",
-                "project_id": str(project.id),
-            },
-        )
-        record_stream_message(
-            str(primary.id),
-            "log",
-            f"Project instruction routed to {len(steered)} job(s) ({mode}).",
-            {
-                "event": "project_instruction_acked",
-                "role": "assistant",
-                "project_id": str(project.id),
-            },
-        )
+        if record_stream:
+            record_stream_message(
+                str(primary.id),
+                "log",
+                text,
+                {
+                    "event": "project_instruction",
+                    "role": "user",
+                    "tag": "you",
+                    "project_id": str(project.id),
+                },
+            )
+            record_stream_message(
+                str(primary.id),
+                "log",
+                f"Instruction injected into {len(steered)} agent(s) ({mode}).",
+                {
+                    "event": "project_instruction_acked",
+                    "role": "assistant",
+                    "tag": "steer",
+                    "project_id": str(project.id),
+                },
+            )
         return {
             "mode": mode,
             "job_ids": steered,
             "primary_job_id": str(primary.id),
         }
+
 
 
     @classmethod

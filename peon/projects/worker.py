@@ -21,7 +21,7 @@ from peon.projects.models import (
     ProjectStatus,
 )
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.streaming import record_stream_message
+from peon.projects.streaming import emit_job_stream
 from peon.projects.targets import provision_project_roe
 from peon.projects.workspaces import resolve_job_workspace
 
@@ -87,13 +87,7 @@ def job_slots_available(job: Job) -> bool:
 
 
 def _emit(job: Job, message_type: str, content: str, **meta) -> None:
-    if not content:
-        return
-    try:
-        record_stream_message(str(job.id), message_type, content, meta or None)
-    except Exception:
-        pass
-
+    emit_job_stream(job, message_type, content, meta or None, swallow_errors=True)
 
 def _roe_blocks(job: Job) -> str | None:
     """Fail-closed for active probe skills with empty in_scope (type ignored)."""
@@ -229,6 +223,10 @@ def _bind_job_env(job: Job, ws: Path):
         "ORCHESTRATOR_STREAM_SOCKET": str(
             getattr(settings, "STREAM_SOCKET_PATH", "") or ""
         ),
+        "ORCHESTRATOR_RPC_SOCKET": str(
+            getattr(settings, "RPC_SOCKET_PATH", "") or ""
+        ),
+        "ORCHESTRATOR_RPC_TOKEN": str(getattr(settings, "RPC_TOKEN", "") or ""),
         "SKILLS_DIR": str(settings.SKILLS_DIR),
         "SANDBOX_SKILLS_PATH": str(
             getattr(settings, "SANDBOX_SKILLS_PATH", "") or settings.SKILLS_DIR

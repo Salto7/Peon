@@ -23,7 +23,7 @@ from peon.projects.models import (
     Objective,
     ObjectiveStatus,
 )
-from peon.projects.streaming import record_stream_message
+from peon.projects.streaming import emit_job_stream
 
 
 def agent_run_config() -> AgentRunConfig:
@@ -56,12 +56,7 @@ class JobAgentBridge(AgentPorts):
     def emit(
         self, message_type: str, content: str, *, metadata: dict[str, Any] | None = None
     ) -> None:
-        record_stream_message(
-            str(self._job.id),
-            message_type,
-            content or "",
-            metadata or {},
-        )
+        emit_job_stream(self._job, message_type, content or "", metadata or {})
 
     def spawn_child(
         self, *, title: str, description: str, skill_names: list[str]
@@ -156,6 +151,18 @@ class JobAgentBridge(AgentPorts):
         if status == ObjectiveStatus.COMPLETED:
             obj.completed_at = dj_tz.now()
         obj.save()
+        if status == ObjectiveStatus.BLOCKED and self._job.project_id:
+            try:
+                from peon.projects.console_chat import create_operator_prompt
+
+                reason = (note or obj.blocked_reason or "Objective blocked").strip()
+                create_operator_prompt(
+                    self._job.project,
+                    f"OBJ-{obj.seq} {obj.title}: {reason}",
+                    job=self._job,
+                )
+            except Exception:
+                pass
         return f"OBJ-{obj.seq} → {obj.status}"
 
     def record_finding(self, **fields: Any) -> str:
@@ -164,22 +171,38 @@ class JobAgentBridge(AgentPorts):
         title = str(fields.get("title") or "").strip()
         if not title:
             return "Error: title required."
-        from peon.projects.findings import FindingStore
+        from peon.projects.findings import FindingStore, is_status_noise
 
+        kind = str(fields.get("kind") or "observation")
+        if is_status_noise(title, kind):
+            return (
+                "Rejected: that looks like run/objective status, not an engagement "
+                "finding. Use update_objective_status for objectives; record_finding "
+                "only for discoveries about subjects (any asset class) with evidence."
+            )
         row = FindingStore().record(
             self._job.project,
             {
                 "title": title,
                 "severity": str(fields.get("severity") or "info"),
-                "kind": str(fields.get("kind") or "observation"),
+                "kind": kind,
                 "evidence": str(fields.get("evidence") or ""),
                 "host": str(fields.get("host") or ""),
+                "description": str(fields.get("description") or ""),
+                "asset_type": str(fields.get("asset_type") or ""),
+                "evidence_path": str(fields.get("evidence_path") or ""),
+                "remediation": str(fields.get("remediation") or ""),
+                "service": str(fields.get("service") or ""),
+                "port": fields.get("port"),
+                "metadata": fields.get("metadata")
+                if isinstance(fields.get("metadata"), dict)
+                else {},
             },
             job=self._job,
             objective=self._job.objective,
         )
         if row is None:
-            return "Finding not recorded (deduped or invalid)."
+            return "Finding not recorded (deduped, invalid, or status noise)."
         return f"Recorded FIND-{row.seq}: {row.title[:80]}"
 
     def record_findings(self, findings_json: str) -> str:
@@ -213,7 +236,6 @@ class JobAgentBridge(AgentPorts):
     def drain_operator_guidance(self) -> list[str]:
         """Consume pending JobDirective rows into agent-facing guidance strings."""
         from django.db import transaction
-        from django.utils import timezone as dj_tz
 
         with transaction.atomic():
             pending = list(
@@ -234,14 +256,14 @@ class JobAgentBridge(AgentPorts):
                     out.append(
                         "OPERATOR FOLLOW-UP:\n"
                         f"{text}\n\n"
-                        "Honor the operator instruction under RoE. "
+                        "Honor the operator instruction under Rules of Engagement. "
                         "If they supply an exact command, prefer executing that "
                         "command (re-scan / re-run when requested)."
                     )
                 else:
                     out.append(
                         "OPERATOR INSTRUCTION — revise your approach and continue "
-                        f"under RoE:\n{text}"
+                        f"under Rules of Engagement:\n{text}"
                     )
             JobDirective.objects.bulk_update(pending, ["consumed_at"])
         return out

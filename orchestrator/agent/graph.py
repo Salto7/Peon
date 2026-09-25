@@ -12,24 +12,18 @@ from langgraph.prebuilt import ToolNode
 from orchestrator.agent.config import AgentRunConfig
 from orchestrator.agent.context import AgentRunContext, bind_job
 from orchestrator.agent.policy import resolve_tool_names
-from orchestrator.capabilities.registry import get_tools_for_names
+from orchestrator.capabilities.registry import ensure_registered, get_tools_for_names
+from orchestrator.config import get_config
+from orchestrator.prompts import AGENT_RECOVER_NUDGE
 from orchestrator.skills.misc.registry import SkillRegistry
-from orchestrator.tools.llm_tools import ensure_tools_registered
 from orchestrator.utils.llm import chat_model
 
 
 def build_system_prompt(*, skill_names: list[str], brief: str) -> str:
     reg = SkillRegistry.shared()
-    blocks: list[str] = [
-        "You are a Peon job agent for an authorized engagement.",
-        "Use only the bound tools. Prefer run_skill_script for catalog skills.",
-        "Call provision_cli before missing CLIs. Never assume host access.",
-        "Do not search the filesystem for skill scripts — invoke them via run_skill_script.",
-        "Stay in-scope; do not expand RoE. Be concise.",
-        "Obey OPERATOR INSTRUCTION / FOLLOW-UP messages when they appear.",
-    ]
+    blocks: list[str] = [get_config().system_preamble.strip()]
     if brief.strip():
-        blocks.append("Job brief:\n" + brief.strip()[:4000])
+        blocks.append("Task brief:\n" + brief.strip()[:4000])
     for name in skill_names or []:
         skill = reg.load_skill(name)
         if skill is None:
@@ -47,7 +41,7 @@ class AgentState(TypedDict):
 
 
 def build_agent_graph(ctx: AgentRunContext, config: AgentRunConfig):
-    ensure_tools_registered()
+    ensure_registered()
     names = resolve_tool_names(ctx.skill_names)
     tools = get_tools_for_names(names)
     llm = chat_model()
@@ -59,7 +53,7 @@ def build_agent_graph(ctx: AgentRunContext, config: AgentRunConfig):
     max_replans = config.max_failure_replans
 
     def gate(state: AgentState) -> dict[str, Any]:
-        """Pull operator guidance from peon ports before each act cycle."""
+        """Pull operator guidance from host ports before each act cycle."""
         del state
         try:
             notes = list(ctx.ports.drain_operator_guidance() or [])
@@ -97,12 +91,7 @@ def build_agent_graph(ctx: AgentRunContext, config: AgentRunConfig):
         content = str(getattr(last, "content", "") or "")
         if not content.lower().startswith("error"):
             return {}
-        nudge = HumanMessage(
-            content=(
-                "The last tool call failed. Adjust arguments or provision a missing CLI, "
-                "then retry. Do not repeat the identical failing call."
-            )
-        )
+        nudge = HumanMessage(content=AGENT_RECOVER_NUDGE)
         return {"messages": [nudge], "failure_replans": replans + 1}
 
     def route(state: AgentState) -> Literal["tools", "end"]:

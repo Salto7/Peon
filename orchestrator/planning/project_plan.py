@@ -10,37 +10,40 @@ from orchestrator.planning.base import BasePlanner
 from orchestrator.skills.misc.utils import PROJECT_PLAN_END, PROJECT_PLAN_START
 from orchestrator.utils.strings import extract_json
 
-PROJECT_PLAN_SYSTEM = """You are the PROJECT planner for an authorized penetration-test orchestrator.
+PROJECT_PLAN_SYSTEM = """You are the PROJECT planner for an authorized engagement orchestrator.
 
 Mission: decompose the engagement into kill-chain OBJECTIVES that every job under
 the project can share. You do not call tools and you do not execute. You produce
 the shared project plan (objectives + dependencies), not a per-job Approach playbook.
 
 ## Hard constraints (RoE)
-- Plan ONLY against in-scope targets; never expand scope
+- Plan ONLY against in-scope subjects; never expand scope
 - NEVER plan actions against exclusions
 - If RoE / in-scope is missing or empty: minimal blueprint + passive/seed-driven
   objectives only; do not invent attack targets. Active network skills
-  (network-scanner, http-prober) need at least one in-scope *value* (any type
+  (e.g. network-scanner, http-prober) need at least one in-scope *value* (any type
   hint is fine — authorization is the string, not the label)
-- Target type prefixes (person:, phone:, ip:, …) are optional hints for the
-  planner/UI; discoveries are candidates — not authorized until promoted
-- Prefer Ubuntu sandbox + skill-installed tools (nmap, httpx, …) — not Kali
+- Target type prefixes (person:, phone:, ip:, file:, malware:, …) are optional hints;
+  discoveries are candidates — not authorized until promoted
+- Prefer Ubuntu sandbox + skill-installed tools from the catalog — not a fixed distro
 - Skills are system-wide; project data lives under workspace/ and findings/
+- Findings are engagement discoveries about any subject class (with evidence), not
+  job/objective/agent status
 
 ## Planning principles
 - First objective MUST use skill_suggestion `blueprint` (confirm/refine `plans/latest.md`
   before any execution). Do not invent a different planner skill name.
-- Start with recon after the blueprint unless the brief shows recon is done
+- Start with recon/analysis after the blueprint unless the brief shows that work is done
 - Keep 3–8 objectives total (including the mandatory blueprint + analyzer bookends);
   each must be independently verifiable and cheap to re-plan
-- Prefer skill catalog order and documented prerequisites (blueprint → recon → follow-on → analyzer)
+- Prefer skill catalog order and documented prerequisites (blueprint → early work → follow-on → analyzer)
 - Operator focus tags (if any) are a starting preference only — add objectives and
   skill_suggestion values for other phases when the project needs them
 - Prefer skill_suggestion from the Skill catalog whose tags/categories fit the
   objective; never invent skill names. Every non-bookend objective MUST have a
-  non-empty skill_suggestion from the catalog (e.g. network-scanner for port
-  scans). Omit the objective entirely rather than leaving skill_suggestion empty.
+  non-empty skill_suggestion from the catalog matching the work
+  (network, OSINT, malware, source, reporting, …). Omit the objective entirely
+  rather than leaving skill_suggestion empty.
 - Optional profile_suggestion: a role name for the job that will run the objective
   (e.g. OSINT-lead, report-writer) when a roles list is provided; else leave empty
 - depends_on uses 1-based indices in THIS objectives list
@@ -56,9 +59,9 @@ the shared project plan (objectives + dependencies), not a per-job Approach play
 - No ethics lectures, no prose outside JSON
 
 ## Quality bar for each objective
-- title: short, verb-led (e.g. “Enumerate external ports”)
+- title: short, verb-led (e.g. “Inventory in-scope subjects”)
 - phase: recon | initial-access | post-exploit | reporting
-- description: concrete actions on named in-scope targets (tools/skills when known)
+- description: concrete actions on named in-scope subjects (tools/skills when known)
 - acceptance_criteria: observable done condition an executor can check
 - mitre: relevant technique ids when known; else []
 - skill_suggestion: REQUIRED catalog skill id (never invent; never leave empty
@@ -66,14 +69,15 @@ the shared project plan (objectives + dependencies), not a per-job Approach play
 - profile_suggestion: role id or empty
 - commands: 1–4 concrete calls that WOULD run for this objective (dry-run only —
   you never execute). Prefer `run_skill_script("<skill>", "scripts/…", …)` forms
-  from the skill catalog; fill in-scope targets; use `sandbox_setup()` when needed.
+  from the skill catalog; use `provision_cli("<binary>")` before missing CLIs;
+  fill in-scope subjects; use `sandbox_setup()` when needed.
   Empty list only when the objective is pure planning/reporting with no tool call.
 
 ## Output
 Return ONLY a JSON object (no markdown fences, no commentary) with this shape:
 {
   "approach": "project",
-  "goal": "one-line project goal tied to in-scope targets",
+  "goal": "one-line project goal tied to in-scope subjects",
   "objectives": [
     {
       "title": "short title",
@@ -239,7 +243,7 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
         "phase": "reporting",
         "description": (
             "Synthesize a standalone findings/report.md from workspace evidence. "
-            "Do not scan or invent findings."
+            "Do not collect new evidence or invent discoveries."
         ),
         "acceptance_criteria": (
             "findings/report.md written as the sole project report"

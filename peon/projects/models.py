@@ -124,7 +124,7 @@ class RulesOfEngagement(models.Model):
         verbose_name_plural = "Rules of engagement"
 
     def __str__(self) -> str:
-        return f"RoE for {self.project_id}"
+        return f"Rules of Engagement for {self.project_id}"
 
 
 class Objective(models.Model):
@@ -298,6 +298,40 @@ class JobDirective(models.Model):
         return f"{self.kind}:{preview}"
 
 
+class OperatorPrompt(models.Model):
+    """Human-in-the-loop ask: agent/control-plane needs operator input."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="operator_prompts",
+    )
+    job = models.ForeignKey(
+        Job,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="operator_prompts",
+    )
+    question = models.TextField()
+    options = models.JSONField(default=list, blank=True)
+    reply = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["project", "resolved_at"]),
+        ]
+
+    def __str__(self) -> str:
+        preview = (self.question or "")[:48]
+        state = "open" if self.resolved_at is None else "done"
+        return f"[{state}] {preview}"
+
+
 class StreamMessageType(models.TextChoices):
     LOG = "log", "Log"
     STDOUT = "stdout", "Stdout"
@@ -350,7 +384,7 @@ class RuntimeSettings(models.Model):
 
 
 class Finding(models.Model):
-    """Structured observation / vulnerability under a project."""
+    """Engagement discovery about a subject (any asset class) under a project."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(
@@ -419,3 +453,39 @@ class Finding(models.Model):
 
     def __str__(self) -> str:
         return f"FIND-{self.seq}: {self.title}"
+
+
+class AssetGraph(models.Model):
+    """Engagement asset graph (open types / relations).
+
+    Types and relation labels are free-form slugs from producers (skills,
+    findings, operator, tools). Not a closed taxonomy — new node/edge kinds
+    appear in the UI without schema changes.
+    """
+
+    project = models.OneToOneField(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="asset_graph",
+        primary_key=True,
+    )
+    assets = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            'Assets: [{"id","type","value","key","bucket","source","props"?}]. '
+            "type is a free-form slug."
+        ),
+    )
+    relations = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            'Relations: [{"id","rel","source","target","props"?}]. '
+            "rel is a free-form slug."
+        ),
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"AssetGraph<{self.project_id}> {len(self.assets or [])} assets"

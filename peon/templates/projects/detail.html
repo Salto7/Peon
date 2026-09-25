@@ -3,205 +3,240 @@
 {% block title %}{{ project.title }} — Peon{% endblock %}
 {% block body_class %}war-room{% endblock %}
 {% block content %}
-<p class="meta war-back"><a href="{% url 'project_list' %}">← Projects</a></p>
-
-<div class="war-room-shell">
-{# 1 — Mission HUD #}
-<header class="mission-banner war-hud" id="project-status-line">
-  <div class="mission-banner-main">
-    <p class="mission-eyebrow">War room · engagement</p>
-    <h1>{{ project.title }}</h1>
-    <p class="lead">{{ project.summary|default:"(no summary)" }}</p>
-    <div class="mission-meta">
-      <span class="status-pill" id="project-status" data-status="{{ project.status }}">{{ project.status }}</span>
-      <span class="meta" id="project-phase-wrap">Phase <code id="project-phase">{{ ops.project.phase|default:"—" }}</code></span>
-      <code class="mission-id">{{ project.id }}</code>
-    </div>
-  </div>
-  <div class="mission-banner-side">
-    <div class="sandbox-chip" id="sandbox-chip" title="Project sandbox container">
-      <span class="sandbox-label">Sandbox</span>
-      <code id="sandbox-name">{{ ops.project.sandbox.name }}</code>
-      <span class="sandbox-mode status" id="sandbox-mode">{{ ops.project.sandbox.mode }}</span>
-    </div>
-    <div class="progress-block" id="project-progress" aria-label="Project progress">
-      <div class="progress-label meta">
-        <span>Progress</span>
-        <span id="progress-label">
-          {{ ops.project.progress.objectives_done }}/{{ ops.project.progress.objectives_total }} objectives
-          · {{ ops.project.progress.jobs_done }}/{{ ops.project.progress.jobs_total }} agents
-        </span>
-      </div>
-      <div class="progress-track">
-        <div class="progress-fill" id="progress-fill"
-             style="width: {% widthratio ops.project.progress.ratio 1 100 %}%"></div>
+<div class="war-layout" id="war-layout">
+  <aside class="war-side" id="war-side" aria-label="Project navigation">
+    <div class="war-side-top">
+      <a class="war-side-brand" href="{% url 'home' %}" title="Home — {{ project.title }}">
+        <img class="war-side-logo" src="{% static 'img/peon.gif' %}?v=20260925a" width="32" height="32" alt="Peon">
+        <span class="war-side-brand-text">{{ project.title }}</span>
+      </a>
+      <div class="war-side-actions">
+        <button type="button" class="war-side-icon-btn" data-palette-open
+                title="Search (Shift+S)" aria-label="Search">
+          <span aria-hidden="true">⌕</span>
+        </button>
+        <button type="button" class="war-side-icon-btn war-side-toggle" id="war-side-toggle"
+                aria-label="Collapse sidebar" title="Collapse sidebar" aria-expanded="true">
+          <span class="war-side-toggle-icon" aria-hidden="true">‹</span>
+        </button>
       </div>
     </div>
-  </div>
-</header>
+    <nav class="war-side-nav">
+      <a class="war-side-link war-side-link-ext" href="{% url 'project_list' %}" title="Projects">
+        <span class="war-side-ico" aria-hidden="true">▣</span>
+        <span class="war-side-label">Projects</span>
+      </a>
+      <button type="button" class="war-side-link is-active" data-war-nav="dashboard" title="Main dashboard">
+        <span class="war-side-ico" aria-hidden="true">▦</span>
+        <span class="war-side-label">Main dashboard</span>
+      </button>
+      <button type="button" class="war-side-link" data-war-nav="assets" title="Assets">
+        <span class="war-side-ico" aria-hidden="true">◎</span>
+        <span class="war-side-label">Assets</span>
+        {% if roe and roe.candidates %}<span class="war-side-badge">{{ roe.candidates|length }}</span>{% endif %}
+      </button>
+      <button type="button" class="war-side-link" data-war-nav="results" title="Findings &amp; Objectives">
+        <span class="war-side-ico" aria-hidden="true">≡</span>
+        <span class="war-side-label">Findings &amp; Objectives</span>
+        <span class="war-side-badge">{{ finding_counts.open }}</span>
+      </button>
+      <button type="button" class="war-side-link" data-war-nav="attack" title="Attack surface">
+        <span class="war-side-ico" aria-hidden="true">⬡</span>
+        <span class="war-side-label">Attack surface</span>
+      </button>
+      <button type="button" class="war-side-link" data-war-nav="reports" title="Report hub">
+        <span class="war-side-ico" aria-hidden="true">▤</span>
+        <span class="war-side-label">Report hub</span>
+      </button>
+      <button type="button" class="war-side-link" data-war-nav="settings" title="Project settings">
+        <span class="war-side-ico" aria-hidden="true">⚙</span>
+        <span class="war-side-label">Project settings</span>
+      </button>
+    </nav>
+  </aside>
 
-{# 2 — Controls #}
-<div class="bar project-control-bar war-controls" id="project-control-bar" data-project-status="{{ project.status }}">
-  {% if project.status == "paused" %}
-  <form method="post" action="{% url 'project_control' project.pk %}" data-control="resume">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="resume">
-    <button type="submit" class="secondary">Resume project</button>
-  </form>
-  {% elif project.status == "active" %}
-  <form method="post" action="{% url 'project_control' project.pk %}" data-control="pause">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="pause">
-    <button type="submit" class="secondary">Pause project</button>
-  </form>
-  {% endif %}
-  {% if project.status != "cancelled" %}
-  <form method="post" action="{% url 'project_control' project.pk %}" data-control="run-next">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="run_next">
-    <button type="submit" class="secondary" id="run-next-objective"
-            {% if not has_next_objective %}disabled title="No ready next objective"{% endif %}>
-      Run next objective
-    </button>
-  </form>
-  <form method="post" action="{% url 'project_control' project.pk %}">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="replan">
-    <button type="submit" class="secondary">Replan</button>
-  </form>
-  {% endif %}
-  <form method="post" action="{% url 'project_control' project.pk %}"
-        onsubmit="return confirm('Delete this project and its Docker sandbox (if any)?');">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="delete">
-    <button type="submit">Delete project</button>
-  </form>
-</div>
-
-{# 3 — Skills used #}
-<section class="war-zone console-skills" aria-labelledby="skills-heading">
-  <h4 id="skills-heading">Skills used by agents</h4>
-  <div id="skills-used" class="skill-card-grid">
-    {% for s in ops.skills_used %}
-    <article class="skill-card">
-      <div class="skill-card-name">{{ s.name }}</div>
-      {% if s.category %}<div class="skill-card-cat">{{ s.category }}</div>{% endif %}
-      {% if s.description %}<div class="skill-card-desc">{{ s.description }}</div>{% endif %}
-      {% if s.tags %}
-      <div class="skill-card-tags">{% for t in s.tags %}<span class="chip">{{ t }}</span>{% endfor %}</div>
-      {% endif %}
-    </article>
-    {% empty %}
-    <span class="meta empty-skills">No skills queued yet.</span>
-    {% endfor %}
-  </div>
-</section>
-
-{# 4 — Rules of engagement #}
-<section class="war-zone stack-forms" id="roe" aria-labelledby="roe-heading">
-  <h2 id="roe-heading">Rules of engagement</h2>
-  <form method="post" action="{% url 'project_roe' project.pk %}">
-    {% csrf_token %}
-    <input type="hidden" name="roe_action" value="save">
-    <label for="seed">Seed / intent (optional — company name, person, sample path…)</label>
-    <textarea id="seed" name="seed" placeholder="domain:acme.com &#10;asset: admon.acme.com &#10;person:Alice &#10; other: ACME">{% if roe %}{% for t in roe.seed %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
-{% endfor %}{% endif %}</textarea>
-    <label for="in_scope">In-scope targets (values authorize; optional type:value hints)</label>
-    <textarea id="in_scope" name="in_scope" placeholder="8.8.8.8&#10;ip:8.8.8.8&#10;person:Alice&#10;person:Bob">{% if roe %}{% for t in roe.in_scope %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
-{% endfor %}{% endif %}</textarea>
-    <label for="exclusions">Exclusions (same typing)</label>
-    <textarea id="exclusions" name="exclusions">{% if roe %}{% for t in roe.exclusions %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
-{% endfor %}{% endif %}</textarea>
-    <label for="authorization">Authorization note</label>
-    <input id="authorization" name="authorization" value="{% if roe %}{{ roe.authorization_note }}{% endif %}">
-    <button type="submit">Save RoE</button>
-  </form>
-  {% if roe and roe.candidates %}
-  <form method="post" action="{% url 'project_roe' project.pk %}" class="roe-candidates">
-    {% csrf_token %}
-    <input type="hidden" name="roe_action" value="promote">
-    <h3 class="roe-candidates-title">Candidates</h3>
-    <p class="meta roe-candidates-hint">
-      Assets discovered during the engagement (from findings / scan text). They are
-      <strong>not</strong> authorized until you promote them into in-scope.
-      Promote moves the checked rows into <em>In-scope targets</em> and removes them from this list.
-    </p>
-    <ul class="roe-candidates-list">
-      {% for t in roe.candidates %}
-      <li class="roe-candidate-row">
-        <label class="roe-candidate-label">
-          <input type="checkbox" name="promote_idx" value="{{ forloop.counter0 }}">
-          <span class="roe-candidate-value">
-            <code>{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}</code>
+  <div class="war-main">
+    <div class="war-pane is-active" data-war-pane="dashboard" id="war-pane-dashboard">
+      <div class="war-room-shell">
+{# 1 — Mission HUD + controls #}
+<section class="war-zone war-dash" id="project-status-line" aria-labelledby="mission-heading">
+  <header class="mission-banner war-hud">
+    <div class="mission-banner-main">
+      <p class="mission-eyebrow">War room · engagement</p>
+      <h1 id="mission-heading">{{ project.title }}</h1>
+      <p class="lead">{{ project.summary|default:"(no summary)" }}</p>
+      <div class="mission-meta">
+        <span class="status-pill" id="project-status" data-status="{{ project.status }}">{{ project.status }}</span>
+        <span class="meta" id="project-phase-wrap">Phase <code id="project-phase">{{ ops.project.phase|default:"—" }}</code></span>
+        <code class="mission-id">{{ project.id }}</code>
+      </div>
+    </div>
+    <div class="mission-banner-side">
+      <div class="sandbox-chip" id="sandbox-chip" title="Project sandbox container">
+        <span class="sandbox-label">Sandbox</span>
+        <code id="sandbox-name">{{ ops.project.sandbox.name }}</code>
+        <span class="sandbox-mode status" id="sandbox-mode">{{ ops.project.sandbox.mode }}</span>
+      </div>
+      <div class="progress-block" id="project-progress" aria-label="Project progress">
+        <div class="progress-label meta">
+          <span>Progress</span>
+          <span id="progress-label">
+            {{ ops.project.progress.objectives_done }}/{{ ops.project.progress.objectives_total }} objectives
+            · {{ ops.project.progress.jobs_done }}/{{ ops.project.progress.jobs_total }} agents
           </span>
-        </label>
-      </li>
-      {% endfor %}
-    </ul>
-    <div class="roe-candidates-actions">
-      <button type="submit" class="secondary">Promote selected</button>
-      <button type="submit" name="promote_all" value="1" class="secondary">Promote all</button>
-    </div>
-  </form>
-  {% endif %}
-</section>
-
-{# 4b — Project files (inputs/ — this project only) #}
-<section class="war-zone project-files-panel" id="project-files"
-         aria-labelledby="project-files-heading"
-         data-inputs-url="{% url 'project_inputs' project.pk %}"
-         data-inputs-delete-url="{% url 'project_input_delete' project.pk %}">
-  <h2 id="project-files-heading">Project files <span class="panel-hint">inputs · this project only</span></h2>
-  <p class="meta upload-disclaimer">
-    Peon does not validate file types or content. Upload files at your own responsibility.
-    Files stay under this project's workspace and are not shared with other projects.
-  </p>
-  <ul class="project-files-list" id="project-files-list">
-    {% for f in project_inputs %}
-    <li class="project-file-row" data-name="{{ f.name }}">
-      <div class="project-file-meta">
-        <code class="project-file-name">{{ f.name }}</code>
-        <span class="meta">{{ f.size }} B · <code>{{ f.sandbox_path }}</code></span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" id="progress-fill"
+               style="width: {% widthratio ops.project.progress.ratio 1 100 %}%"></div>
+        </div>
       </div>
-      <button type="button" class="secondary project-file-remove" data-name="{{ f.name }}"
-              aria-label="Remove {{ f.name }}">Remove</button>
-    </li>
-    {% empty %}
-    <li class="meta project-files-empty" id="project-files-empty">No files uploaded yet — use + in Live activity.</li>
-    {% endfor %}
-  </ul>
+      <div class="banner-skills" aria-label="Skills used by agents">
+        <span class="banner-skills-label">Skills</span>
+        <div id="skills-used" class="skills-used-list">
+          {% for s in ops.skills_used %}
+          <span class="skills-used-chip" tabindex="0">
+            <span class="skills-used-name">{{ s.name }}</span>
+            <span class="skills-used-tip" role="tooltip">
+              <strong class="skills-used-tip-name">{{ s.name }}</strong>
+              {% if s.description %}
+              <span class="skills-used-tip-desc">{{ s.description }}</span>
+              {% endif %}
+              {% if s.tags %}
+              <span class="skills-used-tip-tags">
+                {% for t in s.tags %}<span class="chip">{{ t }}</span>{% endfor %}
+              </span>
+              {% endif %}
+            </span>
+          </span>
+          {% empty %}
+          <span class="meta empty-skills">None yet</span>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="bar project-control-bar war-controls" id="project-control-bar" data-project-status="{{ project.status }}">
+    {% if project.status == "paused" %}
+    <form method="post" action="{% url 'project_control' project.pk %}" data-control="resume">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="resume">
+      <button type="submit" class="secondary">Resume project</button>
+    </form>
+    {% elif project.status == "active" %}
+    <form method="post" action="{% url 'project_control' project.pk %}" data-control="pause">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="pause">
+      <button type="submit" class="secondary">Pause project</button>
+    </form>
+    {% endif %}
+    {% if project.status != "cancelled" %}
+    <form method="post" action="{% url 'project_control' project.pk %}" data-control="run-next">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="run_next">
+      <button type="submit" class="secondary" id="run-next-objective"
+              {% if not has_next_objective %}disabled title="No ready next objective"{% endif %}>
+        Run next objective
+      </button>
+    </form>
+    <form method="post" action="{% url 'project_control' project.pk %}">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="replan">
+      <button type="submit" class="secondary">Replan</button>
+    </form>
+    {% endif %}
+    <form method="post" action="{% url 'project_control' project.pk %}"
+          onsubmit="return confirm('Delete this project and its Docker sandbox (if any)?');">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="delete">
+      <button type="submit">Delete project</button>
+    </form>
+  </div>
 </section>
 
-{# 5 — Agent graph #}
-<section class="war-zone console-graph" data-expandable aria-labelledby="agents-heading">
-  <h2 id="agents-heading">Agent graph <span class="panel-hint">select a node</span></h2>
+{# 3 — Agent graph #}
+<section class="war-zone console-graph" data-expandable data-collapsible data-collapse-compact
+         data-collapse-open aria-labelledby="agents-heading">
+  <div class="workspace-header">
+    <h2 id="agents-heading">Agent graph <span class="panel-hint">select a node</span></h2>
+  </div>
   <div id="agents-list" class="agent-tree" data-project-pk="{{ project.pk }}">
     <p class="meta agents-empty">Loading agents…</p>
   </div>
 </section>
 
-{# 6 — Context + live feed #}
+{# 6 — Context + Activity | Chat #}
 <div class="console-split war-ops" id="console-ops-row">
-  <section class="war-zone console-context" data-expandable aria-labelledby="context-heading" id="agent-context">
-    <h2 id="context-heading">Agent context <span class="panel-hint">selected</span></h2>
-    <div id="context-body" class="context-body">
-      <p class="meta">Select an agent in the graph.</p>
+  <section class="war-zone" data-expandable data-collapsible data-tabset="ops" data-pk="{{ project.pk }}"
+           id="ops-card" aria-labelledby="ops-heading">
+    <div class="workspace-header">
+      <h2 id="ops-heading">Ops <span class="panel-hint">live</span></h2>
+      <div class="workspace-tabs" role="tablist" aria-label="Context and activity">
+        <button type="button" class="workspace-tab is-active" role="tab" aria-selected="true"
+                data-workspace-tab="context" id="tab-context">Context</button>
+        <button type="button" class="workspace-tab" role="tab" aria-selected="false"
+                data-workspace-tab="activity" id="tab-activity">Activity</button>
+      </div>
     </div>
-    <div id="context-actions" class="job-actions context-actions"></div>
+
+    <div class="workspace-pane is-active" data-workspace-pane="context" role="tabpanel"
+         id="agent-context">
+      <div id="context-body" class="context-body">
+        <p class="meta">Select an agent in the graph.</p>
+      </div>
+      <div id="context-actions" class="job-actions context-actions"></div>
+    </div>
+
+    <div class="workspace-pane" data-workspace-pane="activity" role="tabpanel" hidden>
+      <div class="feed-toolbar">
+        <span class="meta" id="stream-heading">Live activity</span>
+        <div class="feed-filters" id="feed-filters" role="group" aria-label="Filter activity">
+          <button type="button" class="feed-filter is-active" data-feed-filter="all">All</button>
+          <button type="button" class="feed-filter" data-feed-filter="tool">Tools</button>
+          <button type="button" class="feed-filter" data-feed-filter="find">Findings</button>
+          <button type="button" class="feed-filter" data-feed-filter="err">Errors</button>
+          <button type="button" class="feed-filter" data-feed-filter="steer">Steer</button>
+          <button type="button" class="feed-filter" data-feed-filter="shell">Shell</button>
+        </div>
+      </div>
+      <div id="project-stream-log" class="stream-log" aria-live="polite">
+        {% if not stream_bootstrap or stream_bootstrap == "[]" %}
+          <p class="empty">Waiting for worker / skill stream lines…</p>
+        {% endif %}
+      </div>
+    </div>
   </section>
 
-  <section class="war-zone console-feed feed-panel" data-expandable aria-labelledby="stream-heading">
-    <h2 id="stream-heading">Live activity <span class="panel-hint">instruct · 1s</span></h2>
-    <div id="project-stream-log" class="stream-log" aria-live="polite">
-      {% if not stream_bootstrap or stream_bootstrap == "[]" %}
-        <p class="empty">Waiting for worker / skill stream lines…</p>
-      {% endif %}
+  <section class="war-zone war-chat-card" data-expandable data-collapsible id="war-chat"
+           aria-labelledby="chat-heading">
+    <div class="workspace-header">
+      <h2 id="chat-heading">Chat <span class="panel-hint">console</span></h2>
     </div>
+
+    <div id="hitl-banner" class="hitl-banner" hidden>
+      <div class="hitl-banner-main">
+        <span class="stream-badge stream-badge-need">NEED</span>
+        <strong>Operator input needed</strong>
+        <p class="hitl-question" id="hitl-question"></p>
+      </div>
+      <button type="button" class="secondary" id="hitl-answer-btn">Answer</button>
+    </div>
+
+    <div id="chat-thread" class="chat-thread" aria-live="polite">
+      <p class="chat-thread-empty meta">Ask anything about the project — Chat routes answers, instructions, replans, or stop.</p>
+    </div>
+
     {% if project.status != "cancelled" %}
     <form class="project-chat-composer" id="project-chat-form"
           data-chat-url="{% url 'project_chat' project.pk %}"
           data-inputs-url="{% url 'project_inputs' project.pk %}"
           {% if project.status == "paused" %}data-disabled="1"{% endif %}>
+      <div class="chat-mode-row" role="group" aria-label="Operator actions">
+        <button type="button" class="chat-mode is-active" data-chat-mode="chat">Chat</button>
+        <button type="button" class="chat-mode" data-chat-mode="instruct">Instruct</button>
+        <button type="button" class="chat-mode" data-chat-mode="replan">Replan</button>
+        <button type="button" class="chat-mode chat-mode-stop" data-chat-mode="stop">Stop</button>
+      </div>
       <div class="project-chat-shell">
         <button type="button" class="project-chat-plus" id="project-chat-plus"
                 title="Attach file" aria-label="Attach file">
@@ -210,186 +245,359 @@
         <input type="file" id="project-chat-file" name="uploads" multiple class="visually-hidden"
                tabindex="-1" aria-hidden="true">
         <textarea id="project-chat-input" rows="1"
-                  placeholder="Replan project — describe what to do next…"
-                  aria-label="Project replan instruction"
+                  placeholder="Ask about the project, or tell agents what to do…"
+                  aria-label="Chat message"
                   {% if project.status == "paused" %}disabled{% endif %}></textarea>
         <button type="submit" class="secondary project-chat-send" id="project-chat-send"
-                {% if project.status == "paused" %}disabled{% endif %}>Replan</button>
+                {% if project.status == "paused" %}disabled{% endif %}>Send</button>
       </div>
     </form>
-    <p class="meta project-chat-hint" id="project-chat-hint">
-      {% if project.status == "paused" %}
-      Resume the project to replan from chat
-      {% else %}
-      + attaches files · Enter replans the whole project from your prompt (not a single-job re-run)
-      {% endif %}
-    </p>
-    {% endif %}
-  </section>
-</div>
-
-{# 7 — Findings + objectives #}
-<div class="console-split war-results" id="console-results-row">
-  <section class="war-zone findings-panel" data-expandable id="findings" aria-labelledby="findings-heading"
-           data-findings-url="{% url 'project_findings_json' project.pk %}">
-    <div class="page-header tight">
-      <h2 id="findings-heading">
-        Findings
-        <span class="panel-hint" id="findings-counts">
-          {{ finding_counts.open }} open · {{ finding_counts.confirmed }} confirmed · {{ finding_counts.all }} total
-        </span>
-      </h2>
-      <form class="filter-bar" id="findings-filter" data-no-reload>
-        <label class="meta" for="finding_status">Filter status</label>
-        <select id="finding_status" name="finding_status">
-          <option value="all" {% if finding_status == "all" %}selected{% endif %}>All</option>
-          {% for value, label in finding_statuses %}
-          <option value="{{ value }}" {% if finding_status == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-        <label class="meta" for="finding_severity">Severity</label>
-        <select id="finding_severity" name="finding_severity">
-          <option value="all" {% if finding_severity == "all" %}selected{% endif %}>All</option>
-          {% for value, label in finding_severities %}
-          <option value="{{ value }}" {% if finding_severity == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-      </form>
-    </div>
-    <div class="table-scroll" id="findings-table-wrap">
-      <table class="findings-table">
-        <thead>
-          <tr>
-            <th>#</th><th>Title</th><th>Sev</th><th>Kind</th><th>Asset</th><th>Status</th>
-          </tr>
-        </thead>
-        <tbody id="findings-body" data-project-pk="{{ project.pk }}">
-        {% for f in findings %}
-          <tr data-finding-id="{{ f.id }}" data-status="{{ f.status }}" data-severity="{{ f.severity }}">
-            <td class="meta">FIND-{{ f.seq }}</td>
-            <td>
-              <strong>{{ f.title }}</strong>
-              {% if f.host %}<div class="meta">{{ f.host }}{% if f.port %}:{{ f.port }}{% endif %}</div>{% endif %}
-              {% if f.evidence %}<div class="meta finding-evidence">{{ f.evidence|truncatechars:120 }}</div>{% endif %}
-            </td>
-            <td><span class="sev-pill" data-severity="{{ f.severity }}">{{ f.severity }}</span></td>
-            <td class="meta"><code>{{ f.kind }}</code></td>
-            <td class="meta">{% if f.asset_type %}<code>{{ f.asset_type }}</code>{% else %}—{% endif %}</td>
-            <td class="finding-status-cell">
-              <select class="finding-status-select" aria-label="Finding status"
-                      data-finding-id="{{ f.id }}" data-prev="{{ f.status }}">
-                {% for value, label in finding_statuses %}
-                <option value="{{ value }}" {% if f.status == value %}selected{% endif %}>{{ label }}</option>
-                {% endfor %}
-              </select>
-            </td>
-          </tr>
-        {% empty %}
-          <tr class="findings-empty-row"><td colspan="6" class="meta findings-empty">No findings yet — agents write structured findings here.</td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="war-zone objectives-panel" data-expandable id="objectives-panel" aria-labelledby="objectives-heading">
-    <h2 id="objectives-heading">
-      Objectives
-      <span class="panel-hint"><span id="objectives-count">{{ objectives|length }}</span> planned</span>
-    </h2>
-    {% if objectives %}
-    <div class="table-scroll">
-      <table>
-        <thead><tr><th>#</th><th>Title</th><th>Phase</th><th>Skill</th><th>Status</th></tr></thead>
-        <tbody id="objectives-body">
-        {% for o in objectives %}
-          <tr data-objective-id="{{ o.id }}">
-            <td class="meta">{{ o.seq }}</td>
-            <td>{{ o.title }}</td>
-            <td class="meta">{{ o.phase }}</td>
-            <td><code>{{ o.skill_suggestion|default:"—" }}</code></td>
-            <td class="meta status" data-objective-status>{{ o.status }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
     {% else %}
-    <p class="meta">None yet — planning runs automatically when the project is created.</p>
+    <p class="meta project-chat-hint">Project cancelled — chat console unavailable.</p>
     {% endif %}
   </section>
 </div>
 
-{# 8 — Report hub #}
-<section class="war-zone" id="reports" aria-labelledby="reports-heading">
-  <div class="page-header tight">
-    <h2 id="reports-heading">Report hub <span class="panel-hint">workspace deliverables</span></h2>
-    <span id="reports-final-cta">
-    {% for r in reports %}
-      {% if r.kind == "final" %}
-      <a class="btn" href="{% url 'project_report_view' project.id r.relative_path %}">Open final report</a>
-      {% endif %}
-    {% endfor %}
-    </span>
+{# 7 — Terminal #}
+<section class="war-zone console-workspace" data-expandable data-collapsible data-collapse-compact
+         data-collapse-open
+         id="console-workspace" data-pk="{{ project.pk }}"
+         aria-labelledby="shell-heading">
+  <div class="workspace-header">
+    <h2 id="shell-heading">Shell <span class="panel-hint">sandbox</span></h2>
+    <div class="terminal-actions war-card-actions">
+      <span class="meta" id="terminal-status">Ready</span>
+      <button type="button" class="secondary" id="terminal-open">Open shell</button>
+      <button type="button" class="secondary" id="terminal-close">Disconnect</button>
+    </div>
   </div>
-  <div id="reports-body-wrap">
-  {% if reports %}
-  <table>
-    <thead>
-      <tr><th>Report</th><th>Type</th><th>Modified</th><th>Size</th><th></th></tr>
-    </thead>
-    <tbody id="reports-body">
-    {% for r in reports %}
-      <tr {% if r.kind == "final" %}class="report-final"{% endif %} data-report-path="{{ r.relative_path }}">
-        <td>
-          {% if r.is_markdown %}
-          <a href="{% url 'project_report_view' project.id r.relative_path %}">{{ r.display_name }}</a>
-          {% else %}
-          <a href="{% url 'project_report_file' project.id r.relative_path %}?view=1" target="_blank" rel="noopener">{{ r.display_name }}</a>
-          {% endif %}
-          <div class="meta"><code>{{ r.relative_path }}</code></div>
-        </td>
-        <td class="meta status">
-          {% if r.kind == "final" %}Final{% elif r.kind == "plan" %}Plan{% else %}Finding{% endif %}
-        </td>
-        <td class="meta">{% if r.modified_at %}{{ r.modified_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
-        <td class="meta">{{ r.size }} B</td>
-        <td>
-          {% if r.is_markdown %}
-          <a class="btn secondary" href="{% url 'project_report_view' project.id r.relative_path %}">View</a>
-          {% endif %}
-          <a class="btn secondary" href="{% url 'project_report_file' project.id r.relative_path %}">Download</a>
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="meta" id="reports-empty">No reports yet — the analyzer writes <code>findings/report.md</code> when reporting runs. False positives are omitted from the report.</p>
-  <table hidden id="reports-table-template">
-    <thead>
-      <tr><th>Report</th><th>Type</th><th>Modified</th><th>Size</th><th></th></tr>
-    </thead>
-    <tbody id="reports-body"></tbody>
-  </table>
-  {% endif %}
-  </div>
+
+  <div id="terminal-host" class="terminal-host" tabindex="0"
+       aria-label="Sandbox terminal"></div>
+  <p class="meta terminal-hint">
+    This is a PTY shell, if connect issues arise, disconnect and "open shell" again
+  </p>
 </section>
+
+      </div>
+    </div>
+    <div class="war-pane" data-war-pane="results" id="war-pane-results" hidden>
+      <div class="war-room-shell">
+        <header class="page-header tight war-pane-intro">
+          <div>
+            <h1>Findings &amp; Objectives</h1>
+            <p class="lead">Triage engagement discoveries about subjects, and track planned objectives.</p>
+          </div>
+        </header>
+
+        <section class="war-zone findings-panel" id="findings"
+                 data-findings-url="{% url 'project_findings_json' project.pk %}"
+                 aria-labelledby="findings-heading">
+          <div class="workspace-header">
+            <h2 id="findings-heading">Findings</h2>
+            <span class="panel-hint" id="findings-counts">
+              {{ finding_counts.open }} open · {{ finding_counts.confirmed }} confirmed · {{ finding_counts.all }} total
+            </span>
+          </div>
+          <form class="filter-bar" id="findings-filter" data-no-reload>
+            <label class="meta" for="finding_status">Status</label>
+            <select id="finding_status" name="finding_status">
+              <option value="all" {% if finding_status == "all" %}selected{% endif %}>All</option>
+              {% for value, label in finding_statuses %}
+              <option value="{{ value }}" {% if finding_status == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+            <label class="meta" for="finding_severity">Severity</label>
+            <select id="finding_severity" name="finding_severity">
+              <option value="all" {% if finding_severity == "all" %}selected{% endif %}>All</option>
+              {% for value, label in finding_severities %}
+              <option value="{{ value }}" {% if finding_severity == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </form>
+          <div class="findings-board" id="findings-body" data-project-pk="{{ project.pk }}">
+          {% for f in findings %}
+            <article class="finding-card" data-finding-id="{{ f.id }}"
+                     data-status="{{ f.status }}" data-severity="{{ f.severity }}">
+              <div class="finding-card-top">
+                <span class="finding-seq meta">FIND-{{ f.seq }}</span>
+                <span class="sev-pill" data-severity="{{ f.severity }}" aria-label="Severity {{ f.severity }}">{{ f.severity }}</span>
+                <div class="status-hover" data-finding-id="{{ f.id }}" data-prev="{{ f.status }}">
+                  <button type="button" class="status-pill status-hover-trigger"
+                          data-status="{{ f.status }}" aria-haspopup="listbox"
+                          aria-label="Finding status {{ f.status }}">{{ f.status }}</button>
+                  <div class="status-hover-menu" role="listbox">
+                    {% for value, label in finding_statuses %}
+                    <button type="button" class="status-hover-option" role="option"
+                            data-status="{{ value }}"
+                            {% if f.status == value %}aria-selected="true"{% endif %}>
+                      <span class="status-pill" data-status="{{ value }}">{{ label }}</span>
+                    </button>
+                    {% endfor %}
+                  </div>
+                </div>
+              </div>
+              <h3 class="finding-card-title">{{ f.title }}</h3>
+              {% if f.host %}<p class="meta finding-host">{{ f.host }}{% if f.port %}:{{ f.port }}{% endif %}</p>{% endif %}
+              {% if f.evidence %}<p class="meta finding-evidence">{{ f.evidence|truncatechars:140 }}</p>{% endif %}
+              <div class="finding-card-meta">
+                <code>{{ f.kind }}</code>
+                {% if f.asset_type %}<code>{{ f.asset_type }}</code>{% endif %}
+              </div>
+            </article>
+          {% empty %}
+            <p class="meta findings-empty">No findings yet — agents record discoveries about subjects here (with evidence).</p>
+          {% endfor %}
+          </div>
+        </section>
+
+        <section class="war-zone objectives-panel" id="objectives-panel" aria-labelledby="objectives-heading">
+          <div class="workspace-header">
+            <h2 id="objectives-heading">Objectives</h2>
+            <span class="panel-hint"><span id="objectives-count">{{ objectives|length }}</span> planned</span>
+          </div>
+          {% if objectives %}
+          <div class="objectives-board" id="objectives-body">
+          {% for o in objectives %}
+            <article class="objective-card" data-objective-id="{{ o.id }}">
+              <div class="objective-card-top">
+                <span class="meta objective-seq">#{{ o.seq }}</span>
+                <span class="status-pill" data-objective-status data-status="{{ o.status }}">{{ o.status }}</span>
+              </div>
+              <h3 class="objective-card-title">{{ o.title }}</h3>
+              <div class="objective-card-meta">
+                <span class="meta">{{ o.phase }}</span>
+                <code>{{ o.skill_suggestion|default:"—" }}</code>
+              </div>
+            </article>
+          {% endfor %}
+          </div>
+          {% else %}
+          <p class="meta">None yet — planning runs automatically when the project is created.</p>
+          {% endif %}
+        </section>
+      </div>
+    </div>
+    <div class="war-pane" data-war-pane="assets" id="war-pane-assets" hidden>
+      <div class="war-room-shell">
+        <header class="page-header tight">
+          <div>
+            <h1>Assets</h1>
+            <p class="lead">Rules of Engagement and discovered candidates awaiting promotion.</p>
+          </div>
+        </header>
+
+        <section class="war-zone stack-forms" id="roe" aria-labelledby="roe-card-heading">
+          <div class="workspace-header">
+            <h2 id="roe-card-heading">Rules of Engagement</h2>
+          </div>
+          <form method="post" action="{% url 'project_roe' project.pk %}">
+            {% csrf_token %}
+            <input type="hidden" name="roe_action" value="save">
+            <label for="seed">Seed / intent (optional — company name, person, sample path…)</label>
+            <textarea id="seed" name="seed" placeholder="domain:acme.com &#10;asset: admon.acme.com &#10;person:Alice &#10; other: ACME">{% if roe %}{% for t in roe.seed %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
+{% endfor %}{% endif %}</textarea>
+            <label for="in_scope">In-scope targets (values authorize; optional type:value hints)</label>
+            <textarea id="in_scope" name="in_scope" placeholder="8.8.8.8&#10;ip:8.8.8.8&#10;person:Alice&#10;person:Bob">{% if roe %}{% for t in roe.in_scope %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
+{% endfor %}{% endif %}</textarea>
+            <label for="exclusions">Exclusions (same typing)</label>
+            <textarea id="exclusions" name="exclusions">{% if roe %}{% for t in roe.exclusions %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
+{% endfor %}{% endif %}</textarea>
+            <label for="authorization">Authorization note</label>
+            <input id="authorization" name="authorization" value="{% if roe %}{{ roe.authorization_note }}{% endif %}">
+            <button type="submit">Save Rules of Engagement</button>
+          </form>
+        </section>
+
+        <section class="war-zone" id="roe-candidates-card" aria-labelledby="candidates-heading">
+          <div class="workspace-header">
+            <h2 id="candidates-heading">Candidates{% if roe and roe.candidates %} · {{ roe.candidates|length }}{% endif %}</h2>
+          </div>
+          {% if roe and roe.candidates %}
+          <form method="post" action="{% url 'project_roe' project.pk %}" class="roe-candidates">
+            {% csrf_token %}
+            <input type="hidden" name="roe_action" value="promote">
+            <p class="meta roe-candidates-hint">
+              Assets discovered during the engagement (from findings / workspace). They are
+              <strong>not</strong> authorized until you promote them into in-scope.
+              Promote moves the checked rows into <em>In-scope targets</em> and removes them from this list.
+            </p>
+            <ul class="roe-candidates-list">
+              {% for t in roe.candidates %}
+              <li class="roe-candidate-row">
+                <label class="roe-candidate-label">
+                  <input type="checkbox" name="promote_idx" value="{{ forloop.counter0 }}">
+                  <span class="roe-candidate-value">
+                    <code>{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}</code>
+                  </span>
+                </label>
+              </li>
+              {% endfor %}
+            </ul>
+            <div class="roe-candidates-actions">
+              <button type="submit" class="secondary">Promote selected</button>
+              <button type="submit" name="promote_all" value="1" class="secondary">Promote all</button>
+            </div>
+          </form>
+          {% else %}
+          <p class="meta">No candidates yet — discovered assets appear here for promotion into in-scope.</p>
+          {% endif %}
+        </section>
+      </div>
+    </div>
+    <div class="war-pane" data-war-pane="attack" id="war-pane-attack" hidden>
+      <div class="war-room-shell">
+        <header class="page-header tight">
+          <div>
+            <h1>Attack surface</h1>
+            <p class="lead">Open asset graph — any producer type or relation (hosts, files, malware, custom). Rules of Engagement buckets authorize; skills can add new node/edge kinds without UI changes.</p>
+          </div>
+        </header>
+        <section class="war-zone attack-surface-card" aria-labelledby="attack-heading">
+          <div class="workspace-header">
+            <h2 id="attack-heading">Asset graph</h2>
+            <div id="attack-legend" class="attack-legend meta" aria-live="polite"></div>
+          </div>
+          <div id="attack-surface-host" class="attack-surface-host" role="img"
+               aria-label="Engagement asset graph"></div>
+        </section>
+      </div>
+    </div>
+    <div class="war-pane" data-war-pane="reports" id="war-pane-reports" hidden>
+      <div class="war-room-shell">
+        <header class="page-header tight">
+          <div>
+            <h1>Report hub</h1>
+            <p class="lead">Generated workspace reports and files uploaded to this project.</p>
+          </div>
+        </header>
+        <section class="war-zone" id="reports" aria-labelledby="reports-heading">
+          <div class="workspace-header">
+            <h2 id="reports-heading">Generated reports</h2>
+          </div>
+          <div class="page-header tight">
+      <span class="panel-hint">workspace deliverables</span>
+      <span id="reports-final-cta">
+      {% for r in reports %}
+        {% if r.kind == "final" %}
+        <a class="btn" href="{% url 'project_report_view' project.id r.relative_path %}">Open final report</a>
+        {% endif %}
+      {% endfor %}
+      </span>
+    </div>
+    <div id="reports-body-wrap">
+    {% if reports %}
+    <table>
+      <thead>
+        <tr><th>Report</th><th>Type</th><th>Modified</th><th>Size</th><th></th></tr>
+      </thead>
+      <tbody id="reports-body">
+      {% for r in reports %}
+        <tr {% if r.kind == "final" %}class="report-final"{% endif %} data-report-path="{{ r.relative_path }}">
+          <td>
+            {% if r.is_markdown %}
+            <a href="{% url 'project_report_view' project.id r.relative_path %}">{{ r.display_name }}</a>
+            {% else %}
+            <a href="{% url 'project_report_file' project.id r.relative_path %}?view=1" target="_blank" rel="noopener">{{ r.display_name }}</a>
+            {% endif %}
+            <div class="meta"><code>{{ r.relative_path }}</code></div>
+          </td>
+          <td class="meta status">
+            {% if r.kind == "final" %}Final{% elif r.kind == "plan" %}Plan{% else %}Finding{% endif %}
+          </td>
+          <td class="meta">{% if r.modified_at %}{{ r.modified_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
+          <td class="meta">{{ r.size }} B</td>
+          <td>
+            {% if r.is_markdown %}
+            <a class="btn secondary" href="{% url 'project_report_view' project.id r.relative_path %}">View</a>
+            {% endif %}
+            <a class="btn secondary" href="{% url 'project_report_file' project.id r.relative_path %}">Download</a>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="meta" id="reports-empty">No reports yet — the analyzer writes <code>findings/report.md</code> when reporting runs. False positives are omitted from the report.</p>
+    {% endif %}
+    </div>
+        </section>
+        <section class="war-zone" id="project-files"
+                 data-inputs-url="{% url 'project_inputs' project.pk %}"
+                 data-inputs-delete-url="{% url 'project_input_delete' project.pk %}"
+                 aria-labelledby="files-heading">
+          <div class="workspace-header">
+            <h2 id="files-heading">Uploaded files</h2>
+          </div>
+          <p class="meta upload-disclaimer">
+      Peon does not validate file types or content. Upload via Chat +. Files stay under this
+      project's workspace and are not shared with other projects.
+    </p>
+    <ul class="project-files-list" id="project-files-list">
+      {% for f in project_inputs %}
+      <li class="project-file-row" data-name="{{ f.name }}">
+        <div class="project-file-meta">
+          <code class="project-file-name">{{ f.name }}</code>
+          <span class="meta">{{ f.size }} B · <code>{{ f.sandbox_path }}</code></span>
+        </div>
+        <button type="button" class="secondary project-file-remove" data-name="{{ f.name }}"
+                aria-label="Remove {{ f.name }}">Remove</button>
+      </li>
+      {% empty %}
+      <li class="meta project-files-empty" id="project-files-empty">No files uploaded yet — use + in Chat.</li>
+      {% endfor %}
+    </ul>
+        </section>
+      </div>
+    </div>
+    <div class="war-pane" data-war-pane="settings" id="war-pane-settings" hidden>
+      <div class="war-room-shell">
+        <header class="page-header">
+          <div>
+            <h1>Project settings</h1>
+            <p class="lead">Per-project settings will land here.</p>
+          </div>
+        </header>
+        <section class="war-zone">
+          <p class="meta">Nothing to configure yet.</p>
+        </section>
+      </div>
+    </div>
+  </div>
 </div>
+
+{{ attack_surface|json_script:"attack-surface-data" }}
 
 {% csrf_token %}
-<a href="#findings" hidden data-palette-extra data-palette-id="page-findings"
+<a href="#results" hidden data-palette-extra data-palette-id="page-findings"
    data-palette-label="Findings board" data-palette-group="Page" data-palette-keywords="status triage"></a>
 <a href="#reports" hidden data-palette-extra data-palette-id="page-reports"
    data-palette-label="Report hub" data-palette-group="Page" data-palette-keywords="report md"></a>
-<a href="#roe" hidden data-palette-extra data-palette-id="page-roe"
-   data-palette-label="Rules of engagement" data-palette-group="Page" data-palette-keywords="scope seed"></a>
-<a href="#objectives-panel" hidden data-palette-extra data-palette-id="page-objectives"
+<a href="#assets" hidden data-palette-extra data-palette-id="page-assets"
+   data-palette-label="Assets / Rules of Engagement" data-palette-group="Page" data-palette-keywords="scope seed targets rules engagement"></a>
+<a href="#results" hidden data-palette-extra data-palette-id="page-objectives"
    data-palette-label="Objectives" data-palette-group="Page" data-palette-keywords="plan"></a>
+<a href="#war-chat" hidden data-palette-extra data-palette-id="page-chat"
+   data-palette-label="Operator chat" data-palette-group="Page" data-palette-keywords="instruct hitl"></a>
+<a href="#results" hidden data-palette-extra data-palette-id="page-results"
+   data-palette-label="Findings & Objectives" data-palette-group="Page" data-palette-keywords="findings objectives board"></a>
+<a href="#attack" hidden data-palette-extra data-palette-id="page-attack"
+   data-palette-label="Attack surface" data-palette-group="Page" data-palette-keywords="graph assets"></a>
+<a href="#settings" hidden data-palette-extra data-palette-id="page-proj-settings"
+   data-palette-label="Project settings" data-palette-group="Page" data-palette-keywords="project settings"></a>
+{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{% static 'vendor/xterm/xterm.min.css' %}?v=5.5.0">
 {% endblock %}
 {% block scripts %}
-<script src="{% static 'js/agent-graph.js' %}?v=20260913i"></script>
-<script src="{% static 'js/project-ops.js' %}?v=20260913i"></script>
+<script src="{% static 'vendor/xterm/xterm.min.js' %}?v=5.5.0"></script>
+<script src="{% static 'vendor/xterm/addon-fit.min.js' %}?v=0.10.0"></script>
+<script src="{% static 'js/war-nav.js' %}?v=20260925d"></script>
+<script src="{% static 'js/attack-surface.js' %}?v=20260925j"></script>
+<script src="{% static 'js/agent-graph.js' %}?v=20260925f"></script>
+<script src="{% static 'js/project-console-chat.js' %}?v=20260925a"></script>
+<script src="{% static 'js/project-ops.js' %}?v=20260925w"></script>
+<script src="{% static 'js/terminal.js' %}?v=20260925q"></script>
 <script>
   PeonProjectOps.init({
     projectPk: "{{ project.pk }}",
@@ -400,5 +608,34 @@
       {% endfor %}
     ]
   });
+  (function () {
+    var host = document.getElementById("terminal-host");
+    if (!host || !window.PeonTerminal) return;
+    var base = "{% url 'project_terminal_open' project.pk %}";
+    PeonTerminal.mount({
+      hostId: "terminal-host",
+      openUrl: base,
+      streamUrl: function (sid) {
+        return base + encodeURIComponent(sid) + "/stream/";
+      },
+      inputUrl: function (sid) {
+        return base + encodeURIComponent(sid) + "/input/";
+      },
+      resizeUrl: function (sid) {
+        return base + encodeURIComponent(sid) + "/resize/";
+      },
+      closeUrl: function (sid) {
+        return base + encodeURIComponent(sid) + "/close/";
+      },
+    });
+  })();
+
+  (function () {
+    if (!window.PeonAttackSurface) return;
+    var el = document.getElementById("attack-surface-data");
+    var data = { nodes: [], edges: [] };
+    try { if (el) data = JSON.parse(el.textContent || "{}"); } catch (e) {}
+    PeonAttackSurface.mount({ hostId: "attack-surface-host", data: data });
+  })();
 </script>
 {% endblock %}

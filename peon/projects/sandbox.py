@@ -35,10 +35,6 @@ class ProjectSandbox(SharedService):
         """Dedicated container per project when SANDBOX_ENABLED; else shared."""
         return bool(getattr(settings, "SANDBOX_ENABLED", True))
 
-    def enabled(self) -> bool:
-        """Docker sandboxes are always used (per-project or shared)."""
-        return True
-
     def shared_container_name(self) -> str:
         prefix = str(
             getattr(settings, "PROJECT_SANDBOX_PREFIX", "peon-project") or "peon-project"

@@ -5,8 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from django.conf import settings
-
+from orchestrator.config import get_config
 from orchestrator.skills.misc.catalog import filter_skills, format_catalog
 from orchestrator.skills.misc.skill import Skill
 from orchestrator.skills.misc.tags import TagNormalizer
@@ -28,22 +27,28 @@ class SkillRegistry(SharedService):
         self,
         *,
         provisioner: SkillProvisioner | None = None,
-        tags: TagNormalizer | None = None,
+        skills_dir: Path | None = None,
+        skills_external_dirs: list[Path] | None = None,
     ) -> None:
         self._provisioner = provisioner or SkillProvisioner.shared()
-        self._tags = tags or TagNormalizer.shared()
+        self._skills_dir = skills_dir
+        self._skills_external_dirs = skills_external_dirs
         self._cache: dict[str, Skill] = {}
         self._aliases: dict[str, str] = {}
         self._loaded = False
         self._cache_mtime: float = 0.0
 
     def _roots(self) -> list[tuple[Path, str, int]]:
+        cfg = get_config()
         roots: list[tuple[Path, str, int]] = []
-        for idx, raw in enumerate(getattr(settings, "SKILLS_EXTERNAL_DIRS", []) or []):
-            path = Path(os.path.expandvars(os.path.expanduser(raw))).resolve()
-            if path.is_dir():
-                roots.append((path, "external", 10 + idx))
-        primary = Path(settings.SKILLS_DIR).resolve()
+        external = self._skills_external_dirs
+        if external is None:
+            external = list(cfg.skills_external_dirs)
+        for idx, path in enumerate(external):
+            resolved = Path(os.path.expandvars(os.path.expanduser(str(path)))).resolve()
+            if resolved.is_dir():
+                roots.append((resolved, "external", 10 + idx))
+        primary = Path(self._skills_dir or cfg.skills_dir).resolve()
         if primary.is_dir():
             roots.append((primary, "local", 0))
         return roots
@@ -54,6 +59,9 @@ class SkillRegistry(SharedService):
 
         for child in sorted(root.iterdir()):
             if not child.is_dir() or child.name.startswith("."):
+                continue
+            # Shared library package mounted into sandboxes — not a skill.
+            if child.name in {"helpers", "__pycache__"}:
                 continue
             skill_md = find_manifest(child)
             if skill_md is not None:
@@ -87,9 +95,9 @@ class SkillRegistry(SharedService):
                     found[skill.name] = (skill, priority)
 
         skills = {name: s for name, (s, _) in found.items()}
-        known_tags = self._tags.collect_known(s.tags for s in skills.values())
+        known_tags = TagNormalizer.collect_known(s.tags for s in skills.values())
         for skill in skills.values():
-            skill.tags = self._tags.normalize(skill.tags, known=known_tags)
+            skill.tags = TagNormalizer.normalize(skill.tags, known=known_tags)
 
         aliases: dict[str, str] = {}
         for skill in skills.values():
@@ -127,12 +135,12 @@ class SkillRegistry(SharedService):
 
     def reload_skills(self) -> dict:
         """Force-rescan skill dirs (same path as mtime-driven ``get_registry``)."""
-        # Snapshot the in-memory cache only — do not mtime-refresh first, or
-        # a just-written skill would look unchanged in the diff.
         if self._loaded:
             before = {n: (s.description, s.mtime) for n, s in self._cache.items()}
         else:
-            before = {n: (s.description, s.mtime) for n, s in self.get_registry().items()}
+            before = {
+                n: (s.description, s.mtime) for n, s in self.get_registry().items()
+            }
         self._cache.clear()
         self._loaded = False
         self._cache_mtime = 0.0
@@ -145,7 +153,9 @@ class SkillRegistry(SharedService):
             diff["removed"].append({"name": n, "description": before[n][0]})
         for n in sorted(set(before) & set(after)):
             if before[n] != (after[n].description, after[n].mtime):
-                diff["modified"].append({"name": n, "description": after[n].description})
+                diff["modified"].append(
+                    {"name": n, "description": after[n].description}
+                )
         return diff
 
     def skill_aliases(self) -> dict[str, str]:
@@ -167,14 +177,12 @@ class SkillRegistry(SharedService):
     def skills_index(
         self,
         *,
-        tags: list[str] | None = None,
         jobable_only: bool = False,
     ) -> str:
         return format_catalog(
             filter_skills(
                 self.get_registry().values(),
                 jobable_only=jobable_only,
-                tags=tags,
             ),
             mode="index",
             header="Available skills (use skill_view to load full content).",

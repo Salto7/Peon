@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from django.conf import settings
 from django.contrib import messages
 from django.http import (
     FileResponse,
@@ -15,35 +14,39 @@ from django.http import (
     HttpResponseRedirect,
     JsonResponse,
 )
-from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import path, reverse
+from django.urls import reverse
 from django.views.decorators.http import require_GET, require_http_methods
 
 from peon.projects.findings import FindingStore
+from peon.projects.asset_graph import engagement_graph
+from peon.projects.http_helpers import (
+    request_value,
+    wants_json as request_wants_json,
+)
+from peon.projects.jobs import anchor_job
+from peon.projects.streaming import emit_job_stream, project_message_dicts, stream_meta
 from peon.projects.lifecycle import ProjectLifecycle
-from peon.projects.llm_gate import llm_configured
+from orchestrator.utils.llm import llm_configured
 from peon.projects.models import (
-    TERMINAL_JOB_STATUSES,
     Finding,
     FindingSeverity,
     FindingStatus,
     Job,
     JobStatus,
-    Objective,
-    ObjectiveStatus,
     Project,
     ProjectStatus,
     RulesOfEngagement,
     StreamMessage,
+    StreamMessageType,
 )
 from peon.projects.objectives import ObjectiveScheduler
+from peon.projects.sandbox import ProjectSandbox
 from peon.projects.services import PlanningService
-from peon.projects.streaming import message_to_dict
 from peon.projects.targets import (
+    roe_add_path,
+    roe_remove_path,
     add_candidates,
-    coerce_targets,
-    extract_scope_assets,
     format_targets,
     parse_target_lines,
     promote_candidates,
@@ -57,21 +60,70 @@ from peon.projects.workspaces import (
     resolve_report_path,
     save_project_input,
 )
-from peon.projects.project_status import ProjectStatus as ProjectStatusPayload
-from peon.projects.catalog import SkillCards, ToolCards
+from peon.projects.project_status import ProjectOpsPayload
+from peon.projects.catalog import SkillCards
 from peon.projects.runtime_settings import PeonSettings
 
 PROJECT_LIST_LIMIT = 50
 PROJECT_JOBS_LIMIT = 40
 STREAM_BOOTSTRAP_LIMIT = 120
 STREAM_POLL_LIMIT = 200
-PALETTE_PROJECT_LIMIT = 40
-PALETTE_FINDING_LIMIT = 40
-PALETTE_SKILL_LIMIT = 40
-PALETTE_TOOL_LIMIT = 40
+HOME_PROJECT_LIMIT = 40
+HOME_ALERT_LIMIT = 12
 
 
 # --- Pages ---
+
+@require_GET
+def home(request: HttpRequest) -> HttpResponse:
+    """Control-plane dashboard: KPIs, project table, recent errors."""
+    projects = list(Project.objects.all()[:HOME_PROJECT_LIMIT])
+    sandbox = ProjectSandbox.shared()
+    per_project = sandbox.per_project()
+    project_rows = [
+        {
+            "project": p,
+            "sandbox_name": ProjectSandbox.container_name(str(p.pk)),
+            "sandbox_mode": "dedicated" if per_project else "shared",
+        }
+        for p in projects
+    ]
+    active_n = Project.objects.filter(status=ProjectStatus.ACTIVE).count()
+    paused_n = Project.objects.filter(status=ProjectStatus.PAUSED).count()
+    running_jobs = Job.objects.filter(status=JobStatus.RUNNING).count()
+    failed_jobs = Job.objects.filter(status=JobStatus.FAILED).count()
+    failed_recent = list(
+        Job.objects.filter(status=JobStatus.FAILED)
+        .exclude(error="")
+        .select_related("project")[:HOME_ALERT_LIMIT]
+    )
+    stream_errors = list(
+        StreamMessage.objects.filter(message_type=StreamMessageType.ERROR)
+        .select_related("job", "job__project")
+        .order_by("-created_at")[:HOME_ALERT_LIMIT]
+    )
+    notices: list[str] = []
+    if not llm_configured():
+        notices.append("LLM API key is not configured — planning and Toolsmith are limited.")
+    return render(
+        request,
+        "home.html",
+        {
+            "nav": "home",
+            "kpis": {
+                "active_projects": active_n,
+                "paused_projects": paused_n,
+                "running_jobs": running_jobs,
+                "failed_jobs": failed_jobs,
+            },
+            "project_rows": project_rows,
+            "failed_recent": failed_recent,
+            "stream_errors": stream_errors,
+            "notices": notices,
+            "sandbox_per_project": per_project,
+        },
+    )
+
 
 @require_http_methods(["GET", "POST"])
 def settings_page(request: HttpRequest) -> HttpResponse:
@@ -121,103 +173,16 @@ def project_list(request: HttpRequest) -> HttpResponse:
 @require_http_methods(["GET", "POST"])
 def project_create(request: HttpRequest) -> HttpResponse:
     if request.method == "POST":
-        title = (request.POST.get("title") or "").strip() or "untitled"
-        summary = (request.POST.get("summary") or "").strip()
-        in_scope = parse_target_lines(request.POST.get("in_scope") or "")
-        project = Project.objects.create(
-            title=title,
-            summary=summary,
-            status=ProjectStatus.ACTIVE,
-        )
-        if not in_scope:
-            in_scope = extract_scope_assets(title, summary)
-
-        uploaded_paths: list[str] = []
-        for f in request.FILES.getlist("uploads"):
-            try:
-                saved = save_project_input(str(project.id), f)
-                uploaded_paths.append(saved["sandbox_path"])
-            except Exception as exc:
-                messages.warning(request, f"Upload skipped ({getattr(f, 'name', '?')}): {exc}")
-
-        seed: list = []
-        if summary and not in_scope:
-            seed.append({"type": "other", "value": summary[:500]})
-        for sp in uploaded_paths:
-            seed.append({"type": "path", "value": sp})
-            in_scope = list(in_scope) + [{"type": "path", "value": sp}]
-
-        RulesOfEngagement.objects.create(
-            project=project,
-            in_scope=in_scope,
-            seed=seed,
-            authorization_note=(
-                "Auto-deduced from summary (operator did not supply RoE)."
-                if in_scope and not (request.POST.get("in_scope") or "").strip()
-                else ""
-            ),
-        )
-        provision_project_roe(project, texts=[title, summary])
-        project.refresh_from_db()
-        roe = getattr(project, "roe", None)
-        scope = list(roe.in_scope) if roe else in_scope
-
-        if in_scope and not (request.POST.get("in_scope") or "").strip() and not uploaded_paths:
-            messages.info(request, "RoE deduced: " + ", ".join(format_targets(in_scope)))
-        if uploaded_paths:
-            messages.info(
-                request,
-                "Stored "
-                + str(len(uploaded_paths))
-                + " file(s) under project inputs (sandbox paths in RoE).",
-            )
-
-        picked = [
-            str(s).strip()
-            for s in request.POST.getlist("skill_names")
-            if str(s).strip()
-        ]
-        # Core skills are always on; UI locks them but POST can omit disabled fields.
-        required = SkillCards.required_names()
-        picked = list(dict.fromkeys([*required, *picked]))
-        brief = (summary or title).strip()
-        if uploaded_paths:
-            brief = (
-                brief
-                + "\n\nOperator uploaded sample(s) (project-local only):\n"
-                + "\n".join(f"- {p}" for p in uploaded_paths)
-            ).strip()
-        if llm_configured() and brief:
-            try:
-                result = PlanningService.run_llm_plan(
-                    description=brief,
-                    mode="project",
-                    title=project.title,
-                    summary=project.summary,
-                    in_scope=scope,
-                    exclusions=list(roe.exclusions) if roe else [],
-                    authorization=(roe.authorization_note if roe else ""),
-                    skills=picked or None,
-                    preferred_tags=list(project.focus_tags or []),
-                    project=project,
-                )
-                messages.success(
-                    request,
-                    f"Created {project.title} — queued "
-                    f"{result.job.title if result.job else 'no ready objective'} "
-                    f"({len(result.objectives or [])} objectives)",
-                )
-            except Exception as exc:
-                messages.error(request, f"Created {project.title} but plan failed: {exc}")
-        else:
-            if not llm_configured():
-                messages.warning(
-                    request,
-                    f"Created {project.title} — set OPENROUTER_API_KEY to auto-plan",
-                )
-            else:
-                messages.success(request, f"Created project {project.title}")
-        return redirect("project_detail", pk=project.pk)
+        wants_json = request_wants_json(request)
+        result = _create_project_from_post(request)
+        if wants_json:
+            status = 200 if result.get("ok") else 400
+            return JsonResponse(result, status=status)
+        for kind, text in result.get("flashes") or []:
+            getattr(messages, kind, messages.info)(request, text)
+        if result.get("project_id"):
+            return redirect("project_detail", pk=result["project_id"])
+        return redirect("project_create")
 
     return render(
         request,
@@ -229,38 +194,189 @@ def project_create(request: HttpRequest) -> HttpResponse:
         },
     )
 
+
+def _create_project_from_post(request: HttpRequest) -> dict:
+    """Create project + RoE + optional LLM plan. Used by HTML and AJAX create."""
+    stages: list[dict] = []
+
+    def stage(key: str, label: str, status: str = "done", detail: str = "") -> None:
+        stages.append(
+            {"key": key, "label": label, "status": status, "detail": detail or ""}
+        )
+
+    title = (request.POST.get("title") or "").strip() or "untitled"
+    summary = (request.POST.get("summary") or "").strip()
+    operator_scope = bool((request.POST.get("in_scope") or "").strip())
+    in_scope = parse_target_lines(request.POST.get("in_scope") or "")
+    flashes: list[tuple[str, str]] = []
+
+    # Uploads need a project id — create shell first without paths, then attach.
+    project, scope, roe = PlanningService.create_project_shell(
+        title=title,
+        summary=summary,
+        in_scope=in_scope,
+        path_values=[],
+        operator_supplied_scope=operator_scope,
+    )
+    stage("create", "Created project", "done", project.title)
+
+    uploaded_paths: list[str] = []
+    for f in request.FILES.getlist("uploads"):
+        try:
+            saved = save_project_input(str(project.id), f)
+            uploaded_paths.append(saved["sandbox_path"])
+            roe_add_path(project, saved["sandbox_path"])
+        except Exception as exc:
+            flashes.append(
+                ("warning", f"Upload skipped ({getattr(f, 'name', '?')}): {exc}")
+            )
+    if uploaded_paths:
+        project.refresh_from_db()
+        roe = getattr(project, "roe", None)
+        scope = list(roe.in_scope) if roe else scope
+
+    scope_detail = ", ".join(format_targets(scope)[:8]) if scope else "none yet"
+    stage("roe", "Configured Rules of Engagement", "done", scope_detail)
+
+    if in_scope and not operator_scope and not uploaded_paths:
+        flashes.append(("info", "Rules of Engagement deduced: " + ", ".join(format_targets(in_scope))))
+    if uploaded_paths:
+        flashes.append(
+            (
+                "info",
+                "Stored "
+                + str(len(uploaded_paths))
+                + " file(s) under project inputs (sandbox paths in Rules of Engagement).",
+            )
+        )
+
+    picked = [
+        str(s).strip()
+        for s in request.POST.getlist("skill_names")
+        if str(s).strip()
+    ]
+    required = SkillCards.required_names()
+    picked = list(dict.fromkeys([*required, *picked]))
+    brief = (summary or title).strip()
+    if uploaded_paths:
+        brief = (
+            brief
+            + "\n\nOperator uploaded sample(s) (project-local only):\n"
+            + "\n".join(f"- {p}" for p in uploaded_paths)
+        ).strip()
+
+    redirect_url = reverse("project_detail", kwargs={"pk": project.pk})
+    out: dict = {
+        "ok": True,
+        "project_id": str(project.id),
+        "title": project.title,
+        "redirect": redirect_url,
+        "objectives": 0,
+        "job_title": "",
+        "plan_ok": False,
+        "stages": stages,
+        "flashes": flashes,
+        "message": f"Created project {project.title}",
+    }
+
+    if llm_configured() and brief:
+        stage("plan", "Planning objectives…", "active")
+        try:
+            result = PlanningService.run_llm_plan(
+                description=brief,
+                mode="project",
+                title=project.title,
+                summary=project.summary,
+                in_scope=scope,
+                exclusions=list(roe.exclusions) if roe else [],
+                authorization=(roe.authorization_note if roe else ""),
+                skills=picked or None,
+                preferred_tags=list(project.focus_tags or []),
+                project=project,
+            )
+            n_obj = len(result.objectives or [])
+            job_title = result.job.title if result.job else "no ready objective"
+            stages[-1] = {
+                "key": "plan",
+                "label": "Planned objectives",
+                "status": "done",
+                "detail": f"{n_obj} objective(s)",
+            }
+            stage(
+                "start",
+                "Queued first agent",
+                "done",
+                job_title if result.job else "waiting for a ready objective",
+            )
+            msg = (
+                f"Created {project.title} — queued {job_title} ({n_obj} objectives)"
+            )
+            flashes.append(("success", msg))
+            out.update(
+                {
+                    "objectives": n_obj,
+                    "job_title": job_title if result.job else "",
+                    "plan_ok": True,
+                    "message": msg,
+                }
+            )
+        except Exception as exc:
+            stages[-1] = {
+                "key": "plan",
+                "label": "Planning failed",
+                "status": "error",
+                "detail": str(exc)[:240],
+            }
+            stage("start", "Open war room to retry", "done", "plan can be retried from chat")
+            msg = f"Created {project.title} but plan failed: {exc}"
+            flashes.append(("error", msg))
+            out["message"] = msg
+            out["plan_ok"] = False
+    else:
+        if not llm_configured():
+            stage(
+                "plan",
+                "Skipped auto-plan",
+                "done",
+                "Set OPENROUTER_API_KEY to auto-plan",
+            )
+            flashes.append(
+                (
+                    "warning",
+                    f"Created {project.title} — set OPENROUTER_API_KEY to auto-plan",
+                )
+            )
+            out["message"] = flashes[-1][1]
+        else:
+            stage("plan", "Skipped auto-plan", "done", "empty brief")
+            flashes.append(("success", f"Created project {project.title}"))
+        stage("start", "Opening war room", "done")
+
+    out["stages"] = stages
+    out["flashes"] = flashes
+    return out
+
+
 @require_GET
 def project_detail(request: HttpRequest, pk) -> HttpResponse:
     project = get_object_or_404(Project.objects.select_related("roe"), pk=pk)
-    ops = ProjectStatusPayload.for_project(project, jobs_limit=PROJECT_JOBS_LIMIT)
+    ops = ProjectOpsPayload.for_project(project, jobs_limit=PROJECT_JOBS_LIMIT)
     objectives = list(project.objectives.all())
     roe = getattr(project, "roe", None)
-    recent = (
-        StreamMessage.objects.filter(job__project=project)
-        .select_related("job")
-        .order_by("-id")[:STREAM_BOOTSTRAP_LIMIT]
+    bootstrap = project_message_dicts(
+        project, limit=STREAM_BOOTSTRAP_LIMIT, newest_first=True
     )
-    bootstrap = []
-    for m in reversed(list(recent)):
-        job = getattr(m, "job", None)
-        if job is not None:
-            m._payload_title = job.title  # type: ignore[attr-defined]
-            m._payload_status = job.status  # type: ignore[attr-defined]
-        m._payload_project = str(project.id)  # type: ignore[attr-defined]
-        bootstrap.append(message_to_dict(m))
     reports = list_reports(str(project.id))
-    status_f = (request.GET.get("finding_status") or "open").strip().lower()
-    severity_f = (request.GET.get("finding_severity") or "all").strip().lower()
-    findings = FindingStore().board(
-        project, status=status_f, severity=severity_f
-    )
-    finding_counts = project.findings.aggregate(
-        all=Count("id"),
-        open=Count("id", filter=Q(status=FindingStatus.OPEN)),
-        confirmed=Count("id", filter=Q(status=FindingStatus.CONFIRMED)),
-    )
+    board = FindingStore.board_query(project, request, default_status="open")
+    status_f = board["status"]
+    severity_f = board["severity"]
+    findings = board["findings"]
+    finding_counts = board["counts"]
     has_next_objective = ObjectiveScheduler().next_ready(project) is not None
     project_inputs = list_project_inputs(str(project.id))
+    # Full finding set for the asset graph (board may be status-filtered).
+    graph_findings = list(project.findings.order_by("seq", "created_at")[:300])
+    attack_surface = engagement_graph(project, findings=graph_findings)
     return render(
         request,
         "projects/detail.html",
@@ -278,6 +394,7 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
             "finding_severities": FindingSeverity.choices,
             "has_next_objective": has_next_objective,
             "project_inputs": project_inputs,
+            "attack_surface": attack_surface,
             "nav": "projects",
             "stream_bootstrap": json.dumps(bootstrap),
         },
@@ -304,10 +421,7 @@ def project_finding_triage(request: HttpRequest, pk, finding_id) -> HttpResponse
     status = (request.POST.get("status") or "").strip().lower()
     action = (request.POST.get("action") or "").strip().lower()
     updated = FindingStore().triage(finding, action, status=status)
-    wants_json = (
-        "application/json" in (request.headers.get("Accept") or "")
-        or request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    )
+    wants_json = request_wants_json(request)
     if updated is None:
         if wants_json:
             return JsonResponse(
@@ -317,11 +431,7 @@ def project_finding_triage(request: HttpRequest, pk, finding_id) -> HttpResponse
         messages.error(request, f"Unknown triage action: {action or status or '(empty)'}")
     else:
         if wants_json:
-            counts = project.findings.aggregate(
-                all=Count("id"),
-                open=Count("id", filter=Q(status=FindingStatus.OPEN)),
-                confirmed=Count("id", filter=Q(status=FindingStatus.CONFIRMED)),
-            )
+            counts = FindingStore.board_counts(project)
             return JsonResponse(
                 {
                     "ok": True,
@@ -335,27 +445,18 @@ def project_finding_triage(request: HttpRequest, pk, finding_id) -> HttpResponse
     status_q = (request.POST.get("finding_status") or "open").strip()
     severity_q = (request.POST.get("finding_severity") or "all").strip()
     url = reverse("project_detail", kwargs={"pk": project.pk})
-    return redirect(f"{url}?finding_status={status_q}&finding_severity={severity_q}#findings")
+    return redirect(f"{url}?finding_status={status_q}&finding_severity={severity_q}#results")
 
 
 @require_GET
 def project_findings_json(request: HttpRequest, pk) -> JsonResponse:
     """Findings board rows for live filter / refresh without full page reload."""
     project = get_object_or_404(Project, pk=pk)
-    status_f = (request.GET.get("finding_status") or "all").strip().lower()
-    severity_f = (request.GET.get("finding_severity") or "all").strip().lower()
-    rows = FindingStore().board(project, status=status_f, severity=severity_f)
-    counts = project.findings.aggregate(
-        all=Count("id"),
-        open=Count("id", filter=Q(status=FindingStatus.OPEN)),
-        confirmed=Count("id", filter=Q(status=FindingStatus.CONFIRMED)),
-    )
+    board = FindingStore.board_query(project, request, default_status="open")
     return JsonResponse(
         {
-            "findings": FindingStore().board_payload(
-                project, status=status_f, severity=severity_f
-            ),
-            "counts": counts,
+            "findings": board["payload"],
+            "counts": board["counts"],
             "statuses": list(FindingStatus.choices),
             "severities": list(FindingSeverity.choices),
         }
@@ -363,99 +464,18 @@ def project_findings_json(request: HttpRequest, pk) -> JsonResponse:
 
 @require_http_methods(["POST"])
 def project_chat(request: HttpRequest, pk) -> HttpResponse:
-    """Live-feed prompt → full project replan from the operator message."""
+    """HITL console: instruct running agents | replan | stop | reply to prompts."""
+    from peon.projects.console_chat import http_handle_console_chat
+
     project = get_object_or_404(Project, pk=pk)
-    wants_json = (
-        "application/json" in (request.headers.get("Accept") or "")
-        or request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    )
-    if request.content_type and "application/json" in request.content_type:
-        try:
-            body = json.loads(request.body.decode() or "{}")
-        except json.JSONDecodeError:
-            body = {}
-        message = (body.get("message") or "").strip()
-    else:
-        message = (request.POST.get("message") or "").strip()
-
-    if not message:
-        if wants_json:
-            return JsonResponse({"ok": False, "error": "Message is required."}, status=400)
-        messages.error(request, "Message is required.")
-        return redirect("project_detail", pk=project.pk)
-
-    if not llm_configured():
-        err = "Set OPENROUTER_API_KEY (or OpenAI/LiteLLM) to replan from chat."
-        if wants_json:
-            return JsonResponse({"ok": False, "error": err}, status=503)
-        messages.error(request, err)
-        return redirect("project_detail", pk=project.pk)
-
-    try:
-        result = ProjectLifecycle.replan_from_prompt(project, message)
-    except RuntimeError as exc:
-        if wants_json:
-            return JsonResponse({"ok": False, "error": str(exc)}, status=409)
-        messages.error(request, str(exc))
-        return redirect("project_detail", pk=project.pk)
-    except ValueError as exc:
-        if wants_json:
-            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
-        messages.error(request, str(exc))
-        return redirect("project_detail", pk=project.pk)
-    except Exception as exc:
-        if wants_json:
-            return JsonResponse({"ok": False, "error": str(exc)}, status=500)
-        messages.error(request, f"Replan failed: {exc}")
-        return redirect("project_detail", pk=project.pk)
-
-    if wants_json:
-        return JsonResponse({"ok": True, **result})
-    messages.success(
-        request,
-        f"Replanned — {result.get('objectives', 0)} objectives; "
-        f"next job {result.get('primary_job_id') or '(none)'}",
-    )
-    return redirect("project_detail", pk=project.pk)
-
-
-def _roe_add_path(project: Project, sandbox_path: str) -> None:
-    roe, _ = RulesOfEngagement.objects.get_or_create(project=project)
-    path = (sandbox_path or "").strip()
-    if not path:
-        return
-    seed = coerce_targets(roe.seed)
-    scope = coerce_targets(roe.in_scope)
-    row = {"type": "path", "value": path}
-    if not any(t.get("value") == path for t in seed):
-        seed.append(row)
-    if not any(t.get("value") == path for t in scope):
-        scope.append(row)
-    roe.seed = seed
-    roe.in_scope = scope
-    roe.save(update_fields=["seed", "in_scope", "updated_at"])
-
-
-def _roe_remove_path(project: Project, sandbox_path: str) -> None:
-    roe = getattr(project, "roe", None)
-    if roe is None:
-        return
-    path = (sandbox_path or "").strip()
-    seed = [t for t in coerce_targets(roe.seed) if t.get("value") != path]
-    scope = [t for t in coerce_targets(roe.in_scope) if t.get("value") != path]
-    roe.seed = seed
-    roe.in_scope = scope
-    roe.save(update_fields=["seed", "in_scope", "updated_at"])
+    return http_handle_console_chat(request, project)
 
 
 @require_http_methods(["GET", "POST"])
 def project_inputs(request: HttpRequest, pk) -> HttpResponse:
     """List / upload project-local input files (``workspace/inputs/`` only)."""
     project = get_object_or_404(Project, pk=pk)
-    wants_json = (
-        "application/json" in (request.headers.get("Accept") or "")
-        or request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    )
+    wants_json = request_wants_json(request)
     if request.method == "GET":
         return JsonResponse({"ok": True, "inputs": list_project_inputs(str(project.id))})
 
@@ -466,7 +486,7 @@ def project_inputs(request: HttpRequest, pk) -> HttpResponse:
                 status=409,
             )
         messages.error(request, "Project cancelled — uploads disabled.")
-        return redirect("project_detail", pk=project.pk)
+        return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#reports")
 
     files = request.FILES.getlist("uploads") or request.FILES.getlist("file")
     if not files and request.FILES:
@@ -475,35 +495,28 @@ def project_inputs(request: HttpRequest, pk) -> HttpResponse:
         if wants_json:
             return JsonResponse({"ok": False, "error": "No file uploaded."}, status=400)
         messages.error(request, "No file uploaded.")
-        return redirect("project_detail", pk=project.pk)
+        return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#reports")
 
     saved_rows: list[dict] = []
     errors: list[str] = []
     for f in files:
         try:
             row = save_project_input(str(project.id), f)
-            _roe_add_path(project, row["sandbox_path"])
+            roe_add_path(project, row["sandbox_path"])
             saved_rows.append(row)
             # Surface in live stream on a recent/running job when possible.
-            job = (
-                project.jobs.filter(status=JobStatus.RUNNING)
-                .order_by("-updated_at")
-                .first()
-                or project.jobs.order_by("-updated_at").first()
-            )
+            job = anchor_job(project)
             if job is not None:
-                from peon.projects.streaming import record_stream_message
-
-                record_stream_message(
-                    str(job.id),
+                emit_job_stream(
+                    job,
                     "log",
                     f"Uploaded {row['name']} → {row['sandbox_path']} (this project only)",
-                    {
-                        "event": "project_upload",
-                        "role": "user",
-                        "project_id": str(project.id),
-                        "path": row["sandbox_path"],
-                    },
+                    stream_meta(
+                        project,
+                        role="user",
+                        event="project_upload",
+                        path=row["sandbox_path"],
+                    ),
                 )
         except Exception as exc:
             errors.append(f"{getattr(f, 'name', 'file')}: {exc}")
@@ -523,30 +536,20 @@ def project_inputs(request: HttpRequest, pk) -> HttpResponse:
         messages.warning(request, err)
     if saved_rows:
         messages.success(request, f"Uploaded {len(saved_rows)} file(s) to this project.")
-    return redirect("project_detail", pk=project.pk)
+    return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#reports")
 
 
 @require_http_methods(["POST"])
 def project_input_delete(request: HttpRequest, pk) -> HttpResponse:
     """Remove one file from this project's inputs/ tree."""
     project = get_object_or_404(Project, pk=pk)
-    wants_json = (
-        "application/json" in (request.headers.get("Accept") or "")
-        or request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    )
-    if request.content_type and "application/json" in request.content_type:
-        try:
-            body = json.loads(request.body.decode() or "{}")
-        except json.JSONDecodeError:
-            body = {}
-        name = (body.get("name") or "").strip()
-    else:
-        name = (request.POST.get("name") or "").strip()
+    wants_json = request_wants_json(request)
+    name = request_value(request, "name")
 
     sandbox_path = f"/workspace/inputs/{Path(name).name}" if name else ""
     ok = delete_project_input(str(project.id), name) if name else False
     if ok:
-        _roe_remove_path(project, sandbox_path)
+        roe_remove_path(project, sandbox_path)
     if wants_json:
         return JsonResponse(
             {
@@ -560,7 +563,7 @@ def project_input_delete(request: HttpRequest, pk) -> HttpResponse:
         messages.success(request, f"Removed {name}")
     else:
         messages.error(request, "File not found in this project.")
-    return redirect("project_detail", pk=project.pk)
+    return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#reports")
 
 
 @require_http_methods(["POST"])
@@ -581,7 +584,7 @@ def project_roe(request: HttpRequest, pk) -> HttpResponseRedirect:
             all_candidates=(request.POST.get("promote_all") == "1"),
         )
         messages.success(request, f"Promoted {n} candidate(s) into in-scope")
-        return redirect("project_detail", pk=project.pk)
+        return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#assets")
 
     if action == "add_candidates":
         n = add_candidates(roe, parse_target_lines(request.POST.get("candidates") or ""))
@@ -589,7 +592,7 @@ def project_roe(request: HttpRequest, pk) -> HttpResponseRedirect:
             messages.success(request, f"Added {n} candidate(s)")
         else:
             messages.warning(request, "No candidates parsed")
-        return redirect("project_detail", pk=project.pk)
+        return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#assets")
 
     in_scope = parse_target_lines(request.POST.get("in_scope") or "")
     exclusions = parse_target_lines(request.POST.get("exclusions") or "")
@@ -601,7 +604,7 @@ def project_roe(request: HttpRequest, pk) -> HttpResponseRedirect:
         roe.seed = seed
         roe.authorization_note = authorization
         roe.save()
-        messages.success(request, "RoE updated")
+        messages.success(request, "Rules of Engagement updated")
     else:
         roe.exclusions = exclusions
         roe.seed = seed
@@ -618,15 +621,17 @@ def project_roe(request: HttpRequest, pk) -> HttpResponseRedirect:
         if deduced:
             messages.info(
                 request,
-                "RoE deduced: " + ", ".join(format_targets(project.roe.in_scope)),
+                "Rules of Engagement deduced: "
+                + ", ".join(format_targets(project.roe.in_scope)),
             )
         else:
             messages.warning(
                 request,
-                "RoE saved with empty in-scope — active probe skills need at least "
-                "one target value (type labels like ip:/person: are optional hints).",
+                "Rules of Engagement saved with empty in-scope — active probe "
+                "skills need at least one target value (type labels like "
+                "ip:/person: are optional hints).",
             )
-    return redirect("project_detail", pk=project.pk)
+    return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#assets")
 
 
 @require_http_methods(["GET", "POST"])
@@ -702,13 +707,13 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
         if not llm_configured():
             messages.error(request, "Set OPENROUTER_API_KEY to replan")
             return redirect("project_detail", pk=project.pk)
-        brief = (request.POST.get("description") or project.summary or project.title).strip()
+        brief = (request.POST.get("description") or "").strip()
         try:
-            result = PlanningService.replan_project(project, description=brief)
-            n = len(result.objectives or [])
-            jid = result.job.id if result.job else "(none)"
+            result = ProjectLifecycle.replan_from_prompt(project, brief)
             messages.success(
-                request, f"Replanned — {n} objectives; next job {jid}"
+                request,
+                f"Replanned — {result.get('objectives', 0)} objectives; "
+                f"next job {result.get('primary_job_id') or '(none)'}",
             )
         except Exception as exc:
             messages.error(request, f"Replan failed: {exc}")
@@ -745,20 +750,8 @@ def job_start(request: HttpRequest, pk, job_id) -> HttpResponse:
     """Re-run a job (optional operator command). Allowed on finished projects."""
     project = get_object_or_404(Project, pk=pk)
     job = get_object_or_404(Job, pk=job_id, project=project)
-    wants_json = (
-        "application/json" in (request.headers.get("Accept") or "")
-        or request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    )
-    if request.content_type and "application/json" in request.content_type:
-        try:
-            body = json.loads(request.body.decode() or "{}")
-        except json.JSONDecodeError:
-            body = {}
-        command = (body.get("command") or body.get("description") or "").strip()
-    else:
-        command = (
-            request.POST.get("command") or request.POST.get("description") or ""
-        ).strip()
+    wants_json = request_wants_json(request)
+    command = request_value(request, "command") or request_value(request, "description")
 
     try:
         ProjectLifecycle.rerun_job(job, command=command)
@@ -814,7 +807,7 @@ def job_steer(request: HttpRequest, pk, job_id) -> HttpResponseRedirect:
 @require_GET
 def project_jobs_json(request: HttpRequest, pk) -> JsonResponse:
     project = get_object_or_404(Project, pk=pk)
-    return JsonResponse(ProjectStatusPayload.for_project(project, jobs_limit=PROJECT_JOBS_LIMIT))
+    return JsonResponse(ProjectOpsPayload.for_project(project, jobs_limit=PROJECT_JOBS_LIMIT))
 
 
 @require_GET
@@ -825,226 +818,22 @@ def project_messages_json(request: HttpRequest, pk) -> JsonResponse:
         after_id = int(after)
     except (TypeError, ValueError):
         after_id = 0
-    qs = (
-        StreamMessage.objects.filter(job__project=project, id__gt=after_id)
-        .select_related("job")
-        .order_by("id")[:STREAM_POLL_LIMIT]
+    return JsonResponse(
+        {
+            "messages": project_message_dicts(
+                project, after_id=after_id, limit=STREAM_POLL_LIMIT
+            )
+        }
     )
-    rows = []
-    for msg in qs:
-        msg._payload_title = msg.job.title  # type: ignore[attr-defined]
-        msg._payload_status = msg.job.status  # type: ignore[attr-defined]
-        msg._payload_project = str(project.id)  # type: ignore[attr-defined]
-        rows.append(message_to_dict(msg))
-    return JsonResponse({"messages": rows})
 
 
 @require_GET
 def job_live_json(request: HttpRequest, pk, job_id) -> JsonResponse:
     project = get_object_or_404(Project, pk=pk)
     job = get_object_or_404(Job, pk=job_id, project=project)
-    return JsonResponse({**ProjectStatusPayload.job_payload(job), "result": job.result})
+    return JsonResponse({**ProjectOpsPayload.job_payload(job), "result": job.result})
 
 
-@require_GET
-def search_json(request: HttpRequest) -> JsonResponse:
-    """Operator Search (⇧S): projects, findings, skills, tools, settings, jumps."""
-    q = (request.GET.get("q") or "").strip()
-    q_lower = q.lower()
-    items: list[dict] = [
-        {
-            "id": "nav-projects",
-            "label": "Projects",
-            "group": "Navigate",
-            "href": reverse("project_list"),
-            "keywords": "home list engagements",
-        },
-        {
-            "id": "nav-project-new",
-            "label": "New project",
-            "group": "Navigate",
-            "href": reverse("project_create"),
-            "keywords": "create start engagement",
-        },
-        {
-            "id": "nav-catalog",
-            "label": "Catalog",
-            "group": "Navigate",
-            "href": reverse("catalog"),
-            "keywords": "skills tools",
-        },
-        {
-            "id": "nav-learn",
-            "label": "Learn",
-            "group": "Navigate",
-            "href": reverse("learn"),
-            "keywords": "author skill tool yaml suggest writer",
-        },
-        {
-            "id": "nav-catalog-skills",
-            "label": "Skills catalog",
-            "group": "Navigate",
-            "href": reverse("catalog") + "#skills",
-            "keywords": "skill registry",
-        },
-        {
-            "id": "nav-catalog-tools",
-            "label": "Tools catalog",
-            "group": "Navigate",
-            "href": reverse("catalog") + "#tools",
-            "keywords": "cli sandbox provision",
-        },
-        {
-            "id": "nav-settings",
-            "label": "Settings",
-            "group": "Navigate",
-            "href": reverse("settings_page"),
-            "keywords": "caps threads parallel agent dramatiq policy",
-        },
-        {
-            "id": "nav-admin",
-            "label": "Admin",
-            "group": "Navigate",
-            "href": "/admin/",
-            "keywords": "django",
-        },
-    ]
-    # Settings field keywords (so Shift+S search finds knobs by name).
-    for field in PeonSettings.field_meta():
-        items.append(
-            {
-                "id": f"setting-{field['key']}",
-                "label": field["label"],
-                "group": "Settings",
-                "href": reverse("settings_page") + f"#{field['key']}",
-                "keywords": f"{field['key']} {field['help']} setting",
-                "meta": str(field["value"]),
-            }
-        )
-
-    projects = Project.objects.all()
-    if q:
-        projects = projects.filter(
-            Q(title__icontains=q) | Q(summary__icontains=q) | Q(status__icontains=q)
-        )
-    for p in projects[:PALETTE_PROJECT_LIMIT]:
-        items.append(
-            {
-                "id": f"project-{p.id}",
-                "label": p.title,
-                "group": "Projects",
-                "href": reverse("project_detail", kwargs={"pk": p.pk}),
-                "keywords": f"{p.status} {p.id} {p.summary or ''}",
-                "meta": p.status,
-            }
-        )
-
-    findings = Finding.objects.select_related("project").all()
-    if q:
-        findings = findings.filter(
-            Q(title__icontains=q)
-            | Q(description__icontains=q)
-            | Q(host__icontains=q)
-            | Q(kind__icontains=q)
-            | Q(cve_id__icontains=q)
-            | Q(project__title__icontains=q)
-        )
-    for f in findings.order_by("-updated_at")[:PALETTE_FINDING_LIMIT]:
-        items.append(
-            {
-                "id": f"finding-{f.id}",
-                "label": f"FIND-{f.seq}: {f.title}",
-                "group": "Findings",
-                "href": reverse("project_detail", kwargs={"pk": f.project_id})
-                + "#findings",
-                "keywords": f"{f.kind} {f.severity} {f.host} {f.cve_id} {f.project.title}",
-                "meta": f"{f.severity} · {f.project.title}",
-            }
-        )
-
-    catalog_base = reverse("catalog") + "?all=1"
-    skill_hits = 0
-    for skill in SkillCards.catalog(jobable_only=False):
-        hay = " ".join(
-            [
-                skill.get("name") or "",
-                skill.get("category") or "",
-                skill.get("description") or "",
-                " ".join(skill.get("tags") or []),
-                " ".join(skill.get("aliases") or []),
-                "skill",
-            ]
-        ).lower()
-        if q_lower and q_lower not in hay:
-            continue
-        name = skill["name"]
-        items.append(
-            {
-                "id": f"skill-{name}",
-                "label": name,
-                "group": "Skills",
-                "href": f"{catalog_base}#skill-{name}",
-                "keywords": hay,
-                "meta": skill.get("category") or ("required" if skill.get("required") else ""),
-            }
-        )
-        skill_hits += 1
-        if skill_hits >= PALETTE_SKILL_LIMIT:
-            break
-
-    tool_hits = 0
-    for tool in ToolCards.catalog():
-        hay = " ".join(
-            [
-                tool.get("id") or "",
-                tool.get("name") or "",
-                tool.get("description") or "",
-                tool.get("binary") or "",
-                tool.get("tier") or "",
-                " ".join(tool.get("tags") or []),
-                " ".join(tool.get("binaries") or []),
-                " ".join(tool.get("skills") or []),
-                "tool cli",
-            ]
-        ).lower()
-        if q_lower and q_lower not in hay:
-            continue
-        tid = tool["id"]
-        items.append(
-            {
-                "id": f"tool-{tid}",
-                "label": tid,
-                "group": "Tools",
-                "href": f"{catalog_base}#tool-{tid}",
-                "keywords": hay,
-                "meta": tool.get("tier") or tool.get("binary") or "",
-            }
-        )
-        tool_hits += 1
-        if tool_hits >= PALETTE_TOOL_LIMIT:
-            break
-
-    running = (
-        Job.objects.filter(status=JobStatus.RUNNING)
-        .select_related("project")
-        .order_by("-updated_at")[:20]
-    )
-    for job in running:
-        if job.project_id is None:
-            continue
-        items.append(
-            {
-                "id": f"job-{job.id}",
-                "label": f"{job.title} (running)",
-                "group": "Active runs",
-                "href": reverse(
-                    "job_live", kwargs={"pk": job.project_id, "job_id": job.pk}
-                ),
-                "keywords": f"live {job.project.title if job.project else ''}",
-                "meta": "running",
-            }
-        )
-    return JsonResponse({"items": items, "q": q})
 
 
 # --- Reports ---
@@ -1090,62 +879,3 @@ def project_report_file(request: HttpRequest, pk, file_path: str) -> HttpRespons
     response["Content-Disposition"] = f'{disposition}; filename="{path.name}"'
     return response
 
-# --- URLconf ---
-
-urlpatterns = [
-    path("", project_list, name="project_list"),
-    path("projects/new/", project_create, name="project_create"),
-    path("settings/", settings_page, name="settings_page"),
-    path("search.json", search_json, name="search_json"),
-    path("projects/bulk/", projects_bulk, name="projects_bulk"),
-    path("projects/<uuid:pk>/", project_detail, name="project_detail"),
-    path(
-        "projects/<uuid:pk>/findings/<uuid:finding_id>/triage/",
-        project_finding_triage,
-        name="project_finding_triage",
-    ),
-    path(
-        "projects/<uuid:pk>/findings.json",
-        project_findings_json,
-        name="project_findings_json",
-    ),
-    path(
-        "projects/<uuid:pk>/reports/<path:file_path>/view/",
-        project_report_view,
-        name="project_report_view",
-    ),
-    path(
-        "projects/<uuid:pk>/reports/<path:file_path>",
-        project_report_file,
-        name="project_report_file",
-    ),
-    path("projects/<uuid:pk>/control/", project_control, name="project_control"),
-    path("projects/<uuid:pk>/chat/", project_chat, name="project_chat"),
-    path("projects/<uuid:pk>/inputs/", project_inputs, name="project_inputs"),
-    path(
-        "projects/<uuid:pk>/inputs/delete/",
-        project_input_delete,
-        name="project_input_delete",
-    ),
-    path("projects/<uuid:pk>/jobs/bulk/", jobs_bulk, name="jobs_bulk"),
-    path("projects/<uuid:pk>/roe/", project_roe, name="project_roe"),
-    path("projects/<uuid:pk>/jobs.json", project_jobs_json, name="project_jobs_json"),
-    path(
-        "projects/<uuid:pk>/messages.json",
-        project_messages_json,
-        name="project_messages_json",
-    ),
-    path("projects/<uuid:pk>/jobs/<uuid:job_id>/start/", job_start, name="job_start"),
-    path("projects/<uuid:pk>/jobs/<uuid:job_id>/remove/", job_remove, name="job_remove"),
-    path("projects/<uuid:pk>/jobs/<uuid:job_id>/", job_live, name="job_live"),
-    path(
-        "projects/<uuid:pk>/jobs/<uuid:job_id>/live.json",
-        job_live_json,
-        name="job_live_json",
-    ),
-    path(
-        "projects/<uuid:pk>/jobs/<uuid:job_id>/steer/",
-        job_steer,
-        name="job_steer",
-    ),
-]

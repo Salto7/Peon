@@ -14,5 +14,5 @@ urlpatterns = [
     path("health/", health, name="health"),
     path("catalog/", include("peon.projects.catalog")),
     path("learn/", include("peon.projects.learn")),
-    path("", include("peon.projects.views")),
+    path("", include("peon.projects.urls")),
 ]

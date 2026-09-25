@@ -6,7 +6,7 @@ import json
 
 from django.core.management.base import BaseCommand
 
-from orchestrator.skills.load import FilesystemSkillLoader
+from orchestrator.skills.misc.catalog import filter_skills, format_catalog
 from orchestrator.skills.misc.registry import SkillRegistry
 
 
@@ -25,5 +25,12 @@ class Command(BaseCommand):
             self.stdout.write(json.dumps(skills, indent=2, default=str))
             return
         self.stdout.write(
-            FilesystemSkillLoader.shared().discover_prompt(jobable_only=not options["all"])
+            format_catalog(
+                filter_skills(
+                    SkillRegistry.shared().get_registry().values(),
+                    jobable_only=not options["all"],
+                ),
+                mode="discover",
+                header="Available skills (activate to load full instructions):",
+            )
         )

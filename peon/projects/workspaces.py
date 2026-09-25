@@ -10,7 +10,7 @@ from pathlib import Path
 
 from django.conf import settings
 
-_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+from orchestrator.workspace import safe_workspace_key
 
 
 def workspaces_root() -> Path:
@@ -19,12 +19,6 @@ def workspaces_root() -> Path:
     ).resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
-
-
-def safe_workspace_key(key: str) -> str:
-    raw = (key or "").strip().replace("/", "-").replace("\\", "-")
-    cleaned = _SAFE.sub("-", raw).strip(".-") or "workspace"
-    return cleaned[:64]
 
 
 def project_workspace_dir(project_id: str, *, create: bool = True) -> Path:

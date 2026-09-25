@@ -12,6 +12,7 @@ from orchestrator.skills.misc.mcp import looks_like_mcp_request
 from orchestrator.skills.misc.skill import Skill
 from orchestrator.skills.misc.matcher import SkillNameMatcher
 from orchestrator.skills.misc.registry import SkillRegistry
+from orchestrator.prompts import INSTALL_CASCADE
 from orchestrator.utils.llm import chat_text
 from orchestrator.utils.service import SharedService
 from orchestrator.utils.strings import extract_json, plain_text
@@ -51,7 +52,7 @@ Rules:
   "plan mode"): pick `blueprint` when it is in the catalog.
 - For multi-format or multi-artifact deliverables: skills=[] or project-manager.
 - For CLI / install / sandbox work, prefer dedicated tool skills; installs come from
-  tools/catalog (worker provision). Ad-hoc shell uses the `run_cli` tool.
+  {cascade} via ``provision_cli``. Ad-hoc shell uses the `run_cli` tool.
 - For MCP / Model Context Protocol / mcpServers / "use this mcp" / npx|uvx *mcp*:
   prefer catalog skills that advertise mcp capabilities.
 - You may pick 0–N skills. Empty list means no skill preload.
@@ -59,17 +60,11 @@ Rules:
 - Do NOT invent skill names. Only use names from the catalog.
 
 Reply with ONLY a JSON object:
-{"skills":["name",...],"reason":"one short sentence"}
-"""
+{{"skills":["name",...],"reason":"one short sentence"}}
+""".format(cascade=INSTALL_CASCADE)
 
-    def __init__(
-        self,
-        *,
-        registry: SkillRegistry | None = None,
-        name_matcher: SkillNameMatcher | None = None,
-    ) -> None:
+    def __init__(self, *, registry: SkillRegistry | None = None) -> None:
         self._registry = registry or SkillRegistry.shared()
-        self._name_matcher = name_matcher or SkillNameMatcher.shared()
 
     def looks_like_file_deliverable(self, description: str) -> bool:
         text = (description or "").strip()
@@ -112,7 +107,7 @@ Reply with ONLY a JSON object:
         alias_map = self._registry.skill_aliases()
         keys = set(valid) | set(alias_map.keys())
         matched: list[str] = []
-        for name in self._name_matcher.find(description, keys):
+        for name in SkillNameMatcher.find(description, keys):
             canonical = alias_map.get(name, name)
             if canonical in valid and canonical not in matched:
                 matched.append(canonical)
@@ -193,8 +188,9 @@ Reply with ONLY a JSON object:
             logger.exception("Skill LLM inference failed; returning no skills")
             return []
 
+    @classmethod
     def resolve_default_skills(
-        self,
+        cls,
         description: str,
         lifecycle: str = "auto",
         *,
@@ -203,6 +199,7 @@ Reply with ONLY a JSON object:
         project: bool = False,
     ) -> list[str]:
         """Pick skills for a job. ``preferred_tags`` are soft focus hints only."""
+        self = cls.shared()
         pool = self._selectable()
         by_name = {s.name: s for s in pool}
         valid = set(by_name)

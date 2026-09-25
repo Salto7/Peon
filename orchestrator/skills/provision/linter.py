@@ -15,7 +15,6 @@ import yaml
 
 from orchestrator.skills.misc.utils import (
     LINT_LIFECYCLES,
-    SKILL_NAME_RE,
     MAX_COMPATIBILITY_LEN,
     MAX_DESCRIPTION_LEN,
     MAX_NAME_LEN,
@@ -26,12 +25,13 @@ from orchestrator.skills.misc.utils import (
     normalize_category,
     resolve_resource,
     split_frontmatter,
+    valid_skill_name,
 )
 from orchestrator.utils.service import SharedService
 
 # Product fields that belong under ``metadata:`` (Peon layout), not top-level.
 # Legacy top-level ``taskable`` — prefer ``jobable`` under metadata.
-_LEGACY_TOP_LEVEL = frozenset(
+METADATA_TOP_LEVEL_FIELDS = frozenset(
     {
         "category",
         "tags",
@@ -55,7 +55,8 @@ _LEGACY_TOP_LEVEL = frozenset(
 
 
 class SkillLinter(SharedService):
-    def lint_dir(self, skill_dir: Path) -> dict[str, Any]:
+    @staticmethod
+    def lint_dir(skill_dir: Path) -> dict[str, Any]:
         skill_dir = Path(skill_dir)
         manifest = find_manifest(skill_dir)
         if manifest is None:
@@ -69,7 +70,7 @@ class SkillLinter(SharedService):
                 "skill_dir": str(skill_dir),
                 "issues": [LintIssue("error", "read_error", str(exc)).to_dict()],
             }
-        issues = self.lint_text(text, skill_dir=skill_dir)
+        issues = SkillLinter.lint_text(text, skill_dir=skill_dir)
         return {
             "ok": not any(i.level == "error" for i in issues),
             "skill_dir": str(skill_dir),
@@ -77,9 +78,10 @@ class SkillLinter(SharedService):
             "issues": [i.to_dict() for i in issues],
         }
 
-    def check(self, skill_dir: Path) -> dict[str, Any]:
+    @staticmethod
+    def check(skill_dir: Path) -> dict[str, Any]:
         """Lint a skill directory; ``compatible`` is True when there are no errors."""
-        result = self.lint_dir(skill_dir)
+        result = SkillLinter.lint_dir(skill_dir)
         issues = list(result.get("issues") or [])
         errors = [i for i in issues if i.get("level") == "error"]
         warnings = [i for i in issues if i.get("level") == "warning"]
@@ -92,11 +94,8 @@ class SkillLinter(SharedService):
             "warnings": warnings,
         }
 
-    def is_compatible(self, skill_dir: Path) -> bool:
-        """True when the skill meets Peon SKILL.md lint requirements (no errors)."""
-        return bool(self.check(skill_dir)["compatible"])
-
-    def lint_text(self, text: str, *, skill_dir: Path | None = None) -> list[LintIssue]:
+    @staticmethod
+    def lint_text(text: str, *, skill_dir: Path | None = None) -> list[LintIssue]:
         if not (text or "").strip():
             return [LintIssue("error", "empty", "SKILL.md is empty.")]
         split = split_frontmatter(text)
@@ -118,8 +117,8 @@ class SkillLinter(SharedService):
         if not isinstance(data, dict):
             return [LintIssue("error", "yaml_mapping", "Frontmatter must be a YAML mapping.")]
 
-        issues = self._spec_issues(data, skill_dir)
-        issues.extend(self._meta_issues(data.get("metadata") or {}))
+        issues = SkillLinter._spec_issues(data, skill_dir)
+        issues.extend(SkillLinter._meta_issues(data.get("metadata") or {}))
         if not (body or "").strip():
             issues.append(LintIssue("warning", "empty_body", "Skill body is empty."))
         if skill_dir is not None:
@@ -130,10 +129,11 @@ class SkillLinter(SharedService):
                     )
         return issues
 
-    def _spec_issues(self, fm: dict[str, Any], skill_dir: Path | None) -> list[LintIssue]:
+    @staticmethod
+    def _spec_issues(fm: dict[str, Any], skill_dir: Path | None) -> list[LintIssue]:
         issues: list[LintIssue] = []
         for key in sorted(set(fm) - SPEC_FIELDS):
-            if key in _LEGACY_TOP_LEVEL:
+            if key in METADATA_TOP_LEVEL_FIELDS:
                 hint = (
                     "Use `jobable` under `metadata:` instead of top-level `taskable`."
                     if key == "taskable"
@@ -152,7 +152,7 @@ class SkillLinter(SharedService):
         if name is None or not str(name).strip():
             issues.append(LintIssue("error", "missing_name", "Missing required field: name"))
         else:
-            issues.extend(self._name_issues(str(name), skill_dir))
+            issues.extend(SkillLinter._name_issues(str(name), skill_dir))
         desc = fm.get("description")
         if desc is None or not str(desc).strip():
             issues.append(
@@ -191,7 +191,8 @@ class SkillLinter(SharedService):
             )
         return issues
 
-    def _name_issues(self, name: str, skill_dir: Path | None) -> list[LintIssue]:
+    @staticmethod
+    def _name_issues(name: str, skill_dir: Path | None) -> list[LintIssue]:
         issues: list[LintIssue] = []
         name = unicodedata.normalize("NFKC", name.strip())
         if len(name) > MAX_NAME_LEN:
@@ -200,7 +201,7 @@ class SkillLinter(SharedService):
             issues.append(
                 LintIssue("error", "name_format", f"Invalid skill name '{name}'.")
             )
-        if not SKILL_NAME_RE.match(name):
+        if not valid_skill_name(name):
             issues.append(LintIssue("error", "name_chars", f"Invalid skill name '{name}'."))
         if skill_dir and unicodedata.normalize("NFKC", skill_dir.name) != name:
             issues.append(
@@ -212,7 +213,8 @@ class SkillLinter(SharedService):
             )
         return issues
 
-    def _meta_issues(self, meta: Any) -> list[LintIssue]:
+    @staticmethod
+    def _meta_issues(meta: Any) -> list[LintIssue]:
         if not isinstance(meta, dict):
             return []
         issues: list[LintIssue] = []
@@ -254,14 +256,13 @@ class SkillLinter(SharedService):
             )
         return issues
 
-    @classmethod
-    def lint_root(cls, root: Path) -> list[dict[str, Any]]:
+    @staticmethod
+    def lint_root(root: Path) -> list[dict[str, Any]]:
         """Lint every skill directory under ``root`` that has a manifest."""
-        self = cls.shared()
         if not root.is_dir():
             return []
         return [
-            self.lint_dir(child)
+            SkillLinter.lint_dir(child)
             for child in sorted(root.iterdir())
             if child.is_dir() and not child.name.startswith(".") and find_manifest(child)
         ]

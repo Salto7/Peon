@@ -10,6 +10,7 @@ if a binary is still missing after provision.
 - Paths must stay under this project/run workspace
 
 ## Rules
-- Obey RoE — in-scope hosts/URLs only
-- `record_finding` for notable live services
+- Obey RoE — in-scope subjects only
+- `record_finding` for notable discoveries about probed subjects (with evidence) —
+  not skill/run completion status
 - Reuse tool output; never invent probe results

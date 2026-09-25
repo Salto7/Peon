@@ -39,7 +39,8 @@ run_skill_script("domain-enum", "scripts/run.py", command="from-corp --workspace
 ```
 run_skill_script("domain-enum", "scripts/run.py", command="pipeline --from-corp --out-dir workspace --md findings/domain-inventory.md")
 ```
-3. Record notable subdomains with `record_finding`.
+3. Record notable discoveries with `record_finding` (subject + evidence; free-form
+   `kind` / `asset_type`) — not run/objective status.
 
 For corporate recon, invoke **`ai-osint-subsidiaries` `workflow`** first — do not manually
 chain discovery and this skill.

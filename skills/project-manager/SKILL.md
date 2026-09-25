@@ -1,6 +1,6 @@
 ---
 name: project-manager
-description: Project manager — execute the project plan after blueprint; skills, subgraphs, structured findings. Prefer run_skill_script / sandbox spine. Not analyzer. Use when executing a multi-objective project plan.
+description: Project manager — execute the project plan after blueprint; skills, subgraphs, engagement findings. Prefer run_skill_script / sandbox spine. Not analyzer. Use when executing a multi-objective project plan.
 allowed-tools: sandbox_setup sandbox_status provision_cli run_skill_script run_cli spawn_subagent wait_for_subagents skills_list skill_view list_objectives update_objective_status record_finding record_findings list_findings
 metadata:
   version: 2.4.0

@@ -137,11 +137,46 @@ if not _stream_path.is_absolute() or ".." in _stream_path.parts:
 STREAM_SOCKET_PATH = str(_stream_path)
 Path(STREAM_SOCKET_PATH).parent.mkdir(parents=True, exist_ok=True)
 
+# Host RPC bridge for sandboxed skills (skill_view / MCP). Same dir as stream.
+_rpc_raw = _env("RPC_SOCKET_PATH") or str(Path(STREAM_SOCKET_PATH).parent / "rpc.sock")
+_rpc_path = Path(_rpc_raw)
+if not _rpc_path.is_absolute() or ".." in _rpc_path.parts:
+    _rpc_path = Path(STREAM_SOCKET_PATH).parent / "rpc.sock"
+RPC_SOCKET_PATH = str(_rpc_path)
+Path(RPC_SOCKET_PATH).parent.mkdir(parents=True, exist_ok=True)
+
+
+def _resolve_rpc_token() -> str:
+    """Share one token across worker / rpc processes (env or sibling file)."""
+    import secrets
+
+    raw = _env("ORCHESTRATOR_RPC_TOKEN") or _env("RPC_TOKEN")
+    if raw:
+        return raw
+    token_file = Path(RPC_SOCKET_PATH).parent / "rpc.token"
+    try:
+        if token_file.is_file():
+            existing = token_file.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        token = secrets.token_urlsafe(32)
+        token_file.write_text(token + "\n", encoding="utf-8")
+        try:
+            token_file.chmod(0o600)
+        except OSError:
+            pass
+        return token
+    except OSError:
+        return secrets.token_urlsafe(32)
+
+
+RPC_TOKEN = _resolve_rpc_token()
+
 # true = one Docker container per Project; false = one shared Docker sandbox.
 SANDBOX_ENABLED = _env_bool("SANDBOX_ENABLED", True)
 PROJECT_SANDBOX_PREFIX = _env("PROJECT_SANDBOX_PREFIX", "peon-project")
 SANDBOX_IMAGE = _env("SANDBOX_IMAGE", "peon-sandbox:local")
-# Named Docker volume for stream sockets when the worker runs in Compose.
+# Named Docker volume for stream/RPC sockets when the worker runs in Compose.
 SANDBOX_SOCKETS_VOLUME = _env("SANDBOX_SOCKETS_VOLUME", "")
 
 # Isolated Learn-page install lab (not project sandboxes / SANDBOX_IMAGE).

@@ -210,17 +210,24 @@
 
   function resizeCanvas(canvas, svg, positions) {
     var maxX = NODE_W + PAD * 2;
-    var maxY = NODE_H + PAD * 2;
+    var maxY = PAD * 2;
     Object.keys(positions).forEach(function (id) {
       var p = positions[id];
-      maxX = Math.max(maxX, p.x + p.w + PAD);
-      maxY = Math.max(maxY, p.y + p.h + PAD);
+      var node = canvas.querySelector(
+        '.flow-node[data-agent-id="' + String(id).replace(/"/g, "") + '"]'
+      );
+      var w = p.w || NODE_W;
+      var h = p.h || NODE_H;
+      if (node) {
+        w = Math.max(w, node.offsetWidth || 0);
+        h = Math.max(h, node.offsetHeight || 0);
+        p.w = w;
+        p.h = h;
+      }
+      maxX = Math.max(maxX, p.x + w + PAD);
+      maxY = Math.max(maxY, p.y + h + PAD);
     });
-    var parent = canvas.parentElement;
-    if (parent) {
-      maxX = Math.max(maxX, parent.clientWidth || 0);
-      maxY = Math.max(maxY, parent.clientHeight || 0);
-    }
+    if (maxY < NODE_H + PAD * 2) maxY = NODE_H + PAD * 2;
     canvas.style.width = maxX + "px";
     canvas.style.height = maxY + "px";
     svg.setAttribute("width", String(maxX));
@@ -409,6 +416,11 @@
     });
 
     listEl.appendChild(canvas);
+    // Measure real node boxes (content can exceed NODE_H) so the card fits vertically.
+    requestAnimationFrame(function () {
+      resizeCanvas(canvas, svg, lay.positions);
+      drawEdges(svg, lay.positions, lay.edges);
+    });
     resizeCanvas(canvas, svg, lay.positions);
     drawEdges(svg, lay.positions, lay.edges);
   }

@@ -87,8 +87,7 @@ class Skill:
     def skill_dir(self) -> Path:
         return self.manifest_path.parent
 
-    def to_catalog_entry(self) -> dict[str, Any]:
-        """Compact projection shared by load discover and JSON catalog."""
+    def to_catalog_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
@@ -96,11 +95,6 @@ class Skill:
             "tags": list(self.tags or []),
             "category": self.category or "",
             "jobable": bool(self.jobable),
-        }
-
-    def to_catalog_dict(self) -> dict[str, Any]:
-        return {
-            **self.to_catalog_entry(),
             "tools": self.tools,
             "lifecycle": self.lifecycle,
             "toolkit": list(self.toolkit or []),
@@ -111,3 +105,29 @@ class Skill:
             "builtin": self.is_builtin,
             "protected": self.is_protected,
         }
+
+    def format_view(self, *, path: str = "", body_limit: int = 6000) -> str:
+        """Human-readable skill detail (capability tool + RPC skill_view).
+
+        When ``path`` is set, return that skill-relative file (references/, etc.).
+        """
+        rel = (path or "").strip()
+        if rel:
+            from orchestrator.skills.misc.utils import resolve_resource
+
+            target = resolve_resource(self.skill_dir, rel)
+            if target is None:
+                return f"File not found under skill {self.name!r}: {rel}"
+            try:
+                body = target.read_text(encoding="utf-8")
+            except OSError as exc:
+                return f"Error reading {rel}: {exc}"
+            return f"name: {self.name}\npath: {rel}\n\n{body[:body_limit]}"
+        body = (self.instructions or "").strip() or self.description or ""
+        return (
+            f"name: {self.name}\n"
+            f"category: {self.category or '-'}\n"
+            f"allowed-tools: {' '.join(self.tools or []) or '-'}\n"
+            f"requires_clis: {', '.join(self.toolkit or []) or '-'}\n\n"
+            f"{body[:body_limit]}"
+        )

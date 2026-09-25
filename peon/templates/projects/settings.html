@@ -14,7 +14,18 @@
 </div>
 {% endif %}
 
+<section class="panel" id="appearance">
+  <h2>Appearance</h2>
+  <label for="theme-select">Theme</label>
+  <select id="theme-select" data-theme-select>
+    <option value="dark">Dark</option>
+    <option value="light">Light</option>
+  </select>
+  <p class="meta">Applies immediately in this browser (saved locally).</p>
+</section>
+
 <section class="panel">
+  <h2>Runtime</h2>
   <form method="post" action="{% url 'settings_page' %}">
     {% csrf_token %}
     {% for f in fields %}

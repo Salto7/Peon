@@ -19,12 +19,14 @@
    by the worker. Use the Tools page for catalog entries — never shell `apt-get`
    inside `run_skill_script` `command=`.
 2. Prefer dedicated skill scripts over ad-hoc install commands.
-3. Never invent domains/IPs/scan results when a skill or tool exists.
+3. Never invent subjects or results when a skill or tool exists.
 4. For investigative work, split the objective into evidence questions, check the catalog
    for a dedicated skill first, and use independent subagents only for genuinely parallel
    evidence gathering.
-5. Record `kind=osint` or `kind=vulnerability` — one row per asset, with evidence.
-6. Continuous monitoring: use the **`watchdog`** skill (`register_schedule` + tick script),
+5. `record_finding` for engagement discoveries about subjects (any asset class) with
+   evidence — free-form `kind` / `asset_type`; not job/objective/agent status. One row
+   per discovery.
+6. Continuous monitoring: use the **`watchdog`** skill (`run_periodic` + tick script),
    not ad-hoc `while True` loops in this job.
 7. Promote reusable scripts to `findings/code/`; avoid mid-run `skill_manage` when skill
    learning is enabled.

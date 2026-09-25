@@ -7,7 +7,6 @@ from orchestrator.skills.execute.executors import (
     SkillExecutor,
     SkillRunRequest,
     SkillRunResult,
-    absolutize_relative_paths,
 )
 
 __all__ = [
@@ -17,5 +16,4 @@ __all__ = [
     "SkillExecutor",
     "SkillRunRequest",
     "SkillRunResult",
-    "absolutize_relative_paths",
 ]

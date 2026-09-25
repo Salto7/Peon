@@ -16,21 +16,17 @@ from django.views.decorators.http import require_GET, require_http_methods
 from orchestrator.learn import LearnAuthoring
 from orchestrator.skills.misc.registry import SkillRegistry
 from orchestrator.tools.catalog import ToolCatalog
+from peon.projects.http_helpers import parse_json_body
 from peon.projects.learn_lab import LearnLab
-from peon.projects.llm_gate import llm_configured
+from orchestrator.utils.llm import LLM_NOT_CONFIGURED, llm_configured
+from peon.projects.http_helpers import split_csv
 
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def _parse_body(request: HttpRequest) -> dict:
     if request.content_type and "application/json" in request.content_type:
-        try:
-            body = json.loads(request.body.decode() or "{}")
-        except json.JSONDecodeError as exc:
-            raise ValueError("invalid JSON") from exc
-        if not isinstance(body, dict):
-            raise ValueError("JSON object required")
-        return body
+        return parse_json_body(request, strict=True)
     return {
         "prompt": request.POST.get("prompt") or "",
         "tools": request.POST.getlist("tools") or [],
@@ -79,7 +75,7 @@ def learn_page(request: HttpRequest) -> HttpResponse:
 def learn_suggest_tool(request: HttpRequest) -> JsonResponse:
     if not llm_configured():
         return JsonResponse(
-            {"ok": False, "error": "Set OPENROUTER_API_KEY (or OpenAI/LiteLLM)."},
+            {"ok": False, "error": LLM_NOT_CONFIGURED},
             status=503,
         )
     try:
@@ -105,14 +101,14 @@ def learn_suggest_tool(request: HttpRequest) -> JsonResponse:
 def learn_write_skill(request: HttpRequest) -> JsonResponse:
     if not llm_configured():
         return JsonResponse(
-            {"ok": False, "error": "Set OPENROUTER_API_KEY (or OpenAI/LiteLLM)."},
+            {"ok": False, "error": LLM_NOT_CONFIGURED},
             status=503,
         )
     try:
         body = _parse_body(request)
         tools = body.get("tools") or []
         if isinstance(tools, str):
-            tools = [t.strip() for t in tools.split(",") if t.strip()]
+            tools = split_csv(tools)
         result = LearnAuthoring.shared().write_skill(
             str(body.get("prompt") or ""), tools=list(tools)
         )
@@ -190,7 +186,7 @@ def learn_test_tool(request: HttpRequest) -> JsonResponse:
 def learn_replan_tool(request: HttpRequest) -> JsonResponse:
     if not llm_configured():
         return JsonResponse(
-            {"ok": False, "error": "Set OPENROUTER_API_KEY (or OpenAI/LiteLLM)."},
+            {"ok": False, "error": LLM_NOT_CONFIGURED},
             status=503,
         )
     try:

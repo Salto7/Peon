@@ -11,7 +11,8 @@ from orchestrator.utils.strings import as_str_list, unique, fold_keys
 class TagNormalizer(SharedService):
     """Derive tag canonical spellings from known skill tags (no static alias table)."""
 
-    def build_index(self, known_tags: Iterable[str]) -> dict[str, str]:
+    @staticmethod
+    def build_index(known_tags: Iterable[str]) -> dict[str, str]:
         index: dict[str, str] = {}
         for tag in known_tags:
             text = str(tag or "").strip()
@@ -21,7 +22,8 @@ class TagNormalizer(SharedService):
                 index.setdefault(key, text)
         return index
 
-    def collect_known(self, tag_lists: Iterable[Iterable[str]]) -> list[str]:
+    @staticmethod
+    def collect_known(tag_lists: Iterable[Iterable[str]]) -> list[str]:
         known: list[str] = []
         seen: set[str] = set()
         for tags in tag_lists:
@@ -32,8 +34,8 @@ class TagNormalizer(SharedService):
                     known.append(text)
         return known
 
+    @staticmethod
     def normalize(
-        self,
         raw: Any,
         *,
         known: Iterable[str] | None = None,
@@ -45,7 +47,7 @@ class TagNormalizer(SharedService):
         if not known_list:
             return unique(parts)
 
-        index = self.build_index(known_list)
+        index = TagNormalizer.build_index(known_list)
         out: list[str] = []
         for part in parts:
             canon = None

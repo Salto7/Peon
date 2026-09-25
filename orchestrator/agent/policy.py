@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from orchestrator.capabilities.registry import REGISTRY
+from orchestrator.capabilities.registry import REGISTRY, ensure_registered
 from orchestrator.skills.misc.registry import SkillRegistry
 
+# Peon base set: no run_cli / run_code — skills must declare those explicitly.
 _BASE = frozenset(
     {
         "sandbox_setup",
@@ -15,8 +16,10 @@ _BASE = frozenset(
     }
 )
 
+
 def resolve_tool_names(skill_names: list[str]) -> set[str]:
     """Union of skill ``allowed-tools`` ∩ registered tools, plus sandbox base set."""
+    ensure_registered()
     registered = set(REGISTRY.tool_map())
     allowed: set[str] = set(_BASE) & registered
     reg = SkillRegistry.shared()

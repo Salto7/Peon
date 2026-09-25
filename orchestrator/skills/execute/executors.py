@@ -9,12 +9,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from orchestrator.sandbox import SandboxSession
+from orchestrator.sandbox.backend import require_docker_bound
 from orchestrator.skills.misc.registry import SkillRegistry
 from orchestrator.skills.misc.utils import resolve_resource
 from orchestrator.utils.service import SharedService
 
 _TIMEOUT = 300
-_DOCKER_MODES = frozenset({"docker", "shared"})
 
 
 @dataclass
@@ -109,13 +109,11 @@ class LocalSkillExecutor(SharedService, SkillExecutor):
             )
 
         backend = SandboxSession.current()
-        if backend.info.mode not in _DOCKER_MODES:
+        err = require_docker_bound(backend.info.mode)
+        if err:
             return SkillRunResult(
                 ok=False,
-                output=(
-                    f"Host execution disabled — bind a Docker sandbox "
-                    f"(got mode={backend.info.mode!r})"
-                ),
+                output=err.replace("Error: ", "Host execution disabled — ", 1),
                 exit_code=1,
                 script_path=path,
             )
@@ -130,8 +128,20 @@ class LocalSkillExecutor(SharedService, SkillExecutor):
         container_ws = backend.workdir()
         skill_name = skill_dir.name
         script_in = f"/skills/{skill_name}/{request.script}"
-        container_py = f"/skills/{skill_name}/scripts{os.pathsep}/skills/helpers"
-        argv = ["env", f"PYTHONPATH={container_py}", "python3", script_in]
+        # Flat imports from helpers + optional orchestrator library mount.
+        helpers_path = "/skills/helpers"
+        scripts_path = f"/skills/{skill_name}/scripts"
+        container_py = (
+            f"{helpers_path}{os.pathsep}{scripts_path}{os.pathsep}/orchestrator-src"
+        )
+        argv = [
+            "env",
+            f"PYTHONPATH={container_py}",
+            "SKILLS_DIR=/skills",
+            "ORCHESTRATOR_HELPERS_DIR=/skills/helpers",
+            "python3",
+            script_in,
+        ]
         if request.argv:
             argv.extend(request.argv)
         elif command:

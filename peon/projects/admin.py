@@ -2,7 +2,17 @@
 
 from django.contrib import admin
 
-from peon.projects.models import Finding, Job, JobDirective, Objective, Project, RulesOfEngagement, RuntimeSettings, StreamMessage
+from peon.projects.models import (
+    Finding,
+    Job,
+    JobDirective,
+    Objective,
+    OperatorPrompt,
+    Project,
+    RulesOfEngagement,
+    RuntimeSettings,
+    StreamMessage,
+)
 
 
 class RulesOfEngagementInline(admin.StackedInline):
@@ -78,6 +88,15 @@ class JobDirectiveAdmin(admin.ModelAdmin):
     search_fields = ("content",)
     raw_id_fields = ("job",)
     readonly_fields = ("created_at", "consumed_at")
+
+
+@admin.register(OperatorPrompt)
+class OperatorPromptAdmin(admin.ModelAdmin):
+    list_display = ("id", "project", "job", "resolved_at", "created_at")
+    list_filter = ("resolved_at",)
+    search_fields = ("question", "reply")
+    raw_id_fields = ("project", "job")
+    readonly_fields = ("id", "created_at", "resolved_at")
 
 
 @admin.register(StreamMessage)

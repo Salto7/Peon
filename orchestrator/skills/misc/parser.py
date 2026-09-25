@@ -12,7 +12,7 @@ from orchestrator.skills.misc.tags import TagNormalizer
 from orchestrator.skills.misc.utils import (
     FRONTMATTER_RE,
     KEY_LINE_RE,
-    SKILL_LIFECYCLES,
+    coerce_lifecycle,
     normalize_category,
 )
 from orchestrator.utils.service import SharedService
@@ -99,7 +99,7 @@ class SkillParser(SharedService):
         meta, orch = self._layers(frontmatter)
         name = frontmatter.get("name") or default_name
         tools = self._tools_from(frontmatter, meta, orch)
-        tags = TagNormalizer.shared().normalize(
+        tags = TagNormalizer.normalize(
             self._get(frontmatter, meta, orch, "tags")
         )
         toolkit = as_str_list(
@@ -153,11 +153,7 @@ class SkillParser(SharedService):
         )
 
     def coerce_lifecycle(self, value: Any, *, default: str = "short") -> str:
-        fallback = default if default in SKILL_LIFECYCLES else "short"
-        if value is None:
-            return fallback
-        text = str(value).strip().lower()
-        return text if text in SKILL_LIFECYCLES else fallback
+        return coerce_lifecycle(value, default=default, allow_auto=False)
 
     @staticmethod
     def _coerce_jobable(value: Any) -> bool:

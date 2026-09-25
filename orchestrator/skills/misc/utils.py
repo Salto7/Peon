@@ -25,6 +25,15 @@ SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SKILL_LIFECYCLES = frozenset({"short", "long", "continuous"})
 # Lint also accepts planner "auto" before coerce to a concrete lifecycle.
 LINT_LIFECYCLES = frozenset({"short", "long", "continuous", "auto"})
+LIFECYCLE_ALIASES = {
+    "stable": "short",
+    "production": "short",
+    "prod": "short",
+    "persistent": "long",
+    "project": "long",
+    "daemon": "continuous",
+    "watchdog": "continuous",
+}
 
 # --- path / manifest ---------------------------------------------------------
 
@@ -45,6 +54,25 @@ REF_RE = re.compile(
     re.MULTILINE,
 )
 KEY_LINE_RE = re.compile(r"^([A-Za-z_][\w-]*)\s*:(.*)$")
+
+
+def valid_skill_name(name: str) -> bool:
+    return bool((name or "").strip() and SKILL_NAME_RE.match(name.strip()))
+
+
+def coerce_lifecycle(
+    value: object,
+    *,
+    default: str = "short",
+    allow_auto: bool = False,
+) -> str:
+    """Normalize lifecycle; map common aliases; optionally keep planner ``auto``."""
+    allowed = LINT_LIFECYCLES if allow_auto else SKILL_LIFECYCLES
+    fallback = default if default in SKILL_LIFECYCLES else "short"
+    if value is None:
+        return fallback
+    text = LIFECYCLE_ALIASES.get(str(value).strip().lower(), str(value).strip().lower())
+    return text if text in allowed else fallback
 
 
 def resolve_alias(name: str, *, aliases: dict[str, str] | None = None) -> str:
@@ -93,6 +121,34 @@ def find_manifest(skill_dir: Path) -> Path | None:
 def split_frontmatter(text: str) -> tuple[str, str] | None:
     m = FRONTMATTER_RE.match((text or "").strip())
     return (m.group(1), m.group(2) or "") if m else None
+
+
+def parse_frontmatter_yaml(text: str) -> tuple[dict[str, Any], str] | None:
+    """Parse SKILL.md into ``(frontmatter dict, body)`` or ``None`` if invalid."""
+    split = split_frontmatter(text)
+    if not split:
+        return None
+    try:
+        import yaml
+
+        data = yaml.safe_load(split[0]) or {}
+    except Exception:
+        return None
+    return (data, split[1]) if isinstance(data, dict) else None
+
+
+def dump_skill_md(data: dict[str, Any], body: str) -> str:
+    import yaml
+
+    fm = yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()
+    body_text = body if body.startswith("\n") else f"\n{body}" if body else "\n"
+    return f"---\n{fm}\n---{body_text}"
+
+
+def truncate_compat(text: str, *, limit: int = MAX_COMPATIBILITY_LEN) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
 
 
 def extract_file_refs(text: str) -> list[str]:

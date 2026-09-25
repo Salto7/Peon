@@ -1,36 +1,89 @@
 {% load static %}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("peon-theme");
+        document.documentElement.setAttribute(
+          "data-theme",
+          t === "light" ? "light" : "dark"
+        );
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+      }
+      try {
+        if (localStorage.getItem("peon-app-side-collapsed") === "1") {
+          document.documentElement.classList.add("app-side-collapsed");
+        }
+      } catch (e2) {}
+    })();
+  </script>
   <title>{% block title %}Peon{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'css/peon.css' %}?v=20260913q">
+  <link rel="stylesheet" href="{% static 'css/peon.css' %}?v=20260925ad">
+  <link rel="icon" type="image/png" href="{% static 'img/favicon.png' %}?v=20260925c">
   {% block head %}{% endblock %}
 </head>
-<body class="{% block body_class %}{% endblock %}">
-  <nav>
-    <a class="brand" href="{% url 'project_list' %}">Peon</a>
-    <a href="{% url 'project_list' %}" {% if nav == "projects" %}class="active"{% endif %}>Projects</a>
-    <a href="{% url 'catalog' %}" {% if nav == "catalog" %}class="active"{% endif %}>Catalog</a>
-    <a href="{% url 'learn' %}" {% if nav == "learn" %}class="active"{% endif %}>Learn</a>
-    <a href="{% url 'settings_page' %}" {% if nav == "settings" %}class="active"{% endif %}>Settings</a>
-    <a href="/admin/">Admin</a>
-    <button type="button" class="nav-search" id="palette-open" title="Search (Shift+S)">
-      Search <kbd>⇧S</kbd>
-    </button>
-  </nav>
-  <main class="shell">
-    {% if messages %}
-      {% for message in messages %}
-        <div class="msg {% if message.tags %}{{ message.tags }}{% endif %}" data-toast-source>{{ message }}</div>
-      {% endfor %}
-    {% endif %}
-    {% block content %}{% endblock %}
-  </main>
+<body class="app-shell {% block body_class %}{% endblock %}">
+  <aside class="app-side" id="app-side" aria-label="App navigation">
+    <div class="app-side-top">
+      <a class="app-brand" href="{% url 'home' %}" title="Home">
+        <img class="app-brand-logo" src="{% static 'img/peon.gif' %}?v=20260925a" width="32" height="32" alt="Peon">
+      </a>
+      <div class="app-side-actions">
+        <button type="button" class="app-side-icon-btn" id="palette-open" data-palette-open
+                title="Search (Shift+S)" aria-label="Search">
+          <span aria-hidden="true">⌕</span>
+        </button>
+        <button type="button" class="app-side-icon-btn app-side-toggle" id="app-side-toggle"
+                aria-label="Collapse sidebar" title="Collapse sidebar" aria-expanded="true">
+          <span class="app-side-toggle-icon" aria-hidden="true">‹</span>
+        </button>
+      </div>
+    </div>
+    <nav class="app-side-nav">
+      <a class="app-side-link{% if nav == 'projects' %} is-active{% endif %}"
+         href="{% url 'project_list' %}" title="Projects">
+        <span class="app-side-ico" aria-hidden="true">▣</span>
+        <span class="app-side-label">Projects</span>
+      </a>
+      <a class="app-side-link{% if nav == 'catalog' %} is-active{% endif %}"
+         href="{% url 'catalog' %}" title="Shared catalog">
+        <span class="app-side-ico" aria-hidden="true">☰</span>
+        <span class="app-side-label">Shared catalog</span>
+      </a>
+      <a class="app-side-link{% if nav == 'learn' %} is-active{% endif %}"
+         href="{% url 'learn' %}" title="Toolsmith">
+        <span class="app-side-ico" aria-hidden="true">⚒</span>
+        <span class="app-side-label">Toolsmith</span>
+      </a>
+      <a class="app-side-link{% if nav == 'settings' %} is-active{% endif %}"
+         href="{% url 'settings_page' %}" title="Peon Settings">
+        <span class="app-side-ico" aria-hidden="true">⚙</span>
+        <span class="app-side-label">Peon Settings</span>
+      </a>
+      <a class="app-side-link" href="/admin/" title="Django admin">
+        <span class="app-side-ico" aria-hidden="true">◆</span>
+        <span class="app-side-label">Django admin</span>
+      </a>
+    </nav>
+  </aside>
+  <div class="app-main">
+    <main class="shell">
+      {% if messages %}
+        {% for message in messages %}
+          <div class="msg {% if message.tags %}{{ message.tags }}{% endif %}" data-toast-source>{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 
   <div id="toast-root" class="toast-root" aria-live="polite"></div>
 
@@ -42,7 +95,7 @@
     </form>
   </dialog>
 
-  <script src="{% static 'js/peon-ui.js' %}?v=20260913c"></script>
+  <script src="{% static 'js/peon-ui.js' %}?v=20260925l"></script>
   <script>
     PeonUI.init({ searchUrl: "{% url 'search_json' %}" });
   </script>

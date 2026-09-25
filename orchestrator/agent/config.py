@@ -8,7 +8,7 @@ from typing import Mapping
 
 @dataclass(frozen=True)
 class AgentRunConfig:
-    """Caps passed from host settings / env into ``orchestrator.agent``."""
+    """Caps for one agent loop (from RuntimeConfig / host settings)."""
 
     max_failure_replans: int = 2
     max_iterations: int = 40
@@ -28,7 +28,7 @@ class AgentRunConfig:
 
 
 def agent_run_config_from_mapping(data: Mapping[str, object]) -> AgentRunConfig:
-    """Build config from a plain mapping (e.g. Django settings attrs)."""
+    """Build config from a plain mapping (e.g. host settings attrs)."""
 
     def _int(key: str, default: int) -> int:
         raw = data.get(key, default)

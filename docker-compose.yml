@@ -53,6 +53,10 @@ services:
       - peon_sockets:/tmp/peon
       # Learn install-lab create/test/delete (AJAX). Project sandbox cleanup stays on worker.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Live-edit UI / control plane without rebuild (DEBUG runserver).
+      - ./peon:/app/peon
+      - ./orchestrator:/app/orchestrator
+      - ./manage.py:/app/manage.py
       - ./skills:/app/skills:ro
       - ./tools:/app/tools:ro
     expose:
@@ -83,6 +87,8 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost:8000}
       STREAM_SOCKET_PATH: /tmp/peon/stream.sock
       ORCHESTRATOR_STREAM_SOCKET: /tmp/peon/stream.sock
+      RPC_SOCKET_PATH: /tmp/peon/rpc.sock
+      ORCHESTRATOR_RPC_SOCKET: /tmp/peon/rpc.sock
       SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-peon-sandbox:local}
       PROJECT_SANDBOX_PREFIX: ${PROJECT_SANDBOX_PREFIX:-peon-project}
@@ -93,6 +99,9 @@ services:
     volumes:
       - peon_data:/data
       - peon_sockets:/tmp/peon
+      - ./peon:/app/peon
+      - ./orchestrator:/app/orchestrator
+      - ./manage.py:/app/manage.py
       - ./skills:/app/skills:ro
       - ./tools:/app/tools:ro
       - /var/run/docker.sock:/var/run/docker.sock

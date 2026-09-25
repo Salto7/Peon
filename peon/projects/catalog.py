@@ -17,6 +17,7 @@ from orchestrator.skills.misc.router import SkillRouter
 from orchestrator.skills.misc.utils import CORE_SKILLS
 from orchestrator.skills.provision import SkillLinter
 from orchestrator.tools.catalog import CatalogTool, ToolCatalog
+from peon.projects.http_helpers import split_csv
 
 
 class CatalogCards(ABC):
@@ -330,10 +331,6 @@ class ToolCards(CatalogCards):
         return out
 
 
-def _csv(raw: str | None) -> list[str]:
-    return [p.strip() for p in (raw or "").split(",") if p.strip()]
-
-
 def _resolve_args(request: HttpRequest) -> tuple[str, str, bool, list[str], list[str]]:
     """Parse description / lifecycle / project / skills / preferred_tags from GET or POST."""
     if request.method == "POST":
@@ -348,10 +345,10 @@ def _resolve_args(request: HttpRequest) -> tuple[str, str, bool, list[str], list
         project = bool(body.get("project"))
         explicit = body.get("skills") or body.get("explicit") or []
         if isinstance(explicit, str):
-            explicit = _csv(explicit)
+            explicit = split_csv(explicit)
         tags = body.get("preferred_tags") or body.get("focus_tags") or []
         if isinstance(tags, str):
-            tags = _csv(tags)
+            tags = split_csv(tags)
         return description, lifecycle, project, list(explicit), list(tags)
 
     description = (request.GET.get("description") or request.GET.get("brief") or "").strip()
@@ -361,8 +358,8 @@ def _resolve_args(request: HttpRequest) -> tuple[str, str, bool, list[str], list
         description,
         lifecycle,
         project,
-        _csv(request.GET.get("skills")),
-        _csv(request.GET.get("preferred_tags") or request.GET.get("focus_tags")),
+        split_csv(request.GET.get("skills")),
+        split_csv(request.GET.get("preferred_tags") or request.GET.get("focus_tags")),
     )
 
 

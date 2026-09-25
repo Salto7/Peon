@@ -1,4 +1,4 @@
-"""Project status JSON for the ops console (agents, skills, progress)."""
+"""War-room ops console JSON (agents, skills, progress)."""
 
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ _COMMAND_TYPES = (
 
 
 
-class ProjectStatus:
-    """Build JSON for the project ops console (agents, skills, progress)."""
+class ProjectOpsPayload:
+    """Build JSON for the war-room ops console (agents, skills, progress)."""
 
     @classmethod
     def job_payload(cls, job: Job) -> dict:
@@ -329,6 +329,8 @@ class ProjectStatus:
         from peon.projects.workspaces import reports_payload
 
         next_obj = ObjectiveScheduler().next_ready(project)
+        from peon.projects.console_chat import pending_operator_prompts
+
         return {
             "project": cls.project_status_payload(project, objectives=objectives, jobs=jobs),
             "agents": agents,
@@ -337,4 +339,5 @@ class ProjectStatus:
             "objectives": [cls.objective_payload(o) for o in objectives],
             "reports": reports_payload(str(project.id)),
             "next_objective_ready": next_obj is not None,
+            "pending_inputs": pending_operator_prompts(project),
         }

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -173,7 +172,7 @@ class EvidenceBundle:
             f"# Project: {self.project_title}",
             f"Summary: {self.project_summary or '(none)'}",
             "",
-            "## RoE",
+            "## Rules of Engagement",
             f"In-scope: {', '.join(self.in_scope) or '(empty)'}",
             f"Exclusions: {', '.join(self.exclusions) or '(none)'}",
             f"Authorization: {self.authorization or '(none)'}",
@@ -255,17 +254,18 @@ def _evidence_index(ws: Path) -> list[str]:
     return uniq[:120]
 
 
-ANALYZER_SYSTEM = """You are the project ANALYZER for an authorized penetration-test orchestrator.
+ANALYZER_SYSTEM = """You are the project ANALYZER for an authorized engagement orchestrator.
 
-Write a FULLY SELF-CONTAINED markdown report. Do not scan or attack. Synthesize only.
-Do not invent vulnerabilities, CVEs, hosts, identities, or scan results that are not in the evidence.
+Write a FULLY SELF-CONTAINED markdown report. Do not collect new evidence or invent
+results. Synthesize only what is already in the evidence bundle.
 
-Targets and findings are asset-agnostic (hosts, URLs, cloud tenants, identities,
-packages, services, etc.) — not limited to domains/subdomains.
+Subjects and findings are asset-agnostic (network assets, files, malware/samples,
+source, packages, identities, cloud resources, services, …) — not limited to
+web/network targets. Finding kind/asset_type labels are free-form.
 
 Required sections (use these exact ## headings):
 1. ## Executive summary
-2. ## Scope / RoE
+2. ## Scope / Rules of Engagement
 3. ## Project-plan coverage
 4. ## Inventories
 5. ## Findings by severity
@@ -273,22 +273,13 @@ Required sections (use these exact ## headings):
 
 Rules:
 - Embed inventories and finding details inline (tables or bullets). Match columns
-  to the evidence (do not force entity/domain schemas).
+  to the evidence (do not force a fixed schema).
 - Do NOT tell the reader to open other files (no “see findings/foo.md”).
 - Group findings by severity (critical → info). Cite evidence inline.
 - Cover completed / blocked / pending / cancelled objectives explicitly.
 - If evidence is thin, say so honestly under Gaps — do not pad with speculation.
 - Return ONLY the markdown report body (start with # title). No preamble.
 """
-
-
-class ReportBuilder(ABC):
-    """Turn an EvidenceBundle into findings/report.md (or None if inapplicable)."""
-
-    @abstractmethod
-    def build(self, bundle: EvidenceBundle) -> Path | None:
-        """Write report.md and return its path, or None to try the next builder."""
-
 
 
 class InventoryTableBuilder:
@@ -426,9 +417,9 @@ class InventoryTableBuilder:
 _SEV_ORDER = ("critical", "high", "medium", "low", "info")
 
 
-class DeterministicReportBuilder(ReportBuilder):
-    def __init__(self, inventories: InventoryTableBuilder | None = None) -> None:
-        self._inventories = inventories or InventoryTableBuilder()
+class DeterministicReportBuilder:
+    def __init__(self) -> None:
+        self._inventories = InventoryTableBuilder()
 
     def build(self, bundle: EvidenceBundle) -> Path:
         ws = bundle.workspace
@@ -448,7 +439,7 @@ class DeterministicReportBuilder(ReportBuilder):
             "",
             self._summary(bundle),
             "",
-            "## Scope / RoE",
+            "## Scope / Rules of Engagement",
             "",
             f"- **In-scope:** {', '.join(bundle.in_scope) or '(empty)'}",
             f"- **Exclusions:** {', '.join(bundle.exclusions) or '(none)'}",
@@ -501,8 +492,9 @@ class DeterministicReportBuilder(ReportBuilder):
                 "## Gaps / next steps",
                 "",
                 "- Confirm blocked/pending objectives and re-run only those skills.",
-                "- Queue structured findings via ``record_finding`` "
-                "(`workspace/findings_queue.jsonl`).",
+                "- Queue **engagement** findings via ``record_finding`` "
+                "(discoveries about any subject class with evidence — not "
+                "job/objective/agent status).",
                 "- Re-run analyzer after additional evidence lands.",
                 "",
             ]
@@ -517,10 +509,10 @@ class DeterministicReportBuilder(ReportBuilder):
                 f"Evidence-only synthesis for **{bundle.project_title or 'project'}**. "
                 f"Structured findings: {len(bundle.findings)}. "
                 f"Phase markdown files: {len(bundle.phase_findings)}. "
-                "No new scanning; no invented vulnerabilities."
+                "No new collection; no invented discoveries."
             )
         return (
-            "Little curated evidence was present. Only the project plan / RoE "
+            "Little curated evidence was present. Only the project plan / Rules of Engagement "
             "and any indexed files were available."
         )
 
@@ -564,11 +556,7 @@ class DeterministicReportBuilder(ReportBuilder):
         return parts
 
 
-def build_deterministic_report(bundle: EvidenceBundle) -> Path:
-    return DeterministicReportBuilder().build(bundle)
-
-
-class LlmReportBuilder(ReportBuilder):
+class LlmReportBuilder:
     """LLM synthesizer; returns None when unavailable or output fails quality checks."""
 
     min_chars = 80
@@ -607,9 +595,9 @@ class LlmReportBuilder(ReportBuilder):
 
 
 class ReportSynthesizer:
-    """Chain of ReportBuilders; first non-None result wins."""
+    """Chain of report builders; first non-None result wins."""
 
-    def __init__(self, builders: list[ReportBuilder] | None = None) -> None:
+    def __init__(self, builders: list | None = None) -> None:
         self.builders = builders or [LlmReportBuilder(), DeterministicReportBuilder()]
 
     def run(self, job: Job, workspace: Path) -> Path:

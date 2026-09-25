@@ -8,8 +8,7 @@
   var lastInstallError = "";
 
   function csrfToken() {
-    var m = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
-    return m ? decodeURIComponent(m[1]) : "";
+    return (window.PeonUI && window.PeonUI.csrfToken && window.PeonUI.csrfToken()) || "";
   }
 
   function selectedTools(sel) {

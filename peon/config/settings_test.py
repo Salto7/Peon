@@ -21,5 +21,7 @@ DATABASES["default"]["NAME"] = str(_TEST_DATA / "test.sqlite3")  # noqa: F405
 PROJECT_WORKSPACES_DIR = (_TEST_DATA / "project_workspaces").resolve()  # noqa: F405
 PROJECT_WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
 STREAM_SOCKET_PATH = str(_TEST_DATA / "stream.sock")  # noqa: F405
+RPC_SOCKET_PATH = str(_TEST_DATA / "rpc.sock")  # noqa: F405
+RPC_TOKEN = "peon-test-rpc-token"  # noqa: F405
 DRAMATIQ_ENABLED = False
 REDIS_URL = "redis://127.0.0.1:6379/15"

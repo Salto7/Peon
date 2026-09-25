@@ -8,21 +8,8 @@ import sys
 from collections.abc import Callable
 
 
-# Soft preference only — skills fall back to all in-scope values.
-_NETWORK_HINT = frozenset({"domain", "url", "ip", "host"})
-_TYPE_RANK = {
-    "url": 10,
-    "ip": 9,
-    "host": 8,
-    "domain": 7,
-    "email": 6,
-    "path": 5,
-    "hash": 4,
-    "phone": 3,
-    "person": 2,
-    "blob": 2,
-    "other": 1,
-}
+# Soft preference for network-oriented skills — not a closed taxonomy.
+_NETWORK_HINT = frozenset({"domain", "url", "ip", "host", "fqdn", "netblock", "cidr"})
 
 
 def _coerce_target_list(raw) -> list[dict]:
@@ -47,7 +34,8 @@ def _coerce_target_list(raw) -> list[dict]:
             by_value[key] = row
             order.append(key)
             continue
-        if _TYPE_RANK.get(typ, 0) > _TYPE_RANK.get(prev.get("type") or "other", 0):
+        # Prefer explicit producer type over bare other.
+        if prev.get("type") in {"", "other"} and typ not in {"", "other"}:
             by_value[key] = row
     return [by_value[k] for k in order]
 
@@ -80,10 +68,6 @@ class SkillContext:
 
     def seed_assets(self) -> list[dict]:
         return _env_json_list("ORCHESTRATOR_SEED")
-
-    def in_scope(self) -> list[str]:
-        """Authorized value strings (authorization is membership, not type)."""
-        return [t["value"] for t in self.in_scope_assets()]
 
     def network_targets(self) -> list[str]:
         """Prefer network-typed hints; otherwise all in-scope values."""

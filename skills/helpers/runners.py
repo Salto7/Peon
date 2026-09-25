@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from binary import BinaryResolver, NativeBinaryResolver
+from binary import NativeBinaryResolver
 from context import SkillContext
 from workspace import WorkspaceStore
 
@@ -49,7 +49,7 @@ class BinaryRunner(SkillRunner):
         default_for_target: Callable[[str], str] | None = None,
         timeout: int = 300,
         context: SkillContext | None = None,
-        resolver: BinaryResolver | None = None,
+        resolver: NativeBinaryResolver | None = None,
         store: WorkspaceStore | None = None,
     ) -> None:
         super().__init__(context)
@@ -130,22 +130,8 @@ class BinaryRunner(SkillRunner):
                 stderr="\n".join(err_chunks),
                 code=worst,
             )
-            try:
-                from findings import record_finding
-
-                evidence = "\n".join(out_chunks).strip()
-                if evidence and worst == 0:
-                    record_finding(
-                        title=f"{skill} / {self.binary} completed",
-                        kind="observation",
-                        severity="info",
-                        asset_type="other",
-                        evidence=evidence[:4000],
-                        evidence_path=f"findings/{skill}.md",
-                        metadata={"binary": self.binary, "exit": worst},
-                    )
-            except Exception:
-                pass
+            # Do NOT record_finding here — run completion is ops status, not an
+            # engagement finding. Skills/agents call record_finding for real discoveries.
         return worst
 
 

@@ -79,9 +79,6 @@ class DockerCli(SharedService):
     def pull(self, image: str, *, timeout: float = 600) -> ExecResult:
         return self.run(["pull", image], timeout=timeout)
 
-    def rename(self, src: str, dest: str, *, timeout: float = 30) -> ExecResult:
-        return self.run(["rename", src, dest], timeout=timeout)
-
     def ps_ids(self, *filters: str, all_containers: bool = True) -> list[str]:
         """Container ids matching ``--filter`` expressions (``label=…``, etc.)."""
         args = ["ps", "-aq" if all_containers else "-q"]

@@ -10,7 +10,7 @@ import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Iterable
 
 import yaml
 
@@ -22,9 +22,8 @@ logger = logging.getLogger(__name__)
 _REPO_RE = re.compile(
     r"^(?:https?://github\.com/)?([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
 )
-_TRANSITIVE = {
+_TRANSITIVE: dict[str, list[str]] = {
     "ai-osint-subsidiaries": ["domain-enum"],
-    "domain-enum": ["entra-osint"],
 }
 _GH_SCRIPT = Path(__file__).with_name("assets") / "install_github_release.sh"
 
@@ -112,6 +111,30 @@ def _run(
 
 def _pkgs(raw: dict[str, Any]) -> list[str]:
     return [str(p).strip() for p in (raw.get("packages") or []) if str(p).strip()]
+
+
+# apt may install python3/nodejs while upstream scripts use `#!/usr/bin/env python|node`.
+_APT_ENV_ALIASES: tuple[tuple[str, str], ...] = (
+    ("python", "python3"),
+    ("node", "nodejs"),
+)
+
+
+def _ensure_env_command_aliases(installed_packages: Iterable[str]) -> None:
+    pkgs = {p.strip().lower() for p in installed_packages}
+    for alias, target in _APT_ENV_ALIASES:
+        if target not in pkgs:
+            continue
+        _run(
+            [
+                "bash",
+                "-lc",
+                f"command -v {alias} >/dev/null 2>&1 || "
+                f"{{ command -v {target} >/dev/null 2>&1 && "
+                f'ln -sfn "$(command -v {target})" "/usr/local/bin/{alias}"; }}',
+            ],
+            timeout=30,
+        )
 
 
 class InstallStep(ABC):
@@ -249,6 +272,7 @@ class AptInstallStep(InstallStep, step_type="apt"):
         )
         if code:
             return False, f"apt install {self.packages}: {(err or out).strip()[:400]}"
+        _ensure_env_command_aliases(self.packages)
         return True, f"apt:{','.join(self.packages)}"
 
 
@@ -329,7 +353,8 @@ class GitCloneInstallStep(InstallStep, step_type="git_clone"):
             return False, "binary name required"
         dest = Path("/opt/catalog-tools") / name
         url = f"https://github.com/{owner}/{name}.git"
-        # Ensure git exists (sandbox image is minimal).
+        entry_path = dest / entry
+        bin_path = f"/usr/local/bin/{bin_name}"
         AptInstallStep({"packages": ["git"]}).apply()
         script = f"""
 set -euo pipefail
@@ -341,10 +366,10 @@ git clone --depth {self.depth} {shlex.quote(url)} {shlex.quote(str(dest))}
             script += f"git -C {shlex.quote(str(dest))} fetch --depth {self.depth} origin {shlex.quote(self.ref)}\n"
             script += f"git -C {shlex.quote(str(dest))} checkout {shlex.quote(self.ref)}\n"
         script += f"""
-ENTRY={shlex.quote(str(dest / entry))}
+ENTRY={shlex.quote(str(entry_path))}
 test -f "$ENTRY"
 chmod +x "$ENTRY" || true
-ln -sfn "$ENTRY" {shlex.quote(f'/usr/local/bin/{bin_name}')}
+ln -sfn "$ENTRY" {shlex.quote(bin_path)}
 """
         code, out, err = _run(["bash", "-lc", script], timeout=600)
         if code:
@@ -383,7 +408,9 @@ class ToolCatalog(SharedService):
         raw = (os.environ.get("TOOLS_CATALOG_DIR") or "").strip()
         if raw:
             return Path(raw).resolve()
-        return Path(__file__).resolve().parents[3] / "tools" / "catalog"
+        from orchestrator.config import get_config
+
+        return Path(get_config().tools_catalog_dir).resolve()
 
     def invalidate(self) -> None:
         self._cache = None
@@ -452,6 +479,32 @@ class ToolCatalog(SharedService):
             return catalog[name]
         return next((t for t in catalog.values() if t.provides(name)), None)
 
+    def lookup(self, key: str) -> CatalogTool | None:
+        """Resolve by binary name or catalog id."""
+        return self.by_binary(key) or self.by_id(key)
+
+    def summaries(self, *, limit: int | None = 80) -> list[dict[str, str]]:
+        """Non-image catalog tools as compact dicts (authoring / LLM prompts)."""
+        out: list[dict[str, str]] = []
+        for tool in sorted(self.all().values(), key=lambda t: t.id):
+            if tool.is_image_tier:
+                continue
+            out.append(
+                {
+                    "id": tool.id,
+                    "binary": (tool.binary or tool.id).strip(),
+                    "description": (tool.description or "")[:240],
+                    "install_types": ",".join(
+                        str(s.get("type") or "")
+                        for s in (tool.install or [])
+                        if isinstance(s, dict)
+                    ),
+                }
+            )
+            if limit is not None and len(out) >= limit:
+                break
+        return out
+
     def for_skills(self, skill_names: list[str] | set[str]) -> list[CatalogTool]:
         catalog = self.all()
         expanded: list[str] = []
@@ -497,7 +550,7 @@ class ToolCatalog(SharedService):
             key = str(item).strip().lower()
             if not key:
                 continue
-            tool = self.by_binary(key) or self.by_id(key)
+            tool = self.lookup(key)
             if tool is None:
                 logger.warning("No catalog tool for skill %s CLI %r", skill_name, key)
                 continue
@@ -555,7 +608,8 @@ class CatalogProvisioner(SharedService):
         result.cli_ids = [t.id for t in tools]
         needed = [t for t in tools if not self._verified(t)]
         if needed:
-            # Priority: custom → apt → github_release → pip / git_clone.
+            # Runtime order: custom (if any) runs first as a bootstrap attempt;
+            # recipes should still prefer apt → github_release → git_clone → pip → custom.
             for tool in needed:
                 self._apply_custom_steps(tool, result)
             remaining = [t for t in needed if not self._verified(t)]

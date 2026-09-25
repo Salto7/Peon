@@ -100,9 +100,11 @@ class ObjectiveScheduler:
             f"In-scope (authorized assets; type is optional hint): {in_scope}\n"
             f"Exclusions: {excl}\n"
             f"Seed / intent: {seed}\n"
-            "Type labels (ip:, person:, …) are hints only — skills interpret values. "
+            "Type labels (ip:, file:, malware:, …) are hints only — skills interpret values. "
             "Discoveries go to candidates/findings — not authorized until promoted "
             "into in-scope. "
+            "record_finding is for engagement discoveries about subjects (any asset "
+            "class) with evidence — not job/objective/agent progress. "
             "Write evidence under workspace/; curated notes under findings/<skill>.md. "
             "Do not write findings/report.md unless this objective is the analyzer."
         )

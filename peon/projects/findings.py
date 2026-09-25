@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -13,24 +14,48 @@ from peon.projects.targets import sanitize_label
 _SEVERITY_RANK = frozenset({"critical", "high", "medium", "low", "info"})
 _SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 
-# Operator triage: closed FindingStatus set (UI posts status=…; legacy action=… still maps).
-TRIAGE_ACTIONS = {
-    "verify": FindingStatus.CONFIRMED,
-    "confirm": FindingStatus.CONFIRMED,
-    "dismiss": FindingStatus.FALSE_POSITIVE,
-    "accept": FindingStatus.ACCEPTED,
-    "fixed": FindingStatus.FIXED,
-    "reopen": FindingStatus.OPEN,
-    "open": FindingStatus.OPEN,
-    "confirmed": FindingStatus.CONFIRMED,
-    "false_positive": FindingStatus.FALSE_POSITIVE,
-    "accepted": FindingStatus.ACCEPTED,
-}
-
 # Excluded from client-facing report sections.
 REPORT_HIDDEN_STATUSES = frozenset(
     {FindingStatus.FALSE_POSITIVE, FindingStatus.ACCEPTED}
 )
+
+# Kinds that mean run/lifecycle noise, not engagement discoveries.
+_STATUS_KINDS = frozenset(
+    {
+        "status",
+        "progress",
+        "lifecycle",
+        "agent",
+        "agent_status",
+        "job_status",
+        "objective_status",
+        "run",
+        "heartbeat",
+    }
+)
+
+# Titles that are clearly skill/job/objective status (not findings).
+_STATUS_TITLE_RE = re.compile(
+    r"(?ix)"
+    r"("
+    r"^\S+\s*/\s*\S+\s+completed\s*$"  # "network-scanner / nmap completed"
+    r"|^(skill|job|agent|objective|obj-\d+|scan|task)\b.*\b"
+    r"(completed|finished|started|running|failed|blocked|cancelled)\b"
+    r"|\b(objective|job|agent)\s+(status|progress|update)\b"
+    r"|^(updated|marked)\s+obj-\d+"
+    r")"
+)
+
+
+def is_status_noise(title: str, kind: str = "") -> bool:
+    """True when the payload looks like agent/objective/run status, not a finding."""
+    k = sanitize_label(kind or "")
+    if k in _STATUS_KINDS:
+        return True
+    t = (title or "").strip()
+    if not t:
+        return True
+    return bool(_STATUS_TITLE_RE.search(t))
 
 
 class FindingNormalizer:
@@ -44,6 +69,8 @@ class FindingNormalizer:
             str(record.get("kind") or ""),
             default="observation",
         )
+        if is_status_noise(title, kind):
+            return None
         asset = sanitize_label(str(record.get("asset_type") or ""), default="")
         severity = sanitize_label(
             str(record.get("severity") or ""),
@@ -128,56 +155,44 @@ class FindingStore:
 
     @staticmethod
     def _queue_discovered_candidates(project: Project, row: dict[str, Any]) -> None:
-        """Surface novel assets from finding text as RoE candidates (not authorized)."""
+        """Surface novel assets from structured finding fields as RoE candidates."""
         roe = getattr(project, "roe", None)
         if roe is None:
             return
         from peon.projects.targets import (
             add_candidates,
             coerce_targets,
-            extract_targets,
+            discovery_assets_from_finding,
         )
 
-        texts = [
-            str(row.get("host") or ""),
-            str(row.get("evidence") or ""),
-            str(row.get("description") or ""),
-            str(row.get("title") or ""),
-        ]
-        found = extract_targets(*(t for t in texts if t.strip()))
+        found = discovery_assets_from_finding(row)
         if not found:
             return
         known = {
             t["value"].lower()
-            for t in coerce_targets(roe.in_scope) + coerce_targets(roe.exclusions)
+            for t in (
+                coerce_targets(roe.seed)
+                + coerce_targets(roe.in_scope)
+                + coerce_targets(roe.exclusions)
+                + coerce_targets(roe.candidates)
+            )
             if t.get("value")
         }
         novel = [t for t in found if t.get("value", "").lower() not in known]
         if novel:
             add_candidates(roe, novel)
 
-    def set_status(self, finding: Finding, status: str) -> Finding | None:
-        """Apply a FindingStatus value; returns None if status is invalid."""
+    def triage(self, finding: Finding, action: str = "", *, status: str = "") -> Finding | None:
+        """Apply a FindingStatus value (``status`` preferred; ``action`` alias)."""
+        raw = (status or action or "").strip().lower()
         allowed = {c.value for c in FindingStatus}
-        if status not in allowed:
+        if raw not in allowed:
             return None
-        if finding.status == status:
+        if finding.status == raw:
             return finding
-        finding.status = status
+        finding.status = raw
         finding.save(update_fields=["status", "updated_at"])
         return finding
-
-    def triage(self, finding: Finding, action: str = "", *, status: str = "") -> Finding | None:
-        """Apply a closed-set status (preferred) or legacy action verb."""
-        raw = (status or action or "").strip().lower()
-        target = TRIAGE_ACTIONS.get(raw)
-        if target is None:
-            allowed = {c.value for c in FindingStatus}
-            if raw in allowed:
-                target = raw
-            else:
-                return None
-        return self.set_status(finding, target)
 
     def list_payload(
         self,
@@ -196,6 +211,44 @@ class FindingStore:
         for f in qs:
             out.append(self._row_dict(f))
         return out
+
+    @staticmethod
+    def board_counts(project: Project) -> dict:
+        """Aggregate finding counts for the triage board header."""
+        from django.db.models import Count, Q
+
+        return project.findings.aggregate(
+            all=Count("id"),
+            open=Count("id", filter=Q(status=FindingStatus.OPEN)),
+            confirmed=Count("id", filter=Q(status=FindingStatus.CONFIRMED)),
+        )
+
+    @classmethod
+    def board_query(
+        cls,
+        project: Project,
+        request=None,
+        *,
+        status: str | None = None,
+        severity: str | None = None,
+        default_status: str = "open",
+    ) -> dict:
+        """Findings board payload + filters for detail page / JSON poll."""
+        if request is not None:
+            status_f = (request.GET.get("finding_status") or default_status).strip().lower()
+            severity_f = (request.GET.get("finding_severity") or "all").strip().lower()
+        else:
+            status_f = (status or default_status).strip().lower()
+            severity_f = (severity or "all").strip().lower()
+        store = cls()
+        rows = store.board(project, status=status_f, severity=severity_f)
+        return {
+            "status": status_f,
+            "severity": severity_f,
+            "findings": rows,
+            "payload": [store._row_dict(f) for f in rows],
+            "counts": cls.board_counts(project),
+        }
 
     def board(
         self,
@@ -220,21 +273,6 @@ class FindingStore:
             key=lambda f: (order.get(f.severity, 99), f.seq, str(f.created_at))
         )
         return rows
-
-    def board_payload(
-        self,
-        project: Project,
-        *,
-        status: str = "",
-        severity: str = "",
-        limit: int = 200,
-    ) -> list[dict]:
-        return [
-            self._row_dict(f)
-            for f in self.board(
-                project, status=status, severity=severity, limit=limit
-            )
-        ]
 
     @staticmethod
     def _row_dict(f: Finding) -> dict:

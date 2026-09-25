@@ -11,15 +11,15 @@ import sys
 import time
 
 from orchestrator.utils.job_env import JobEnv
+from orchestrator.prompts import INSTALL_MISSING_HINT
 from orchestrator.sandbox import SandboxSession
 from orchestrator.utils.service import SharedService
-
-_HINT = "If missing: tools/catalog YAML → skill Install docs → planner."
 
 # Compound / redirected shell is executed as-is — never treated as an apt binary.
 _COMPOUND_SHELL = re.compile(r"(?:&&|\|\||[;|`\n<>]|\$\(|\$\{)")
 _BIN_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9._+-]*$")
 # POSIX / common shell builtins — skip install resolver (generic, not skill-specific).
+#ugly, remove when we have a better way to handle builtins
 _SHELL_BUILTINS = frozenset(
     {
         ".",
@@ -159,9 +159,12 @@ class ProvisionService(SharedService):
             return False, f"image base binary {binary!r} missing from PATH"
         from orchestrator.runtime.resolve import InstallResolver
 
-        ok, msg = InstallResolver.shared().resolve(binary, package=package)
-        if not ok and _HINT not in msg:
-            msg = f"{msg}. {_HINT}"
+        skill = (os.environ.get("ORCHESTRATOR_SKILL_NAME") or "").strip()
+        ok, msg = InstallResolver.shared().resolve(
+            binary, package=package, skill_name=skill
+        )
+        if not ok and INSTALL_MISSING_HINT not in msg:
+            msg = f"{msg}. {INSTALL_MISSING_HINT}"
         return ok, msg
 
 

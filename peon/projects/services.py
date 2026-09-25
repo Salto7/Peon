@@ -35,7 +35,7 @@ from peon.projects.models import (
 from peon.projects.objectives import ObjectivePlanSync, ObjectiveScheduler
 from peon.projects.targets import (
     coerce_targets,
-    extract_scope_assets,
+    extract_targets,
     format_targets,
     provision_project_roe,
 )
@@ -109,7 +109,7 @@ class PlanningService:
                 focus_tags=tags,
             )
             if not scope:
-                scope = extract_scope_assets(description, title, summary)
+                scope = extract_targets(description, title, summary)
             RulesOfEngagement.objects.create(
                 project=project,
                 in_scope=scope,
@@ -121,7 +121,7 @@ class PlanningService:
                 ),
                 authorization_note=auth
                 or (
-                    "Auto-deduced from brief (operator did not supply RoE)."
+                    "Auto-deduced from brief (operator did not supply Rules of Engagement)."
                     if scope
                     else ""
                 ),
@@ -415,6 +415,56 @@ class PlanningService:
         )
         return cls.persist_draft(draft, project=project)
 
+    @classmethod
+    def create_project_shell(
+        cls,
+        *,
+        title: str,
+        summary: str = "",
+        in_scope: list | None = None,
+        path_values: list[str] | None = None,
+        operator_supplied_scope: bool = False,
+    ) -> tuple[Project, list, RulesOfEngagement | None]:
+        """Create Project + RoE shell (before optional LLM plan).
+
+        Returns ``(project, scope, roe)``. ``path_values`` are sandbox input
+        paths folded into seed + in_scope.
+        """
+        title = (title or "").strip() or "untitled"
+        summary = (summary or "").strip()
+        scope = coerce_targets(in_scope or [])
+        paths = [str(p).strip() for p in (path_values or []) if str(p).strip()]
+
+        project = Project.objects.create(
+            title=title,
+            summary=summary,
+            status=ProjectStatus.ACTIVE,
+        )
+        if not scope:
+            scope = extract_targets(title, summary)
+
+        seed: list = []
+        if summary and not scope:
+            seed.append({"type": "other", "value": summary[:500]})
+        for sp in paths:
+            seed.append({"type": "path", "value": sp})
+            scope = list(scope) + [{"type": "path", "value": sp}]
+
+        RulesOfEngagement.objects.create(
+            project=project,
+            in_scope=scope,
+            seed=seed,
+            authorization_note=(
+                "Auto-deduced from summary (operator did not supply Rules of Engagement)."
+                if scope and not operator_supplied_scope
+                else ""
+            ),
+        )
+        provision_project_roe(project, texts=[title, summary])
+        project.refresh_from_db()
+        roe = getattr(project, "roe", None)
+        final_scope = list(roe.in_scope) if roe else coerce_targets(scope)
+        return project, final_scope, roe
 
     @classmethod
     def replan_project(cls, project: Project, *, description: str | None = None) -> PlanResult:

@@ -1,19 +1,19 @@
 {% extends "base.html" %}
 {% load static %}
-{% block title %}Learn — Peon{% endblock %}
+{% block title %}Toolsmith — Peon{% endblock %}
 {% block content %}
 <header class="page-header">
   <div>
-    <h1>Learn</h1>
+    <h1>Toolsmith</h1>
     <p class="lead">
-      Suggest a catalog tool or draft a skill, edit the result, then save
+      Author catalog tools and skills, edit the draft, then save
       (<code>tools-suggestor</code> / <code>skill-writer</code>).
     </p>
   </div>
 </header>
 
 {% if not llm_ready %}
-<p class="msg warning">Configure an LLM API key under Settings before using Learn.</p>
+<p class="msg warning">Configure an LLM API key under Settings before using Toolsmith.</p>
 {% endif %}
 
 <div id="learn-app"
@@ -31,7 +31,7 @@
      data-lab-running="{% if lab.running %}1{% else %}0{% endif %}"
      data-lab-name="{{ lab.name }}">
 
-  <div class="learn-mode-switch" role="tablist" aria-label="Learn mode">
+  <div class="learn-mode-switch" role="tablist" aria-label="Toolsmith mode">
     <button type="button" class="learn-mode-btn is-active" data-mode="tool" role="tab" aria-selected="true">Tool</button>
     <button type="button" class="learn-mode-btn" data-mode="skill" role="tab" aria-selected="false">Skill</button>
   </div>
@@ -163,5 +163,5 @@ verify:
 {% endblock %}
 
 {% block scripts %}
-<script src="{% static 'js/learn.js' %}?v=20260913s"></script>
+<script src="{% static 'js/learn.js' %}?v=20260925b"></script>
 {% endblock %}

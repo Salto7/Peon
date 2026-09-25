@@ -41,7 +41,8 @@ run_skill_script("entra-osint", "scripts/run.py", command="from-domains workspac
 0. Confirm `workspace/domain-inventory.json` (or domain list) exists from `domain-enum`
 1. `from-inventory …` (or `tenant` / `from-domains`)
 2. Deduplicate domains that share the same tenant GUID
-3. `record_finding` for confirmed tenant IDs
+3. `record_finding` for confirmed discoveries (tenant IDs / related subjects with
+   evidence) — not run/objective status
 4. Promote `findings/entra-osint.md`
 
 ## RoE

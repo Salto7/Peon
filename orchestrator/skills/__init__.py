@@ -1,25 +1,5 @@
-"""Skills: provision / load / execute (independently extensible)."""
+"""Skills: provision / execute / misc registry (independently extensible).
 
-from orchestrator.skills.execute import (
-    NullSkillExecutor,
-    SkillExecutionDispatcher,
-    SkillExecutor,
-    SkillRunRequest,
-    SkillRunResult,
-)
-from orchestrator.skills.load import (
-    FilesystemSkillLoader,
-    SkillActivation,
-    SkillCatalogEntry,
-    SkillLoader,
-)
-from orchestrator.skills.misc import (
-    Skill,
-    SkillNameMatcher,
-    SkillParser,
-    SkillRegistry,
-    SkillRouter,
-    TagNormalizer,
-)
-from orchestrator.skills.provision import SkillLinter, SkillProvisioner
-
+Import from subpackages (`orchestrator.skills.misc`, `.execute`, …) — this
+package root is intentionally thin.
+"""

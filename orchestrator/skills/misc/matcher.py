@@ -12,7 +12,8 @@ from orchestrator.utils.strings import name_forms
 class SkillNameMatcher(SharedService):
     """Find registered skill ids in operator text (order-preserving, non-overlapping)."""
 
-    def find(self, description: str, valid: Iterable[str]) -> list[str]:
+    @staticmethod
+    def find(description: str, valid: Iterable[str]) -> list[str]:
         hay = (description or "").lower()
         if not hay:
             return []

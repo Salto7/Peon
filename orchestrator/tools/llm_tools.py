@@ -1,10 +1,17 @@
-"""LangChain capability tools for the Job agent (sandbox-only)."""
+"""LangChain capability tools for the sandbox agent.
+
+Importing this module registers tools via ``@capability`` decorators.
+Call ``orchestrator.capabilities.ensure_registered()`` so registration runs
+even when this module was not imported yet.
+"""
 
 from __future__ import annotations
 
+import os
+
 from langchain_core.tools import tool
 
-from orchestrator.agent.context import get_config, get_context
+from orchestrator.agent.context import get_agent_config, get_context
 from orchestrator.capabilities.registry import CapabilityGroup, capability
 from orchestrator.runtime.shell import ShellRunner
 from orchestrator.sandbox import SandboxSession
@@ -12,76 +19,39 @@ from orchestrator.skills.execute import SkillExecutionDispatcher, SkillRunReques
 from orchestrator.skills.misc.catalog import filter_skills
 from orchestrator.skills.misc.registry import SkillRegistry
 
-_DOCKER = frozenset({"docker", "shared"})
+
+def _emit(kind: str, content: str, **metadata: object) -> None:
+    get_context().ports.emit(kind, content, **metadata)
 
 
-def require_sandbox() -> str | None:
-    """Return an error string if no Docker/shared sandbox is bound."""
+def _bound() -> str | None:
+    """Return an error string if the sandbox is unbound, else None."""
+    return SandboxSession.require_bound()
+
+
+def _sandbox_line() -> str:
     info = SandboxSession.current().info
-    mode = (info.mode or "").strip().lower()
-    if mode not in _DOCKER:
-        return (
-            "Error: no Docker sandbox bound (host execution disabled). "
-            f"mode={mode!r}"
-        )
-    return None
-
-
-def sandbox_summary() -> str:
-    info = SandboxSession.current().info
-    return f"name={info.name} mode={info.mode} project_id={info.project_id or '-'}"
-
-
-_registered = False
-
-
-def ensure_tools_registered() -> None:
-    """Idempotent import side-effect registration."""
-    global _registered
-    if _registered:
-        return
-    _registered = True
-    # Touch tool callables so @capability decorators run.
-    _ = (
-        sandbox_setup,
-        sandbox_status,
-        provision_cli,
-        run_cli,
-        run_skill_script,
-        skills_list,
-        skill_view,
-        list_objectives,
-        update_objective_status,
-        record_finding,
-        record_findings,
-        list_findings,
-        spawn_subagent,
-        wait_for_subagents,
-    )
+    return f"name={info.name} mode={info.mode} session_id={info.project_id or '-'}"
 
 
 @capability(CapabilityGroup.SANDBOX)
 @tool
 def sandbox_setup() -> str:
-    """Confirm the project Docker sandbox is bound (peon provisions before the agent)."""
-    err = require_sandbox()
-    if err:
-        return err
-    return "Sandbox ready — " + sandbox_summary()
+    """Confirm the Docker sandbox is bound (host provisions before the agent)."""
+    return _bound() or ("Sandbox ready — " + _sandbox_line())
 
 
 @capability(CapabilityGroup.SANDBOX)
 @tool
 def sandbox_status() -> str:
     """Show bound sandbox mode and name."""
-    err = require_sandbox()
+    err = _bound()
     if err:
         return err
-    info = SandboxSession.current().info
-    lines = [sandbox_summary()]
+    lines = [_sandbox_line()]
     try:
         which = SandboxSession.current().which
-        for binary in ("nmap", "httpx", "python3"):
+        for binary in ("python3", "bash", "curl", "apt-get"):
             lines.append(f"{binary}={'yes' if which(binary) else 'no'}")
     except Exception:
         pass
@@ -91,8 +61,8 @@ def sandbox_status() -> str:
 @capability(CapabilityGroup.SANDBOX)
 @tool
 def provision_cli(binary: str, package: str = "", skill_name: str = "") -> str:
-    """Install/verify a CLI in the sandbox (catalog → skill docs → LLM recipe)."""
-    err = require_sandbox()
+    """Install/verify a CLI on PATH (tools/catalog → skill INSTALL.md → LLM). Prefer over apt/curl via run_cli."""
+    err = _bound()
     if err:
         return err
     name = (binary or "").strip()
@@ -100,11 +70,14 @@ def provision_cli(binary: str, package: str = "", skill_name: str = "") -> str:
         return "Error: provide a binary name."
     from orchestrator.runtime.resolve import InstallResolver
 
+    skill = (skill_name or "").strip() or (
+        os.environ.get("ORCHESTRATOR_SKILL_NAME") or ""
+    ).strip()
     ok, msg = InstallResolver.shared().resolve(
-        name, package=package, skill_name=skill_name
+        name, package=package, skill_name=skill
     )
     if ok:
-        get_context().ports.emit("log", msg or f"provisioned {name}")
+        _emit("log", msg or f"provisioned {name}")
         return msg or f"provisioned {name}"
     return f"Error: {msg}"
 
@@ -112,15 +85,42 @@ def provision_cli(binary: str, package: str = "", skill_name: str = "") -> str:
 @capability(CapabilityGroup.SANDBOX)
 @tool
 def run_cli(command: str) -> str:
-    """Run an ad-hoc shell command in the bound Docker sandbox (RoE applies)."""
-    err = require_sandbox()
+    """Ad-hoc shell when no skill script applies (RoE applies). Not for installs."""
+    err = _bound()
     if err:
         return err
     cmd = (command or "").strip()
     if not cmd:
         return "Error: empty command."
-    get_context().ports.emit("tool", f"run_cli: {cmd[:200]}")
-    code = ShellRunner.shared().run_shell(cmd)
+    _emit("tool", f"run_cli: {cmd[:200]}")
+    return f"exit={ShellRunner.shared().run_shell(cmd)}"
+
+
+@capability(CapabilityGroup.SANDBOX, tags={"watchdog", "periodic"})
+@tool
+def run_periodic(
+    command: str,
+    interval_seconds: int = 30,
+    duration_seconds: int = 120,
+    package: str = "",
+) -> str:
+    """Watchdog ticks only — repeat a sandbox shell command on an interval."""
+    err = _bound()
+    if err:
+        return err
+    cmd = (command or "").strip()
+    if not cmd:
+        return "Error: empty command."
+    _emit(
+        "tool",
+        f"run_periodic({interval_seconds}s/{duration_seconds}s): {cmd[:160]}",
+    )
+    code = ShellRunner.shared().run_periodic(
+        cmd,
+        interval_seconds=int(interval_seconds),
+        duration_seconds=int(duration_seconds),
+        package=package or "",
+    )
     return f"exit={code}"
 
 
@@ -129,15 +129,15 @@ def run_cli(command: str) -> str:
 def run_skill_script(
     skill_name: str, script: str = "scripts/run.py", command: str = ""
 ) -> str:
-    """Run a Peon skill script (skills/<name>/scripts/…) inside the sandbox."""
-    err = require_sandbox()
+    """Run a catalog skill script. Prefer this over rewriting the skill with run_cli."""
+    err = _bound()
     if err:
         return err
     skill = (skill_name or "").strip()
     path = (script or "scripts/run.py").strip() or "scripts/run.py"
     if not skill:
         return "Error: skill_name required."
-    get_context().ports.emit(
+    _emit(
         "tool",
         f"run_skill_script({skill}, {path}"
         + (f", command={command[:120]!r}" if command else "")
@@ -155,7 +155,7 @@ def run_skill_script(
 @capability(CapabilityGroup.SKILLS)
 @tool
 def skills_list() -> str:
-    """List jobable skills from the Peon filesystem catalog."""
+    """List jobable skills from the filesystem catalog."""
     skills = filter_skills(
         SkillRegistry.shared().get_registry().values(), jobable_only=True
     )
@@ -163,8 +163,7 @@ def skills_list() -> str:
         return "No jobable skills."
     lines = []
     for s in sorted(skills, key=lambda x: x.name):
-        cat = s.category or "-"
-        lines.append(f"{s.name} [{cat}] — {(s.description or '')[:120]}")
+        lines.append(f"{s.name} [{s.category or '-'}] — {(s.description or '')[:120]}")
     return "\n".join(lines)
 
 
@@ -172,32 +171,23 @@ def skills_list() -> str:
 @tool
 def skill_view(name: str, path: str = "") -> str:
     """Show a skill's instructions (or a reference file under the skill dir)."""
-    del path  # reserved for future reference path reads
     skill = SkillRegistry.shared().load_skill((name or "").strip())
     if skill is None:
         return f"Skill not found: {name!r}"
-    body = (skill.instructions or "").strip() or skill.description or ""
-    tools = " ".join(skill.tools or [])
-    return (
-        f"name: {skill.name}\n"
-        f"category: {skill.category or '-'}\n"
-        f"allowed-tools: {tools or '-'}\n"
-        f"requires_clis: {', '.join(skill.toolkit or []) or '-'}\n\n"
-        f"{body[:6000]}"
-    )
+    return skill.format_view(path=path)
 
 
 @capability(CapabilityGroup.ENGAGEMENT)
 @tool
 def list_objectives() -> str:
-    """List objectives for the current project."""
+    """List host-defined objectives for the current session (via ports)."""
     return get_context().ports.list_objectives()
 
 
 @capability(CapabilityGroup.ENGAGEMENT)
 @tool
 def update_objective_status(seq: int, status: str, note: str = "") -> str:
-    """Update an objective status (pending|in_progress|completed|blocked|cancelled)."""
+    """Update an objective status via host ports."""
     return get_context().ports.update_objective_status(int(seq), status, note)
 
 
@@ -209,36 +199,49 @@ def record_finding(
     kind: str = "observation",
     evidence: str = "",
     host: str = "",
+    description: str = "",
+    asset_type: str = "",
+    evidence_path: str = "",
+    remediation: str = "",
 ) -> str:
-    """Record one finding for the project."""
+    """Record one engagement finding about a subject — not run/objective status.
+
+    Use for discoveries about any asset class (hosts, files, malware, source,
+    packages, identities, cloud, …) with evidence. kind/asset_type are free-form.
+    Do NOT use for job/objective/agent progress — use update_objective_status.
+    """
     return get_context().ports.record_finding(
         title=title,
         severity=severity,
         kind=kind,
         evidence=evidence,
         host=host,
+        description=description,
+        asset_type=asset_type,
+        evidence_path=evidence_path,
+        remediation=remediation,
     )
 
 
 @capability(CapabilityGroup.ENGAGEMENT)
 @tool
 def record_findings(findings_json: str) -> str:
-    """Record multiple findings from a JSON list."""
+    """Record multiple engagement findings from a JSON list (not status updates)."""
     return get_context().ports.record_findings(findings_json)
 
 
 @capability(CapabilityGroup.ENGAGEMENT)
 @tool
 def list_findings(kind: str = "") -> str:
-    """List findings for the current project."""
+    """List engagement findings already recorded (optional kind slug filter)."""
     return get_context().ports.list_findings(kind)
 
 
 @capability(CapabilityGroup.CORE, tags={"subagent"})
 @tool
 def spawn_subagent(title: str, description: str, skill_names: str = "") -> str:
-    """Spawn a child Job agent. skill_names: comma-separated catalog skill ids."""
-    cfg = get_config()
+    """Spawn a child agent run via host ports. skill_names: comma-separated ids."""
+    cfg = get_agent_config()
     ctx = get_context()
     if ctx.depth >= cfg.max_subagent_depth:
         return f"Error: subagent depth limit ({cfg.max_subagent_depth})"
@@ -249,7 +252,7 @@ def spawn_subagent(title: str, description: str, skill_names: str = "") -> str:
         )
     except Exception as exc:
         return f"Error spawning subagent: {exc}"
-    ctx.ports.emit(
+    _emit(
         "log",
         f"spawned subagent {child_id}: {title}",
         metadata={"event": "spawn_subagent", "child_id": child_id},
@@ -260,7 +263,7 @@ def spawn_subagent(title: str, description: str, skill_names: str = "") -> str:
 @capability(CapabilityGroup.CORE, tags={"subagent"})
 @tool
 def wait_for_subagents(timeout_seconds: int = 600, job_ids: str = "") -> str:
-    """Check whether spawned child Jobs finished (non-blocking; call again later)."""
+    """Check whether spawned child runs finished (non-blocking; call again later)."""
     ids = [j.strip() for j in (job_ids or "").split(",") if j.strip()] or None
     try:
         return get_context().ports.wait_children(

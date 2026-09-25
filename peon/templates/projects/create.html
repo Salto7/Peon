@@ -1,10 +1,11 @@
 {% extends "base.html" %}
+{% load static %}
 {% block title %}New project — Peon{% endblock %}
 {% block content %}
 <header class="page-header">
   <div>
     <h1>New project</h1>
-    <p class="lead">Title, brief, optional RoE targets, then skill picks for the planner (core skills are always included).</p>
+    <p class="lead">Title, brief, optional Rules of Engagement targets, then skill picks for the planner (core skills are always included).</p>
   </div>
   <p class="bar">
     <a class="btn secondary" href="{% url 'project_list' %}">← Projects</a>
@@ -12,7 +13,7 @@
 </header>
 
 <section class="panel create-panel">
-  <form method="post" action="{% url 'project_create' %}" enctype="multipart/form-data">
+  <form method="post" action="{% url 'project_create' %}" enctype="multipart/form-data" id="project-create-form">
     {% csrf_token %}
     <label for="title">Title</label>
     <input id="title" name="title" required placeholder="lab" autofocus>
@@ -29,9 +30,33 @@
     </p>
     {% include "includes/skill_picker.html" with available_skills=available_skills selected_skills=selected_skills %}
     <div class="bar">
-      <button type="submit">Create</button>
+      <button type="submit" id="project-create-submit">Create</button>
       <a class="btn secondary" href="{% url 'project_list' %}">Cancel</a>
     </div>
   </form>
 </section>
+
+<dialog id="project-create-dialog" class="create-status-dialog" aria-labelledby="create-status-title">
+  <div class="create-status-card">
+    <h2 id="create-status-title">Starting project</h2>
+    <p class="meta create-status-sub" id="create-status-sub">Hang on while Peon sets things up…</p>
+    <ol class="create-status-steps" id="create-status-steps" aria-live="polite">
+      <li data-step="create" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Create project</strong><span class="create-step-detail"></span></span></li>
+      <li data-step="roe" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Configure Rules of Engagement</strong><span class="create-step-detail"></span></span></li>
+      <li data-step="plan" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Plan objectives</strong><span class="create-step-detail"></span></span></li>
+      <li data-step="start" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Start agents</strong><span class="create-step-detail"></span></span></li>
+    </ol>
+    <p class="create-status-error meta" id="create-status-error" hidden></p>
+    <div class="create-status-actions" id="create-status-actions" hidden>
+      <a class="btn" id="create-status-open" href="#">Open project</a>
+      <button type="button" class="secondary" id="create-status-close">Close</button>
+    </div>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script src="{% static 'js/project-create.js' %}?v=20260925c"></script>
+<script>
+  PeonProjectCreate.init({ formId: "project-create-form" });
+</script>
 {% endblock %}

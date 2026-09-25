@@ -2,8 +2,8 @@
 
 Lives under ``skills/helpers/``. No peon/orchestrator imports — skills stay
 runnable outside the control plane. Stream is a no-op when
-ORCHESTRATOR_STREAM_SOCKET / job id are unset. MCP tools need
-ORCHESTRATOR_RPC_SOCKET (host bridge) when available.
+ORCHESTRATOR_STREAM_SOCKET / job id are unset. MCP / skill_view RPC need
+ORCHESTRATOR_RPC_SOCKET (+ ORCHESTRATOR_RPC_TOKEN) when the host bridge is up.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import builtins
 import json
 import os
 import socket
-import subprocess
 import threading
 from typing import Any
 
@@ -75,31 +74,6 @@ def _streaming_print(*args: Any, **kwargs: Any) -> None:
 print = _streaming_print  # noqa: A001
 
 
-def sandbox_run(command: str) -> dict[str, Any]:
-    """Run a shell command in the current environment (already the sandbox when provisioned)."""
-    cmd = (command or "").strip()
-    if not cmd:
-        return {"exit_code": 2, "stdout": "", "stderr": "empty command"}
-    try:
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        out = exc.stdout if isinstance(exc.stdout, str) else ""
-        err = exc.stderr if isinstance(exc.stderr, str) else "timed out"
-        return {"exit_code": 124, "stdout": out, "stderr": err}
-    return {
-        "exit_code": proc.returncode or 0,
-        "stdout": proc.stdout or "",
-        "stderr": proc.stderr or "",
-    }
-
-
 def _rpc_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     path = os.environ.get("ORCHESTRATOR_RPC_SOCKET", "").strip()
     if not path or not os.path.exists(path):
@@ -112,6 +86,7 @@ def _rpc_call(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         {
             "tool": tool_name,
             "args": args,
+            "token": os.environ.get("ORCHESTRATOR_RPC_TOKEN", ""),
             "job_id": job_id,
             "task_id": job_id,
             "project_id": os.environ.get("ORCHESTRATOR_PROJECT_ID", ""),

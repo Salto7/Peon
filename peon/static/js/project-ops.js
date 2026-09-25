@@ -5,8 +5,7 @@
   }
 
   function csrfToken() {
-    const m = document.querySelector("input[name=csrfmiddlewaretoken]");
-    return m ? m.value : "";
+    return (window.PeonUI && window.PeonUI.csrfToken && window.PeonUI.csrfToken()) || "";
   }
 
   function postForm(action, fields) {
@@ -53,14 +52,149 @@
     return pill;
   }
 
-  function badgeForType(typ) {
-    const t = String(typ || "log").toLowerCase();
+  function badgeForType(typ, meta) {
+    meta = meta || {};
+    var tag = String(meta.tag || meta.feed_tag || "").toLowerCase();
+    var event = String(meta.event || "").toLowerCase();
+    var role = String(meta.role || meta.chat_role || "").toLowerCase();
+    if (role === "user" || tag === "you") return "YOU";
+    if (tag === "need" || event === "need_input") return "NEED";
+    if (tag === "stop" || event === "operator_stop") return "STOP";
+    if (tag === "ask" || event === "console_ask_reply" || event === "console_ask")
+      return "ASK";
+    if (
+      tag === "steer" ||
+      event === "operator_guidance" ||
+      event === "project_instruction"
+    )
+      return "STEER";
+    if (tag === "find" || tag === "finding" || event.indexOf("finding") >= 0)
+      return "FIND";
+    if (tag === "net" || tag === "host" || event.indexOf("host") >= 0) return "NET";
+    if (tag === "shell" || tag === "terminal" || event === "terminal") return "SHELL";
+    if (tag === "loot") return "LOOT";
+    var t = String(typ || "log").toLowerCase();
     if (t === "tool") return "TOOL";
     if (t === "error" || t === "stderr") return "ERR";
     if (t === "status") return "STATUS";
     if (t === "result") return "RESULT";
+    if (t === "thinking") return "THINK";
     if (t === "steer") return "STEER";
     return "LOG";
+  }
+
+  var feedFilter = "all";
+
+  function feedFilterKey(badge) {
+    var b = String(badge || "").toUpperCase();
+    if (b === "TOOL") return "tool";
+    if (b === "FIND") return "find";
+    if (b === "ERR") return "err";
+    if (b === "STEER" || b === "YOU" || b === "NEED" || b === "STOP") return "steer";
+    if (b === "SHELL") return "shell";
+    return "other";
+  }
+
+  function applyFeedFilter() {
+    var log = el("project-stream-log");
+    if (!log) return;
+    var entries = log.querySelectorAll(".stream-entry");
+    entries.forEach(function (article) {
+      var key = article.dataset.feedKey || "other";
+      var show = feedFilter === "all" || key === feedFilter;
+      article.hidden = !show;
+    });
+  }
+
+  function bindFeedFilters() {
+    var bar = el("feed-filters");
+    if (!bar || bar.dataset.bound) return;
+    bar.dataset.bound = "1";
+    bar.addEventListener("click", function (ev) {
+      var btn = ev.target.closest("[data-feed-filter]");
+      if (!btn || !bar.contains(btn)) return;
+      feedFilter = btn.getAttribute("data-feed-filter") || "all";
+      bar.querySelectorAll(".feed-filter").forEach(function (b) {
+        b.classList.toggle("is-active", b === btn);
+      });
+      applyFeedFilter();
+    });
+  }
+
+  function focusChat() {
+    var chat = el("war-chat");
+    var input = el("project-chat-input");
+    if (chat) chat.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (input) input.focus();
+  }
+
+  function revealShellCard() {
+    var shell = document.querySelector(".console-workspace");
+    if (shell) {
+      shell.classList.remove("is-collapsed");
+      shell.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }
+
+  function bindWorkspaceTabs() {
+    var activators = {};
+    document.querySelectorAll("[data-tabset]").forEach(function (root) {
+      if (root.dataset.boundTabs) return;
+      root.dataset.boundTabs = "1";
+      var tabs = root.querySelectorAll(":scope > .workspace-header [data-workspace-tab]");
+      if (!tabs.length) tabs = root.querySelectorAll("[data-workspace-tab]");
+      var panes = root.querySelectorAll(":scope > [data-workspace-pane]");
+      if (!panes.length) panes = root.querySelectorAll("[data-workspace-pane]");
+      var setName = root.getAttribute("data-tabset") || root.id || "main";
+      var storageKey =
+        "peon.tabset." + setName + "." + (root.dataset.pk || "");
+      function activate(name) {
+        tabs.forEach(function (t) {
+          var on = t.getAttribute("data-workspace-tab") === name;
+          t.classList.toggle("is-active", on);
+          t.setAttribute("aria-selected", on ? "true" : "false");
+        });
+        panes.forEach(function (p) {
+          var on = p.getAttribute("data-workspace-pane") === name;
+          p.classList.toggle("is-active", on);
+          p.hidden = !on;
+        });
+        window.dispatchEvent(
+          new CustomEvent("peon:workspace-tab", {
+            detail: { tab: name, tabset: setName },
+          })
+        );
+        try {
+          localStorage.setItem(storageKey, name);
+        } catch (_) {}
+      }
+      tabs.forEach(function (t) {
+        t.addEventListener("click", function () {
+          activate(t.getAttribute("data-workspace-tab") || "");
+        });
+      });
+      var saved = "";
+      try {
+        saved = localStorage.getItem(storageKey) || "";
+      } catch (_) {}
+      if (saved && root.querySelector('[data-workspace-pane="' + saved + '"]')) {
+        activate(saved);
+      }
+      activators[setName] = activate;
+    });
+    window.PeonProjectOps.showWorkspaceTab = function (name) {
+      if (name === "chat") {
+        focusChat();
+        return;
+      }
+      if (name === "terminal") {
+        revealShellCard();
+        return;
+      }
+      Object.keys(activators).forEach(function (key) {
+        if (activators[key]) activators[key](name);
+      });
+    };
   }
 
   function formatTime(iso) {
@@ -511,10 +645,123 @@
     listEl.appendChild(p);
   }
 
+  function isChatMessage(msg) {
+    var meta = (msg && msg.metadata) || {};
+    var role = String(meta.role || meta.chat_role || "").toLowerCase();
+    var tag = String(meta.tag || meta.feed_tag || "").toLowerCase();
+    var event = String(meta.event || "").toLowerCase();
+    // Live-feed only (shell audits, tools, findings) — never the chat thread.
+    if (
+      tag === "shell" ||
+      tag === "terminal" ||
+      tag === "tool" ||
+      tag === "find" ||
+      tag === "finding" ||
+      tag === "net" ||
+      tag === "loot" ||
+      event === "terminal"
+    ) {
+      return false;
+    }
+    if (role === "user") return true;
+    if (tag === "you" || tag === "steer" || tag === "need" || tag === "stop" || tag === "ask")
+      return true;
+    if (
+      event.indexOf("operator") >= 0 ||
+      event.indexOf("instruction") >= 0 ||
+      event === "need_input" ||
+      event.indexOf("replan") >= 0 ||
+      event.indexOf("console_") === 0
+    )
+      return true;
+    // Do not treat default stream_meta role=assistant alone as chat.
+    return false;
+  }
+
+  function appendChatBubble(msg) {
+    var thread = el("chat-thread");
+    if (!thread || !msg) return;
+    var id = msg.id != null ? String(msg.id) : "";
+    if (id && thread.querySelector('[data-chat-id="' + id + '"]')) return;
+    var text = String(msg.content || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{2,}/g, "\n")
+      .trim();
+    if (!text) return;
+
+    var metaObj = msg.metadata || {};
+    var role = String(metaObj.role || metaObj.chat_role || "").toLowerCase();
+    var tag = String(metaObj.tag || "").toLowerCase();
+    var side =
+      role === "user" || tag === "you" ? "user" : "assistant";
+    if (tag === "need") side = "system";
+    if (tag === "stop" && role !== "assistant") side = "user";
+
+    // Merge stream lines onto optimistic local-* bubbles (thinking node may be last).
+    if (id && String(id).indexOf("local-") !== 0) {
+      var locals = thread.querySelectorAll(
+        '.chat-bubble[data-chat-id^="local-"]'
+      );
+      for (var i = 0; i < locals.length; i++) {
+        var lb = locals[i];
+        var bodyEl = lb.querySelector(".chat-bubble-body");
+        if (!bodyEl || bodyEl.textContent !== text) continue;
+        var isUserLocal = lb.classList.contains("chat-bubble-user");
+        var wantUser = side === "user";
+        if (isUserLocal !== wantUser) continue;
+        lb.dataset.chatId = id;
+        var timeEl = lb.querySelector(".chat-bubble-meta span:nth-child(2)");
+        var t = formatTime(msg.created_at);
+        if (timeEl && t) timeEl.textContent = t;
+        return;
+      }
+    }
+
+    var empty = thread.querySelector(".chat-thread-empty");
+    if (empty) empty.remove();
+
+    var bubble = document.createElement("div");
+    bubble.className = "chat-bubble chat-bubble-" + side;
+    if (id) bubble.dataset.chatId = id;
+
+    var meta = document.createElement("div");
+    meta.className = "chat-bubble-meta";
+    var who = document.createElement("span");
+    who.textContent =
+      side === "user" ? "You" : side === "system" ? "Need input" : "Peon";
+    meta.appendChild(who);
+    var time = document.createElement("span");
+    time.textContent = formatTime(msg.created_at) || "";
+    if (time.textContent) meta.appendChild(time);
+    var badgeText = badgeForType(String(msg.message_type || "log"), metaObj);
+    if (badgeText && badgeText !== "LOG") {
+      var badge = document.createElement("span");
+      badge.className =
+        "stream-badge stream-badge-" +
+        badgeText.toLowerCase().replace(/[^\w-]/g, "");
+      badge.textContent = badgeText;
+      meta.appendChild(badge);
+    }
+
+    var body = document.createElement("pre");
+    body.className = "chat-bubble-body";
+    body.textContent = text;
+
+    bubble.appendChild(meta);
+    bubble.appendChild(body);
+    thread.appendChild(bubble);
+    thread.scrollTop = thread.scrollHeight;
+  }
+
   function appendMessage(log, msg, latestByJob) {
     if (!log || !msg || msg.id == null) return;
     if (log.querySelector('[data-id="' + msg.id + '"]')) return;
-    const text = String(msg.content || "").replace(/\n{3,}/g, "\n\n").trim();
+    const text = String(msg.content || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{2,}/g, "\n")
+      .trim();
     if (!text) return;
     const empty = log.querySelector(".empty");
     if (empty) empty.remove();
@@ -523,13 +770,17 @@
       latestByJob[String(msg.job_id)] = text;
     }
 
+    if (isChatMessage(msg)) {
+      appendChatBubble(msg);
+    }
+
     const metaObj = msg.metadata || {};
     const role = String(metaObj.role || metaObj.chat_role || "").toLowerCase();
     const event = String(metaObj.event || "").toLowerCase();
 
     const article = document.createElement("article");
     const typ = String(msg.message_type || "log").replace(/[^\w-]/g, "");
-    article.className = "stream-entry stream-" + typ;
+    article.className = "feed-bubble stream-entry stream-" + typ;
     if (role === "user") article.classList.add("stream-user");
     if (event === "project_instruction" || event === "operator_guidance") {
       article.classList.add("stream-instruction");
@@ -537,34 +788,36 @@
     article.dataset.id = String(msg.id);
     if (msg.job_id) article.dataset.jobId = String(msg.job_id);
 
+    const body = document.createElement("div");
+    body.className = "feed-bubble-body";
+    body.textContent = text;
+
     const meta = document.createElement("header");
-    meta.className = "stream-meta";
+    meta.className = "feed-bubble-meta stream-meta";
+    const who = document.createElement("span");
+    who.className = "stream-agent";
+    who.textContent = msg.job_title || msg.job_id || "Peon";
+    meta.appendChild(who);
     const time = document.createElement("span");
     time.className = "stream-time";
-    time.textContent = formatTime(msg.created_at) || "·";
-    meta.appendChild(time);
+    time.textContent = formatTime(msg.created_at) || "";
+    if (time.textContent) meta.appendChild(time);
     const badge = document.createElement("span");
-    let badgeText = badgeForType(typ);
-    if (role === "user") badgeText = "YOU";
-    else if (event === "operator_guidance") badgeText = "STEER";
+    let badgeText = badgeForType(typ, metaObj);
+    if (role === "user" && badgeText === "LOG") badgeText = "YOU";
+    else if (event === "operator_guidance" && badgeText === "LOG") badgeText = "STEER";
     badge.className =
       "stream-badge stream-badge-" + badgeText.toLowerCase().replace(/[^\w-]/g, "");
     badge.textContent = badgeText;
     meta.appendChild(badge);
-    const title = msg.job_title || msg.job_id || "";
-    if (title) {
-      const who = document.createElement("span");
-      who.className = "stream-agent";
-      who.textContent = title;
-      meta.appendChild(who);
-    }
+    article.dataset.feedKey = feedFilterKey(badgeText);
 
-    const body = document.createElement("pre");
-    body.textContent = text;
-
-    article.appendChild(meta);
     article.appendChild(body);
+    article.appendChild(meta);
     log.appendChild(article);
+    if (feedFilter !== "all" && article.dataset.feedKey !== feedFilter) {
+      article.hidden = true;
+    }
     log.scrollTop = log.scrollHeight;
   }
 
@@ -575,45 +828,47 @@
     if (!skills || !skills.length) {
       const empty = document.createElement("span");
       empty.className = "meta empty-skills";
-      empty.textContent = "No skills queued yet.";
+      empty.textContent = "None yet";
       row.appendChild(empty);
       return;
     }
     skills.forEach(function (s) {
-      const name = typeof s === "string" ? s : s.name;
+      const name = typeof s === "string" ? s : s.name || "";
       const desc = typeof s === "string" ? "" : s.description || "";
-      const cat = typeof s === "string" ? "" : s.category || "";
       const tags = typeof s === "string" ? [] : s.tags || [];
-      const card = document.createElement("article");
-      card.className = "skill-card";
-      const n = document.createElement("div");
-      n.className = "skill-card-name";
+      const chip = document.createElement("span");
+      chip.className = "skills-used-chip";
+      chip.tabIndex = 0;
+      const n = document.createElement("span");
+      n.className = "skills-used-name";
       n.textContent = name;
-      card.appendChild(n);
-      if (cat) {
-        const c = document.createElement("div");
-        c.className = "skill-card-cat";
-        c.textContent = cat;
-        card.appendChild(c);
-      }
+      chip.appendChild(n);
+      const tip = document.createElement("span");
+      tip.className = "skills-used-tip";
+      tip.setAttribute("role", "tooltip");
+      const tipName = document.createElement("strong");
+      tipName.className = "skills-used-tip-name";
+      tipName.textContent = name;
+      tip.appendChild(tipName);
       if (desc) {
-        const d = document.createElement("div");
-        d.className = "skill-card-desc";
+        const d = document.createElement("span");
+        d.className = "skills-used-tip-desc";
         d.textContent = desc;
-        card.appendChild(d);
+        tip.appendChild(d);
       }
       if (tags.length) {
-        const tg = document.createElement("div");
-        tg.className = "skill-card-tags";
+        const tg = document.createElement("span");
+        tg.className = "skills-used-tip-tags";
         tags.forEach(function (t) {
-          const chip = document.createElement("span");
-          chip.className = "chip";
-          chip.textContent = t;
-          tg.appendChild(chip);
+          const c = document.createElement("span");
+          c.className = "chip";
+          c.textContent = t;
+          tg.appendChild(c);
         });
-        card.appendChild(tg);
+        tip.appendChild(tg);
       }
-      row.appendChild(card);
+      chip.appendChild(tip);
+      row.appendChild(chip);
     });
   }
 
@@ -623,10 +878,13 @@
     const count = el("objectives-count");
     if (count) count.textContent = String(objectives.length);
     objectives.forEach(function (o) {
-      const row = body.querySelector('[data-objective-id="' + o.id + '"]');
-      if (!row) return;
-      const cell = row.querySelector("[data-objective-status]");
-      if (cell) cell.textContent = o.status || "";
+      const card = body.querySelector('[data-objective-id="' + o.id + '"]');
+      if (!card) return;
+      const cell = card.querySelector("[data-objective-status]");
+      if (cell) {
+        cell.textContent = o.status || "";
+        cell.dataset.status = o.status || "";
+      }
     });
   }
 
@@ -843,89 +1101,166 @@
       " total";
   }
 
-  function renderFindingsRows(findings, statusChoices, projectPk) {
+  function appendStatusMenu(menu, statusChoices, current) {
+    (statusChoices || []).forEach(function (opt) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "status-hover-option";
+      btn.setAttribute("role", "option");
+      btn.dataset.status = opt.value;
+      if (opt.value === current) btn.setAttribute("aria-selected", "true");
+      const pill = document.createElement("span");
+      pill.className = "status-pill";
+      pill.dataset.status = opt.value;
+      pill.textContent = opt.label || opt.value;
+      btn.appendChild(pill);
+      menu.appendChild(btn);
+    });
+  }
+
+  function renderFindingsRows(findings, statusChoices) {
     const body = el("findings-body");
     if (!body) return;
     body.replaceChildren();
     const rows = findings || [];
     if (!rows.length) {
-      const tr = document.createElement("tr");
-      tr.className = "findings-empty-row";
-      const td = document.createElement("td");
-      td.colSpan = 6;
-      td.className = "meta findings-empty";
-      td.textContent = "No findings match this filter.";
-      tr.appendChild(td);
-      body.appendChild(tr);
+      const empty = document.createElement("p");
+      empty.className = "meta findings-empty";
+      empty.textContent = "No findings match this filter.";
+      body.appendChild(empty);
       return;
     }
     rows.forEach(function (f) {
-      const tr = document.createElement("tr");
-      tr.dataset.findingId = f.id;
-      tr.dataset.status = f.status || "";
-      tr.dataset.severity = f.severity || "";
-      const tdSeq = document.createElement("td");
-      tdSeq.className = "meta";
-      tdSeq.textContent = "FIND-" + f.seq;
-      const tdTitle = document.createElement("td");
-      const strong = document.createElement("strong");
-      strong.textContent = f.title || "";
-      tdTitle.appendChild(strong);
-      if (f.host) {
-        const host = document.createElement("div");
-        host.className = "meta";
-        host.textContent = f.host + (f.port ? ":" + f.port : "");
-        tdTitle.appendChild(host);
-      }
-      if (f.evidence) {
-        const ev = document.createElement("div");
-        ev.className = "meta finding-evidence";
-        ev.textContent = String(f.evidence).slice(0, 120);
-        tdTitle.appendChild(ev);
-      }
-      const tdSev = document.createElement("td");
+      const card = document.createElement("article");
+      card.className = "finding-card";
+      card.dataset.findingId = f.id;
+      card.dataset.status = f.status || "";
+      card.dataset.severity = f.severity || "";
+
+      const top = document.createElement("div");
+      top.className = "finding-card-top";
+      const seq = document.createElement("span");
+      seq.className = "finding-seq meta";
+      seq.textContent = "FIND-" + f.seq;
       const sev = document.createElement("span");
       sev.className = "sev-pill";
       sev.dataset.severity = f.severity || "";
+      sev.setAttribute("aria-label", "Severity " + (f.severity || "unknown"));
       sev.textContent = f.severity || "";
-      tdSev.appendChild(sev);
-      const tdKind = document.createElement("td");
-      tdKind.className = "meta";
+      const hover = document.createElement("div");
+      hover.className = "status-hover";
+      hover.dataset.findingId = f.id;
+      hover.dataset.prev = f.status || "open";
+      const trigger = document.createElement("button");
+      trigger.type = "button";
+      trigger.className = "status-pill status-hover-trigger";
+      trigger.dataset.status = f.status || "";
+      trigger.setAttribute("aria-haspopup", "listbox");
+      trigger.setAttribute("aria-label", "Finding status " + (f.status || ""));
+      trigger.textContent = f.status || "";
+      const menu = document.createElement("div");
+      menu.className = "status-hover-menu";
+      menu.setAttribute("role", "listbox");
+      appendStatusMenu(menu, statusChoices, f.status);
+      hover.appendChild(trigger);
+      hover.appendChild(menu);
+      top.appendChild(seq);
+      top.appendChild(sev);
+      top.appendChild(hover);
+
+      const title = document.createElement("h3");
+      title.className = "finding-card-title";
+      title.textContent = f.title || "";
+      card.appendChild(top);
+      card.appendChild(title);
+      if (f.host) {
+        const host = document.createElement("p");
+        host.className = "meta finding-host";
+        host.textContent = f.host + (f.port ? ":" + f.port : "");
+        card.appendChild(host);
+      }
+      if (f.evidence) {
+        const ev = document.createElement("p");
+        ev.className = "meta finding-evidence";
+        ev.textContent = String(f.evidence).slice(0, 140);
+        card.appendChild(ev);
+      }
+      const meta = document.createElement("div");
+      meta.className = "finding-card-meta";
       const kindCode = document.createElement("code");
       kindCode.textContent = f.kind || "";
-      tdKind.appendChild(kindCode);
-      const tdAsset = document.createElement("td");
-      tdAsset.className = "meta";
+      meta.appendChild(kindCode);
       if (f.asset_type) {
         const ac = document.createElement("code");
         ac.textContent = f.asset_type;
-        tdAsset.appendChild(ac);
-      } else {
-        tdAsset.textContent = "—";
+        meta.appendChild(ac);
       }
-      const tdStatus = document.createElement("td");
-      tdStatus.className = "finding-status-cell";
-      const sel = document.createElement("select");
-      sel.className = "finding-status-select";
-      sel.setAttribute("aria-label", "Finding status");
-      sel.dataset.findingId = f.id;
-      sel.dataset.prev = f.status || "open";
-      (statusChoices || []).forEach(function (opt) {
-        const o = document.createElement("option");
-        o.value = opt.value;
-        o.textContent = opt.label;
-        if (opt.value === f.status) o.selected = true;
-        sel.appendChild(o);
-      });
-      tdStatus.appendChild(sel);
-      tr.appendChild(tdSeq);
-      tr.appendChild(tdTitle);
-      tr.appendChild(tdSev);
-      tr.appendChild(tdKind);
-      tr.appendChild(tdAsset);
-      tr.appendChild(tdStatus);
-      body.appendChild(tr);
+      card.appendChild(meta);
+      body.appendChild(card);
     });
+  }
+
+  async function triageFinding(projectPk, findingId, next, hoverEl) {
+    const prev = (hoverEl && hoverEl.dataset.prev) || "";
+    if (!findingId || next === prev) return;
+    const fd = new FormData();
+    fd.append("csrfmiddlewaretoken", csrfToken());
+    fd.append("status", next);
+    try {
+      const res = await fetch(
+        "/projects/" + projectPk + "/findings/" + findingId + "/triage/",
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+          },
+          body: fd,
+        }
+      );
+      const data = await res.json().catch(function () {
+        return null;
+      });
+      if (!res.ok || !data || !data.ok) {
+        if (window.PeonUI) {
+          window.PeonUI.toast(
+            (data && data.error) || "Could not update status",
+            "error"
+          );
+        }
+        return;
+      }
+      if (hoverEl) {
+        hoverEl.dataset.prev = data.status;
+        const trigger = hoverEl.querySelector(".status-hover-trigger");
+        if (trigger) {
+          trigger.dataset.status = data.status;
+          trigger.textContent = data.status;
+          trigger.setAttribute("aria-label", "Finding status " + data.status);
+        }
+        hoverEl.querySelectorAll(".status-hover-option").forEach(function (opt) {
+          opt.setAttribute(
+            "aria-selected",
+            opt.dataset.status === data.status ? "true" : "false"
+          );
+        });
+      }
+      const card = hoverEl && hoverEl.closest(".finding-card");
+      if (card) card.dataset.status = data.status;
+      updateFindingsCounts(data.counts);
+      if (window.PeonUI) {
+        window.PeonUI.toast("FIND-" + data.seq + " → " + data.status, "ok");
+      }
+      const filterStatus = el("finding_status");
+      if (
+        filterStatus &&
+        filterStatus.value !== "all" &&
+        filterStatus.value !== data.status
+      ) {
+        return true;
+      }
+    } catch (_) {}
+    return false;
   }
 
   function bindFindingsBoard(projectPk, statusChoices) {
@@ -946,7 +1281,7 @@
         });
         if (!res.ok) return;
         const data = await res.json();
-        renderFindingsRows(data.findings, statusChoices, projectPk);
+        renderFindingsRows(data.findings, statusChoices);
         updateFindingsCounts(data.counts);
       } catch (_) {}
     }
@@ -961,64 +1296,42 @@
     }
 
     if (body) {
-      body.addEventListener("change", async function (ev) {
-        const sel = ev.target;
-        if (!sel || !sel.classList.contains("finding-status-select")) return;
-        const findingId = sel.dataset.findingId;
-        const next = sel.value;
-        const prev = sel.dataset.prev || "";
-        if (!findingId || next === prev) return;
-        const fd = new FormData();
-        fd.append("csrfmiddlewaretoken", csrfToken());
-        fd.append("status", next);
-        try {
-          const res = await fetch(
-            "/projects/" + projectPk + "/findings/" + findingId + "/triage/",
-            {
-              method: "POST",
-              headers: {
-                Accept: "application/json",
-                "X-Requested-With": "XMLHttpRequest",
-              },
-              body: fd,
-            }
-          );
-          const data = await res.json().catch(function () {
-            return null;
-          });
-          if (!res.ok || !data || !data.ok) {
-            sel.value = prev;
-            if (window.PeonUI) {
-              window.PeonUI.toast(
-                (data && data.error) || "Could not update status",
-                "error"
-              );
-            }
-            return;
-          }
-          sel.dataset.prev = data.status;
-          const tr = sel.closest("tr");
-          if (tr) tr.dataset.status = data.status;
-          updateFindingsCounts(data.counts);
-          if (window.PeonUI) {
-            window.PeonUI.toast("FIND-" + data.seq + " → " + data.status, "ok");
-          }
-          const filterStatus = el("finding_status");
-          if (
-            filterStatus &&
-            filterStatus.value !== "all" &&
-            filterStatus.value !== data.status
-          ) {
-            reloadFindings();
-          }
-        } catch (_) {
-          sel.value = prev;
+      body.addEventListener("click", async function (ev) {
+        const opt = ev.target.closest(".status-hover-option");
+        if (opt) {
+          ev.preventDefault();
+          const hover = opt.closest(".status-hover");
+          if (!hover) return;
+          const findingId = hover.dataset.findingId;
+          const next = opt.dataset.status;
+          const needReload = await triageFinding(projectPk, findingId, next, hover);
+          hover.classList.remove("is-open");
+          if (needReload) reloadFindings();
+          return;
         }
+        const trigger = ev.target.closest(".status-hover-trigger");
+        if (trigger) {
+          ev.preventDefault();
+          const hover = trigger.closest(".status-hover");
+          if (!hover) return;
+          const wasOpen = hover.classList.contains("is-open");
+          body.querySelectorAll(".status-hover.is-open").forEach(function (h) {
+            h.classList.remove("is-open");
+          });
+          if (!wasOpen) hover.classList.add("is-open");
+        }
+      });
+      document.addEventListener("click", function (ev) {
+        if (ev.target.closest(".status-hover")) return;
+        body.querySelectorAll(".status-hover.is-open").forEach(function (h) {
+          h.classList.remove("is-open");
+        });
       });
     }
   }
 
   window.PeonProjectOps = {
+    appendChatBubble: appendChatBubble,
     init: function (opts) {
       const log = el("project-stream-log");
       const agentsList = el("agents-list");
@@ -1034,6 +1347,11 @@
       function selectAgent(agent) {
         if (!agent) return;
         selectedId = String(agent.id);
+        window.dispatchEvent(
+          new CustomEvent("peon:agent-selected", {
+            detail: { jobId: String(agent.id), agent: agent },
+          })
+        );
         renderGraph(
           agentsList,
           agentsCache,
@@ -1159,6 +1477,7 @@
           updateRunNext(nextReady);
           // Reports can appear without agent status changes — always sync.
           updateReports(reports, projectPk);
+          updatePendingInputs(data.pending_inputs || []);
 
           const sig = [
             status,
@@ -1225,246 +1544,38 @@
       bindFindingsBoard(projectPk, opts.findingStatuses || []);
       bindProjectChat(projectPk);
       bindProjectFiles(projectPk);
+      var ws = el("console-workspace");
+      if (ws) ws.dataset.pk = String(projectPk);
+      bindFeedFilters();
+      bindWorkspaceTabs();
+      window.PeonProjectOps.focusChat = focusChat;
     },
   };
 
-  function formatBytes(n) {
-    const v = Number(n) || 0;
-    if (v < 1024) return v + " B";
-    if (v < 1024 * 1024) return (v / 1024).toFixed(1) + " KiB";
-    return (v / (1024 * 1024)).toFixed(1) + " MiB";
-  }
-
-  function renderProjectFilesList(inputs) {
-    const list = el("project-files-list");
-    if (!list) return;
-    const rows = Array.isArray(inputs) ? inputs : [];
-    if (!rows.length) {
-      list.innerHTML =
-        '<li class="meta project-files-empty" id="project-files-empty">' +
-        "No files uploaded yet — use + in Live activity.</li>";
-      return;
-    }
-    list.innerHTML = rows
-      .map(function (f) {
-        const name = String(f.name || "");
-        const path = String(f.sandbox_path || "");
-        const size = formatBytes(f.size);
-        return (
-          '<li class="project-file-row" data-name="' +
-          escapeAttr(name) +
-          '"><div class="project-file-meta"><code class="project-file-name">' +
-          escapeHtml(name) +
-          '</code><span class="meta">' +
-          escapeHtml(size) +
-          ' · <code>' +
-          escapeHtml(path) +
-          "</code></span></div>" +
-          '<button type="button" class="secondary project-file-remove" data-name="' +
-          escapeAttr(name) +
-          '" aria-label="Remove ' +
-          escapeAttr(name) +
-          '">Remove</button></li>'
-        );
-      })
-      .join("");
-  }
-
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  function escapeAttr(s) {
-    return escapeHtml(s).replace(/'/g, "&#39;");
-  }
-
   function bindProjectFiles(projectPk) {
-    const panel = el("project-files");
-    const form = el("project-chat-form");
-    const fileInput = el("project-chat-file");
-    const plus = el("project-chat-plus");
-    if ((!panel && !fileInput) || (panel && panel.dataset.boundFiles)) return;
-    if (panel) panel.dataset.boundFiles = "1";
-    else if (form) form.dataset.boundFiles = "1";
-
-    const uploadUrl =
-      (form && form.getAttribute("data-inputs-url")) ||
-      (panel && panel.getAttribute("data-inputs-url")) ||
-      "/projects/" + projectPk + "/inputs/";
-    const deleteUrl =
-      (panel && panel.getAttribute("data-inputs-delete-url")) ||
-      "/projects/" + projectPk + "/inputs/delete/";
-
-    async function uploadFiles(fileList) {
-      const files = Array.from(fileList || []);
-      if (!files.length) return;
-      const body = new FormData();
-      files.forEach(function (f) {
-        body.append("uploads", f);
-      });
-      try {
-        const res = await fetch(uploadUrl, {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "X-Requested-With": "XMLHttpRequest",
-            "X-CSRFToken": csrfToken(),
-          },
-          body: body,
-        });
-        const data = await res.json().catch(function () {
-          return null;
-        });
-        if (!res.ok || !data || !data.ok) {
-          const err =
-            (data && data.errors && data.errors.join("; ")) ||
-            (data && data.error) ||
-            "Upload failed";
-          if (window.PeonUI) window.PeonUI.toast(err, "error");
-          return;
-        }
-        renderProjectFilesList(data.inputs || []);
-        if (window.PeonUI) {
-          window.PeonUI.toast(
-            "Uploaded " + ((data.saved && data.saved.length) || 0) + " file(s)",
-            "ok"
-          );
-        }
-      } catch (_) {
-        if (window.PeonUI) window.PeonUI.toast("Upload failed", "error");
-      }
-    }
-
-    async function removeFile(name) {
-      if (!name) return;
-      try {
-        const res = await fetch(deleteUrl, {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-            "X-Requested-With": "XMLHttpRequest",
-            "X-CSRFToken": csrfToken(),
-          },
-          body: JSON.stringify({ name: name }),
-        });
-        const data = await res.json().catch(function () {
-          return null;
-        });
-        if (!res.ok || !data || !data.ok) {
-          if (window.PeonUI) {
-            window.PeonUI.toast(
-              (data && data.error) || "Could not remove file",
-              "error"
-            );
-          }
-          return;
-        }
-        renderProjectFilesList(data.inputs || []);
-        if (window.PeonUI) window.PeonUI.toast("Removed " + name, "ok");
-      } catch (_) {
-        if (window.PeonUI) window.PeonUI.toast("Could not remove file", "error");
-      }
-    }
-
-    if (plus && fileInput) {
-      plus.addEventListener("click", function () {
-        if (plus.disabled || fileInput.disabled) return;
-        fileInput.click();
-      });
-    }
-    if (fileInput) {
-      fileInput.addEventListener("change", function () {
-        const files = fileInput.files;
-        uploadFiles(files).finally(function () {
-          fileInput.value = "";
-        });
-      });
-    }
-
-    if (panel) {
-      panel.addEventListener("click", function (ev) {
-        const btn = ev.target.closest(".project-file-remove");
-        if (!btn || !panel.contains(btn)) return;
-        const name = btn.getAttribute("data-name") || "";
-        if (!name) return;
-        if (!window.confirm("Remove " + name + " from this project?")) return;
-        removeFile(name);
+    if (window.PeonProjectConsoleChat && window.PeonProjectConsoleChat.bindFiles) {
+      window.PeonProjectConsoleChat.bindFiles(projectPk, {
+        el: el,
+        csrfToken: csrfToken,
+        appendChatBubble: appendChatBubble,
       });
     }
   }
 
   function bindProjectChat(projectPk) {
-    const form = el("project-chat-form");
-    const input = el("project-chat-input");
-    const send = el("project-chat-send");
-    if (!form || !input || form.dataset.boundChat) return;
-    form.dataset.boundChat = "1";
-    const url = form.getAttribute("data-chat-url") || "/projects/" + projectPk + "/chat/";
-
-    function setBusy(busy) {
-      input.disabled = !!busy || form.dataset.disabled === "1";
-      if (send) send.disabled = !!busy || form.dataset.disabled === "1";
+    if (window.PeonProjectConsoleChat && window.PeonProjectConsoleChat.bindChat) {
+      window.PeonProjectConsoleChat.bindChat(projectPk, {
+        el: el,
+        csrfToken: csrfToken,
+        appendChatBubble: appendChatBubble,
+      });
     }
-
-    async function submit() {
-      const message = (input.value || "").trim();
-      if (!message || form.dataset.disabled === "1") return;
-      setBusy(true);
-      try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-            "X-Requested-With": "XMLHttpRequest",
-            "X-CSRFToken": csrfToken(),
-          },
-          body: JSON.stringify({ message: message }),
-        });
-        const data = await res.json().catch(function () {
-          return null;
-        });
-        if (!res.ok || !data || !data.ok) {
-          if (window.PeonUI) {
-            window.PeonUI.toast(
-              (data && data.error) || "Could not replan project",
-              "error"
-            );
-          }
-          return;
-        }
-        input.value = "";
-        if (window.PeonUI) {
-          window.PeonUI.toast(
-            "Replanned — " +
-              (data.objectives != null ? data.objectives : "?") +
-              " objectives" +
-              (data.primary_job_id ? "; next " + data.primary_job_id.slice(0, 8) : ""),
-            "ok"
-          );
-        }
-      } catch (_) {
-        if (window.PeonUI) window.PeonUI.toast("Could not replan project", "error");
-      } finally {
-        setBusy(false);
-        input.focus();
-      }
-    }
-
-    form.addEventListener("submit", function (ev) {
-      ev.preventDefault();
-      submit();
-    });
-    input.addEventListener("keydown", function (ev) {
-      if (ev.key === "Enter" && !ev.shiftKey) {
-        ev.preventDefault();
-        submit();
-      }
-    });
   }
+
+  function updatePendingInputs(pending) {
+    if (window.PeonProjectConsoleChat && window.PeonProjectConsoleChat.updatePendingInputs) {
+      window.PeonProjectConsoleChat.updatePendingInputs(pending, { el: el });
+    }
+  }
+
 })();

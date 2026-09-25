@@ -10,7 +10,9 @@ if a binary is still missing after provision.
 
 ## Rules
 - Match requested port scope — never `-p-` / `1-65535` unless explicitly asked
-- Obey RoE / `list_objectives`; `record_finding` for notable services
+- Obey RoE / `list_objectives`
+- `record_finding` for notable discoveries about probed subjects (with evidence) —
+  not skill/run completion status
 - Companion scanners: use a dedicated skill when one exists; ensure the CLI is in
   **`tools/catalog`** so the worker can provision it
 - Reuse collected output for notes — do not re-scan just to fill text

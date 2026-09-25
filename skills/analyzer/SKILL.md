@@ -1,6 +1,6 @@
 ---
 name: analyzer
-description: Post-stop synthesizer — aggregate the project plan, workspace evidence, and curated findings into a standalone project report. No new scanning. Use after project stop to synthesize findings/report.md.
+description: Post-stop synthesizer — aggregate the project plan, workspace evidence, and curated findings into a standalone project report. No new evidence collection. Use after project stop to synthesize findings/report.md.
 allowed-tools: sandbox_setup run_skill_script list_objectives update_objective_status record_finding record_findings list_findings skills_list
 metadata:
   version: 1.5.0
@@ -13,7 +13,7 @@ metadata:
 
 ## Goal
 After the project stops, write a **standalone** `findings/report.md` from existing
-evidence only. **Do not scan, exploit, or invent.**
+evidence only. **Do not collect new evidence or invent discoveries.**
 
 Under the peon worker this skill is **host-synthesized** (structured Finding rows +
 optional LLM, deterministic fallback). The `scripts/run.py` path remains for

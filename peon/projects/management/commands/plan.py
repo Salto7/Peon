@@ -6,12 +6,9 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
-from peon.projects.targets import parse_target_lines
+from peon.projects.http_helpers import split_csv
 from peon.projects.services import PlanningService
-
-
-def _csv(raw: str | None) -> list[str]:
-    return [p.strip() for p in (raw or "").split(",") if p.strip()]
+from peon.projects.targets import parse_target_lines
 
 
 class Command(BaseCommand):
@@ -48,7 +45,7 @@ class Command(BaseCommand):
                 in_scope=parse_target_lines(options["in_scope"]),
                 exclusions=parse_target_lines(options["exclusions"]),
                 authorization=options["authorization"],
-                skills=_csv(options["skills"]),
+                skills=split_csv(options["skills"]),
             )
         except Exception as exc:
             raise CommandError(str(exc)) from exc
