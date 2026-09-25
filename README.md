@@ -63,7 +63,7 @@ flowchart TD
 - **Plan / replan** — From a brief or console chat; objectives become jobs you can rewrite mid-engagement without restarting from scratch. you can also trigger a re-pan after the project is concluded, analyzer and planner will updates the project accordingly
 - **Per-project sandbox** — a sandbox (docker container) is provisioned with the needed tooling when a project is created, toolings (Code, cli-tools, or scripts) and data (findings, intermediate reports and tool dumps) live in that isolated Docker to ensure seperation of projects artifacts. The sandbox is ereased when the project is deleted.
 - **Host RPC** — Separate Unix **RPC** socket server runs so sandboxed skill helpers can stream output, log activities or ask the host for catalog data (e.g. `skill_view`).
-- **Modular skills & tools** — Add a playbook (`skills/<name>/SKILL.md` + scripts following [Agent Skills](agentskills.io)  format) or a CLI package (`tools/catalog/*.yaml`) as data. Planners and agents pick them up without changing Django/orchestrator code.
+- **Modular skills & tools** — Add a playbook (`skills/<name>/SKILL.md` + scripts following [Agent Skills](https://agentskills.io)  format) or a CLI package (`tools/catalog/*.yaml`) as data. Planners and agents pick them up without changing Django/orchestrator code.
 - **Install cascade** — Required tools for a project are provisioned when an agents require them. Missing CLIs resolve in order: **`tools/catalog` YAML → skill `references/INSTALL.md` → LLM recipe**, then `provision_cli` installs into the bound sandbox. Prefer this over free-form apt/curl via `run_cli`.
 - **ToolspProvisioning supported recipes** — Catalog/LLM recipes support the recipes below :
   - **`apt`** — install debian packages via Apt
