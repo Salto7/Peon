@@ -177,4 +177,5 @@ Port busy? Set `WEB_PORT`, `PUBLIC_URL`, and `CSRF_TRUSTED_ORIGINS` in `.env`.
 - Operator webhooks for livefeeds notification
 - Sandbox backends beyond local Docker (Kubernetes, remote hosts)
 - Stabilize long-running / watchdog jobs
-- mcp bridge is broken, needs improvement
+- MCP bridge is broken, needs improvement
+- When mature enough, add interface (swagger or mcp) for peon to be used with other tools/agwnts
