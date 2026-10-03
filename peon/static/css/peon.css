@@ -2334,6 +2334,18 @@ body.war-room .as-detail-v {
   margin: 0.35rem 0 0.75rem;
   max-width: 52rem;
 }
+.runtime-warning {
+  display: none;
+  margin: 0.45rem 0 0.75rem;
+  max-width: 52rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+.runtime-field:has(option[value="openshell"]:checked) .runtime-warning {
+  display: block;
+}
 .project-files-list {
   list-style: none;
   margin: 0;

@@ -84,7 +84,11 @@ def home(request: HttpRequest) -> HttpResponse:
         {
             "project": p,
             "sandbox_name": ProjectSandbox.container_name(str(p.pk)),
-            "sandbox_mode": "dedicated" if per_project else "shared",
+            "sandbox_mode": (
+                "openshell"
+                if getattr(p, "sandbox_runtime", "") == "openshell"
+                else ("dedicated" if per_project else "shared")
+            ),
         }
         for p in projects
     ]
@@ -208,6 +212,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
     summary = (request.POST.get("summary") or "").strip()
     operator_scope = bool((request.POST.get("in_scope") or "").strip())
     in_scope = parse_target_lines(request.POST.get("in_scope") or "")
+    sandbox_runtime = (request.POST.get("sandbox_runtime") or "").strip()
     flashes: list[tuple[str, str]] = []
 
     # Uploads need a project id — create shell first without paths, then attach.
@@ -217,6 +222,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
         in_scope=in_scope,
         path_values=[],
         operator_supplied_scope=operator_scope,
+        sandbox_runtime=sandbox_runtime,
     )
     stage("create", "Created project", "done", project.title)
 

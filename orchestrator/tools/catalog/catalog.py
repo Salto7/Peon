@@ -14,7 +14,7 @@ from typing import Any, ClassVar, Iterable
 
 import yaml
 
-from orchestrator.sandbox import SandboxSession
+from agent_runtime.api import Session as SandboxSession
 from orchestrator.utils.service import SharedService
 
 logger = logging.getLogger(__name__)

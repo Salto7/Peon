@@ -10,7 +10,7 @@ from django.db import transaction
 from django.utils import timezone as dj_tz
 
 from orchestrator.utils.job_env import JobEnv
-from orchestrator.sandbox import SandboxSession
+from agent_runtime.api import Session as SandboxSession
 from orchestrator.skills.execute import LocalSkillExecutor, SkillExecutionDispatcher
 from orchestrator.tools.catalog import CatalogProvisioner
 from peon.projects.models import (

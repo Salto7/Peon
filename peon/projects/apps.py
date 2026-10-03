@@ -110,3 +110,6 @@ class ProjectsConfig(AppConfig):
         # LocalSkillExecutor is registered from run_job via ensure_skill_executor().
         configure_orchestrator()
         configure_broker()
+        from agent_runtime.bootstrap import register_builtin
+
+        register_builtin()

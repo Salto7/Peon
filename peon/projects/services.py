@@ -31,6 +31,7 @@ from peon.projects.models import (
     Project,
     ProjectStatus,
     RulesOfEngagement,
+    SandboxRuntime,
 )
 from peon.projects.objectives import ObjectivePlanSync, ObjectiveScheduler
 from peon.projects.targets import (
@@ -424,6 +425,7 @@ class PlanningService:
         in_scope: list | None = None,
         path_values: list[str] | None = None,
         operator_supplied_scope: bool = False,
+        sandbox_runtime: str = "",
     ) -> tuple[Project, list, RulesOfEngagement | None]:
         """Create Project + RoE shell (before optional LLM plan).
 
@@ -439,6 +441,7 @@ class PlanningService:
             title=title,
             summary=summary,
             status=ProjectStatus.ACTIVE,
+            sandbox_runtime=SandboxRuntime.resolve(sandbox_runtime),
         )
         if not scope:
             scope = extract_targets(title, summary)

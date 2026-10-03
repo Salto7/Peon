@@ -8,8 +8,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from orchestrator.sandbox import SandboxSession
-from orchestrator.sandbox.backend import require_docker_bound
+from agent_runtime.api import Session as SandboxSession
 from orchestrator.skills.misc.registry import SkillRegistry
 from orchestrator.skills.misc.utils import resolve_resource
 from orchestrator.utils.service import SharedService
@@ -109,7 +108,7 @@ class LocalSkillExecutor(SharedService, SkillExecutor):
             )
 
         backend = SandboxSession.current()
-        err = require_docker_bound(backend.info.mode)
+        err = SandboxSession.require_bound()
         if err:
             return SkillRunResult(
                 ok=False,

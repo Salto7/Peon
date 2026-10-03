@@ -14,7 +14,7 @@ from langchain_core.tools import tool
 from orchestrator.agent.context import get_agent_config, get_context
 from orchestrator.capabilities.registry import CapabilityGroup, capability
 from orchestrator.runtime.shell import ShellRunner
-from orchestrator.sandbox import SandboxSession
+from agent_runtime.api import Session as SandboxSession
 from orchestrator.skills.execute import SkillExecutionDispatcher, SkillRunRequest
 from orchestrator.skills.misc.catalog import filter_skills
 from orchestrator.skills.misc.registry import SkillRegistry

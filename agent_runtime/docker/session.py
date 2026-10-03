@@ -1,19 +1,13 @@
-"""Docker-backed project sandbox."""
+"""Run commands inside a Docker container. This is the sandbox exec path."""
 
 from __future__ import annotations
 
 import shlex
 
-from orchestrator.sandbox.backend import (
-    ExecResult,
-    SandboxBackend,
-    SandboxInfo,
-    run_process,
-)
-from orchestrator.sandbox.cli import DockerCli
-from orchestrator.utils.job_env import JobEnv
+from agent_runtime.api import BaseCommandCache, ExecResult, RuntimeSession, SessionInfo
+from agent_runtime.docker.cli import DockerCli
+from agent_runtime.process import run_process
 
-# Job-scoped keys forwarded into the container (from JobEnv, not process globals).
 _FORWARD_ENV = (
     "ORCHESTRATOR_JOB_ID",
     "ORCHESTRATOR_STREAM_SOCKET",
@@ -29,16 +23,14 @@ _FORWARD_ENV = (
 )
 
 
-class DockerSandbox(SandboxBackend):
-    """Commands run inside ``docker exec`` for a project container."""
-
-    def __init__(self, info: SandboxInfo, *, docker_bin: str | None = None) -> None:
+class DockerSession(RuntimeSession):
+    def __init__(self, info: SessionInfo, *, docker_bin: str | None = None) -> None:
         super().__init__(info)
         self._docker = docker_bin or DockerCli.shared().bin() or "docker"
 
     def workdir(self) -> str:
         return (
-            JobEnv.get("ORCHESTRATOR_SANDBOX_WORKDIR")
+            self.env_get("ORCHESTRATOR_SANDBOX_WORKDIR")
             or (self.info.workdir or "").strip()
             or "/workspace"
         )
@@ -73,7 +65,7 @@ class DockerSandbox(SandboxBackend):
             "PATH=/usr/local/bin:/usr/bin:/bin",
         ]
         for key in _FORWARD_ENV:
-            val = JobEnv.get(key)
+            val = self.env_get(key)
             if val:
                 argv.extend(["-e", f"{key}={val}"])
         argv.append(self.info.name)
@@ -87,5 +79,18 @@ class DockerSandbox(SandboxBackend):
         if not binary:
             return False
         return self.exec(
-            ["sh", "-c", f"command -v {shlex.quote(binary)}"], timeout=15
+            ["sh", "-c", f"command -v {shlex.quote(binary)}"],
+            timeout=15,
         ).ok
+
+    def load_base_commands(self) -> frozenset[str]:
+        """Read and cache the image marker once per process."""
+        cache = BaseCommandCache.shared()
+        cached = cache.get(self.info.image or self.info.mode)
+        if cached is not None:
+            self._base = cached
+            self.info.base_commands = cached
+            return cached
+        found = self.base_commands()
+        self.info.base_commands = found
+        return found

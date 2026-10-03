@@ -1,8 +1,9 @@
 """Job-scoped environment via ContextVar (safe under Dramatiq / tool threads).
 
 Worker threads must not share process-global ``os.environ`` for job fields.
-``JobEnv.bind`` / ``overlay`` store values; ``DockerSandbox.exec`` and stream
-emitters read via ``JobEnv.get`` (ContextVar first, then ``os.environ``).
+``JobEnv.bind`` / ``overlay`` store values. The bound runtime session reads
+them through the env lookup the control plane installs. Stream emitters
+read via ``JobEnv.get`` (ContextVar first, then ``os.environ``).
 """
 
 from __future__ import annotations

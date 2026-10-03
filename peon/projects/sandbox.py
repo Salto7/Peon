@@ -1,10 +1,7 @@
-"""Per-project or shared Docker sandbox lifecycle (provision / bind / remove).
+"""Project runtime lifecycle. Policy stays here; commands stay in agent_runtime.
 
-Peon control-plane policy around ``orchestrator.sandbox.DockerCli``.
-Skill scripts never run on the host — only via ``docker exec``.
-
-- ``SANDBOX_ENABLED=true``  → one dedicated container per Project
-- ``SANDBOX_ENABLED=false`` → one shared container for all projects
+- ``SANDBOX_ENABLED=true``  → one dedicated environment per Project
+- ``SANDBOX_ENABLED=false`` → one shared Docker sandbox (OpenShell stays dedicated)
 """
 
 from __future__ import annotations
@@ -16,55 +13,80 @@ from typing import Any
 
 from django.conf import settings
 
-from orchestrator.sandbox import (
-    BaseCommandCache,
-    DockerCli,
-    DockerSandbox,
-    SandboxInfo,
-    SandboxSession,
-)
+from agent_runtime.api import Runtime, RuntimeSpec, Session, SessionInfo
+from agent_runtime.bootstrap import register_builtin
+from agent_runtime.registry import get as get_runtime
 from orchestrator.utils.service import SharedService
+from peon.projects.models import SandboxRuntime
 
 logger = logging.getLogger(__name__)
 
 
+def ensure_runtimes() -> None:
+    register_builtin()
+
+
+def runtime_id_for(project_id: str) -> str:
+    pid = str(project_id or "").strip()
+    if not pid:
+        return SandboxRuntime.SANDBOX
+    try:
+        from peon.projects.models import Project
+
+        value = (
+            Project.objects.filter(pk=pid)
+            .values_list("sandbox_runtime", flat=True)
+            .first()
+        )
+    except Exception:
+        return SandboxRuntime.SANDBOX
+    return SandboxRuntime.resolve(value)
+
+
 class ProjectSandbox(SharedService):
-    """Provision / remove Docker sandboxes and bind the backend for the worker."""
+    """Choose the project's runtime and bind a session. Does not run commands."""
 
     def per_project(self) -> bool:
-        """Dedicated container per project when SANDBOX_ENABLED; else shared."""
         return bool(getattr(settings, "SANDBOX_ENABLED", True))
 
-    def shared_container_name(self) -> str:
-        prefix = str(
+    def prefix(self) -> str:
+        return str(
             getattr(settings, "PROJECT_SANDBOX_PREFIX", "peon-project") or "peon-project"
         ).strip()
-        return f"{prefix}-shared"
 
-    @classmethod
-    def container_name(cls, project_id: str) -> str:
-        self = cls.shared()
-        if not self.per_project():
-            return self.shared_container_name()
-        return self.dedicated_name(project_id)
-
-    @classmethod
-    def dedicated_name(cls, project_id: str) -> str:
-        """Per-project container name (even when shared mode is active)."""
-        prefix = str(
-            getattr(settings, "PROJECT_SANDBOX_PREFIX", "peon-project") or "peon-project"
-        ).strip()
-        safe = DockerCli.sanitize_name_fragment(project_id)
-        budget = max(8, 63 - len(prefix) - 1)
-        return f"{prefix}-{safe[:budget]}"
-
-    def image(self) -> str:
+    def image_for(self, runtime_id: str) -> str:
+        if runtime_id == SandboxRuntime.OPENSHELL:
+            raw = str(getattr(settings, "OPENSHELL_IMAGE", "") or "").strip()
+            if raw:
+                return raw
         return str(
             getattr(settings, "SANDBOX_IMAGE", "peon-sandbox:local") or "peon-sandbox:local"
         )
 
-    def _cli(self) -> DockerCli:
-        return DockerCli.shared()
+    def runtime_for(self, project_id: str) -> Runtime:
+        ensure_runtimes()
+        return get_runtime(runtime_id_for(project_id))
+
+    def uses_shared(self, project_id: str) -> bool:
+        return (not self.per_project()) and runtime_id_for(project_id) == SandboxRuntime.SANDBOX
+
+    @classmethod
+    def container_name(cls, project_id: str) -> str:
+        self = cls.shared()
+        pid = str(project_id or "").strip()
+        runtime = self.runtime_for(pid)
+        return runtime.resource_name(
+            pid,
+            prefix=self.prefix(),
+            shared=self.uses_shared(pid),
+        )
+
+    @classmethod
+    def dedicated_name(cls, project_id: str) -> str:
+        self = cls.shared()
+        ensure_runtimes()
+        runtime = get_runtime(runtime_id_for(project_id))
+        return runtime.resource_name(str(project_id or ""), prefix=self.prefix(), shared=False)
 
     @classmethod
     def provision(
@@ -74,137 +96,66 @@ class ProjectSandbox(SharedService):
         workspace: Path | None = None,
         skills_dir: Path | None = None,
         tools_dir: Path | None = None,
-    ) -> SandboxInfo:
+    ) -> SessionInfo:
         self = cls.shared()
         pid = str(project_id or "").strip()
-        cli = self._cli()
-        if not cli.available():
-            raise RuntimeError(
-                "docker CLI missing — skill execution requires a Docker sandbox "
-                "(per-project or shared); host execution is disabled"
-            )
-
-        image = self.image()
-        ws = Path(workspace or "/tmp").resolve()
-        ws.mkdir(parents=True, exist_ok=True)
-
-        if self.per_project() and pid:
-            name = cls.container_name(pid)
-            mode = "docker"
-            volume_args, container_ws = self._volume_args_per_project(
-                ws, skills_dir, tools_dir
-            )
-            labels = [
-                "peon.role=project-sandbox",
-                f"peon.project_id={pid}",
-            ]
-        else:
-            name = self.shared_container_name()
-            mode = "shared"
-            volume_args, container_ws = self._volume_args_shared(
-                ws, skills_dir, tools_dir
-            )
-            labels = ["peon.role=shared-sandbox"]
-
-        action = cli.ensure_running(
-            name,
-            image=image,
-            workdir=container_ws,
-            labels=labels,
-            volume_args=volume_args,
+        runtime = self.runtime_for(pid)
+        spec = self._project_spec(
+            pid,
+            runtime_id=runtime.id,
+            workspace=workspace,
+            skills_dir=skills_dir,
+            tools_dir=tools_dir,
         )
-
-        os.environ["ORCHESTRATOR_SANDBOX_WORKDIR"] = container_ws
-        from orchestrator.utils.job_env import JobEnv
-
-        # Keep workdir job-local when a JobEnv is already bound (parallel-safe).
-        if JobEnv.current():
-            JobEnv.bind({**JobEnv.current(), "ORCHESTRATOR_SANDBOX_WORKDIR": container_ws})
-        cache = BaseCommandCache.shared()
-        base = cache.get(image)
-        info = SandboxInfo(
-            project_id=pid,
-            name=name,
-            mode=mode,
-            action=action,
-            image=image,
-            workdir=container_ws,
-            base_commands=base or frozenset(),
-        )
-        backend = DockerSandbox(info, docker_bin=cli.require_bin())
-        if base is None:
-            base = backend.base_commands()
-            cache.put(image, base)
-            info = SandboxInfo(
-                project_id=pid,
-                name=name,
-                mode=mode,
-                action=action,
-                image=image,
-                workdir=container_ws,
-                base_commands=base,
-            )
-            backend.info = info
-        SandboxSession.bind(backend)
-        return info
+        session = runtime.provision(spec)
+        _bind_session(session)
+        return session.info
 
     @classmethod
     def remove(cls, project_id: str) -> dict[str, Any]:
-        """Force-remove the project sandbox container(s).
-
-        Shared-mode: never remove the shared container on project delete.
-        Always attempts per-project cleanup when docker exists (orphans from prior runs).
-        """
         self = cls.shared()
         pid = str(project_id or "").strip()
         if not pid:
             return {"action": "skipped", "reason": "no project_id"}
 
-        cli = self._cli()
-        shared = self.shared_container_name()
-        # Per-project name even when currently in shared mode (orphan cleanup).
-        dedicated = self.dedicated_name(pid)
-
-        if not cli.available():
-            logger.info("docker CLI missing; skip sandbox remove for %s", dedicated)
-            return {
-                "action": "skipped",
-                "reason": "docker unavailable",
-                "name": dedicated,
-            }
-
+        runtime = self.runtime_for(pid)
+        shared_name = get_runtime(SandboxRuntime.SANDBOX).resource_name(
+            "", prefix=self.prefix(), shared=True
+        )
+        dedicated = runtime.resource_name(pid, prefix=self.prefix(), shared=False)
         removed: list[str] = []
         errors: list[str] = []
 
-        def _rm(target: str) -> None:
-            if target == shared:
-                return  # never destroy the shared sandbox on project delete
-            proc = cli.rm_force(target)
-            if proc.ok:
+        def _rm(target: str, *, role: str) -> None:
+            if target == shared_name:
+                return
+            result = runtime.destroy(
+                RuntimeSpec(project_id=pid, name=target, role=role, image=self.image_for(runtime.id))
+            )
+            if result.get("removed"):
                 removed.append(target)
                 return
-            err = (proc.stderr or proc.stdout or "").strip()
-            if err and "No such container" not in err:
+            err = str(result.get("error") or "")
+            if err:
                 errors.append(f"{target}: {err}")
 
         try:
-            _rm(dedicated)
+            _rm(dedicated, role="project")
         except Exception as exc:
             errors.append(f"{dedicated}: {exc}")
 
-        # Leftover containers tagged for this project (name mismatch / duplicates).
         try:
-            for cid in cli.ps_ids(f"label=peon.project_id={pid}"):
-                if cid in removed or cid == dedicated:
+            for cid in runtime.find(f"label=peon.project_id={pid}"):
+                if cid in removed or cid == dedicated or cid == shared_name:
                     continue
                 try:
-                    _rm(cid)
+                    _rm(cid, role="project")
                 except Exception as exc:
                     errors.append(f"{cid}: {exc}")
         except Exception as exc:
             errors.append(str(exc))
 
-        SandboxSession.reset()
+        Session.reset()
         if removed:
             return {
                 "action": "removed",
@@ -216,7 +167,58 @@ class ProjectSandbox(SharedService):
             return {"action": "error", "name": dedicated, "errors": errors}
         return {"action": "missing", "name": dedicated}
 
-    # --- volume helpers (policy) ---
+    def _project_spec(
+        self,
+        project_id: str,
+        *,
+        runtime_id: str,
+        workspace: Path | None,
+        skills_dir: Path | None,
+        tools_dir: Path | None,
+    ) -> RuntimeSpec:
+        ws = Path(workspace or "/tmp").resolve()
+        ws.mkdir(parents=True, exist_ok=True)
+        skills, tools = self._skills_tools(skills_dir, tools_dir)
+        shared = self.uses_shared(project_id) and runtime_id == SandboxRuntime.SANDBOX
+        if shared:
+            root = Path(getattr(settings, "PROJECT_WORKSPACES_DIR", ws.parent)).resolve()
+            try:
+                rel = ws.resolve().relative_to(root).as_posix()
+            except ValueError:
+                rel = ws.name
+            mount = root
+            workdir = f"/workspace/{rel}" if rel else "/workspace"
+            role = "shared"
+            name = self.runtime_for(project_id).resource_name(
+                project_id, prefix=self.prefix(), shared=True
+            )
+            labels = {"peon.role": "shared-sandbox"}
+        else:
+            mount = ws
+            workdir = "/sandbox" if runtime_id == SandboxRuntime.OPENSHELL else "/workspace"
+            role = "project"
+            name = self.runtime_for(project_id).resource_name(
+                project_id, prefix=self.prefix(), shared=False
+            )
+            labels = {"peon.role": "project-sandbox", "peon.project_id": project_id}
+
+        sock = str(getattr(settings, "STREAM_SOCKET_PATH", "") or "")
+        volume = str(getattr(settings, "SANDBOX_SOCKETS_VOLUME", "") or "").strip()
+        state = Path(getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data")).resolve().parent / "runtime"
+        return RuntimeSpec(
+            project_id=project_id,
+            name=name,
+            image=self.image_for(runtime_id),
+            role=role,
+            workspace_host=str(mount),
+            skills_host=str(skills),
+            tools_host=str(tools),
+            socket_dir_host="" if volume else (str(Path(sock).parent) if sock else ""),
+            socket_volume=volume,
+            container_workdir=workdir,
+            labels=labels,
+            state_dir=str(state),
+        )
 
     def _skills_tools(
         self, skills_dir: Path | None, tools_dir: Path | None
@@ -225,65 +227,15 @@ class ProjectSandbox(SharedService):
         tools = Path(
             tools_dir or getattr(settings, "TOOLS_CATALOG_DIR", "tools/catalog")
         ).resolve()
-        tools_root = tools.parent if tools.name == "catalog" else tools
-        return skills, tools_root
+        return skills, tools
 
-    def _socket_volume_args(self) -> list[str]:
-        sock = str(getattr(settings, "STREAM_SOCKET_PATH", "") or "")
-        sockets_vol = str(getattr(settings, "SANDBOX_SOCKETS_VOLUME", "") or "").strip()
-        cli = self._cli()
-        if sockets_vol:
-            return ["-v", f"{sockets_vol}:/tmp/peon"]
-        if sock:
-            parent = Path(sock).parent
-            return ["-v", f"{cli.host_bind_path(parent)}:{parent}"]
-        return []
 
-    def _volume_args_per_project(
-        self,
-        ws: Path,
-        skills_dir: Path | None,
-        tools_dir: Path | None,
-    ) -> tuple[list[str], str]:
-        """Mount only this project's workspace — never the shared data root."""
-        skills, tools_root = self._skills_tools(skills_dir, tools_dir)
-        cli = self._cli()
-        container_ws = "/workspace"
-        volume_args = [
-            "-v",
-            f"{cli.host_bind_path(ws)}:/workspace",
-            "-v",
-            f"{cli.host_bind_path(skills)}:/skills:ro",
-            "-v",
-            f"{cli.host_bind_path(tools_root)}:/tools:ro",
-            *self._socket_volume_args(),
-        ]
-        return volume_args, container_ws
+def _bind_session(session) -> None:
+    from orchestrator.utils.job_env import JobEnv
 
-    def _volume_args_shared(
-        self,
-        ws: Path,
-        skills_dir: Path | None,
-        tools_dir: Path | None,
-    ) -> tuple[list[str], str]:
-        """Mount all project workspaces; cwd is this job's folder under /workspace."""
-        skills, tools_root = self._skills_tools(skills_dir, tools_dir)
-        root = Path(
-            getattr(settings, "PROJECT_WORKSPACES_DIR", ws.parent)
-        ).resolve()
-        try:
-            rel = ws.resolve().relative_to(root).as_posix()
-        except ValueError:
-            rel = ws.name
-        container_ws = f"/workspace/{rel}" if rel else "/workspace"
-        cli = self._cli()
-        volume_args = [
-            "-v",
-            f"{cli.host_bind_path(root)}:/workspace",
-            "-v",
-            f"{cli.host_bind_path(skills)}:/skills:ro",
-            "-v",
-            f"{cli.host_bind_path(tools_root)}:/tools:ro",
-            *self._socket_volume_args(),
-        ]
-        return volume_args, container_ws
+    work = (session.info.workdir or "/workspace").strip() or "/workspace"
+    os.environ["ORCHESTRATOR_SANDBOX_WORKDIR"] = work
+    if JobEnv.current():
+        JobEnv.bind({**JobEnv.current(), "ORCHESTRATOR_SANDBOX_WORKDIR": work})
+    session.set_env_lookup(JobEnv.get)
+    Session.bind(session)

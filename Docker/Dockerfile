@@ -24,6 +24,7 @@ RUN python -m venv "$VIRTUAL_ENV" \
 COPY manage.py .
 COPY peon/ peon/
 COPY orchestrator/ orchestrator/
+COPY agent_runtime/ agent_runtime/
 COPY skills/ skills/
 COPY tools/ tools/
 COPY Docker/entrypoint-web.sh /entrypoint-web.sh

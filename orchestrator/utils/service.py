@@ -9,7 +9,7 @@ class SharedService:
     """Process-wide singleton helper.
 
     Prefer public **classmethods** that call ``cls.shared()`` internally
-    (e.g. ``SandboxSession.current()``). Use ``Cls()`` + ``reset_shared()``
+    (e.g. ``Session.current()``). Use ``Cls()`` + ``reset_shared()``
     for tests/DI; avoid module-level pass-through wrappers.
     """
 

@@ -124,7 +124,11 @@ class ProjectOpsPayload:
 
     @classmethod
     def sandbox_payload(cls, project: Project) -> dict:
-        mode = "docker" if ProjectSandbox.shared().per_project() else "shared"
+        runtime_id = getattr(project, "sandbox_runtime", "") or "sandbox"
+        if runtime_id == "openshell":
+            mode = "openshell"
+        else:
+            mode = "docker" if ProjectSandbox.shared().per_project() else "shared"
         return {
             "name": ProjectSandbox.container_name(str(project.id)),
             "mode": mode,

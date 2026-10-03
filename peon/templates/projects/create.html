@@ -19,6 +19,17 @@
     <input id="title" name="title" required placeholder="lab" autofocus>
     <label for="summary">Summary</label>
     <textarea id="summary" name="summary" placeholder="What success looks like"></textarea>
+    <div class="runtime-field">
+      <label for="sandbox_runtime">Runtime</label>
+      <select id="sandbox_runtime" name="sandbox_runtime">
+        <option value="sandbox" selected>Sandbox</option>
+        <option value="openshell">OpenShell</option>
+      </select>
+      <p class="runtime-warning" role="note">
+        OpenShell is for untrusted software. Jobs run as a normal user: no sudo and no package installs.
+        Network access stays closed unless a host is allowed. Use Sandbox for web pentest and open recon.
+      </p>
+    </div>
     <label for="in_scope">In-scope targets (optional — values authorize; type:value hints OK)</label>
     <textarea id="in_scope" name="in_scope" placeholder="domain:app.lab&#10;person:Alice&#10;path:/tmp/sample.bin"></textarea>
     <label for="uploads">Sample files (optional — stored under this project only)</label>

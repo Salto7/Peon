@@ -37,8 +37,8 @@ class FindingInline(admin.TabularInline):
 
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
-    list_display = ("title", "status", "created_at")
-    list_filter = ("status",)
+    list_display = ("title", "status", "sandbox_runtime", "created_at")
+    list_filter = ("status", "sandbox_runtime")
     search_fields = ("title", "summary")
     inlines = [RulesOfEngagementInline, ObjectiveInline, FindingInline]
     readonly_fields = ("id", "created_at", "updated_at")

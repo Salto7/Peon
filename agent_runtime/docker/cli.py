@@ -1,8 +1,4 @@
-"""Docker CLI facade — inspect / lifecycle helpers shared by peon policies.
-
-Policy (project mounts, learn-lab singleton, who may delete) stays in peon.
-This module only talks to the docker binary; it never imports Django or peon.
-"""
+"""Docker CLI facade. Lifecycle only — command execution goes through DockerSession."""
 
 from __future__ import annotations
 
@@ -12,17 +8,25 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from orchestrator.sandbox.backend import ExecResult, run_process
-from orchestrator.utils.service import SharedService
+from agent_runtime.api import ExecResult
+from agent_runtime.process import run_process
 
 logger = logging.getLogger(__name__)
 
 
-class DockerCli(SharedService):
-    """Thin wrapper around the docker CLI for sandbox / lab lifecycle."""
+class DockerCli:
+    """Thin wrapper around the docker CLI."""
+
+    _instance: DockerCli | None = None
 
     def __init__(self) -> None:
         self._self_mounts_cache: list[dict[str, Any]] | None = None
+
+    @classmethod
+    def shared(cls) -> DockerCli:
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
 
     def bin(self) -> str | None:
         return shutil.which("docker")
@@ -37,11 +41,9 @@ class DockerCli(SharedService):
         return bool(self.bin())
 
     def run(self, args: list[str], *, timeout: float = 120) -> ExecResult:
-        """Run ``docker <args>``; raises if the CLI binary is missing."""
         return run_process([self.require_bin(), *args], timeout=timeout)
 
     def daemon_ok(self) -> tuple[bool, str]:
-        """Return ``(reachable, error_or_empty)`` via ``docker info``."""
         if not self.bin():
             return False, "docker CLI missing"
         try:
@@ -61,7 +63,6 @@ class DockerCli(SharedService):
             )
 
     def inspect_running(self, name: str) -> tuple[bool, bool]:
-        """Return ``(exists, running)`` for a container name or id."""
         res = self.run(["inspect", "-f", "{{.State.Running}}", name], timeout=30)
         if not res.ok:
             return False, False
@@ -80,18 +81,13 @@ class DockerCli(SharedService):
         return self.run(["pull", image], timeout=timeout)
 
     def ps_ids(self, *filters: str, all_containers: bool = True) -> list[str]:
-        """Container ids matching ``--filter`` expressions (``label=…``, etc.)."""
         args = ["ps", "-aq" if all_containers else "-q"]
-        for f in filters:
-            args.extend(["--filter", f])
+        for item in filters:
+            args.extend(["--filter", item])
         listed = self.run(args, timeout=30)
         if not listed.ok:
             return []
-        return [
-            line.strip()
-            for line in (listed.stdout or "").splitlines()
-            if line.strip()
-        ]
+        return [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
 
     def run_detached(
         self,
@@ -104,11 +100,6 @@ class DockerCli(SharedService):
         command: list[str] | None = None,
         timeout: float = 180,
     ) -> ExecResult:
-        """``docker run -d --name …`` with optional labels/volumes.
-
-        ``labels`` are full ``key=value`` strings (passed as ``--label``).
-        ``volume_args`` are already-formed argv fragments (e.g. ``["-v", "a:b"]``).
-        """
         args: list[str] = ["run", "-d", "--name", name]
         for label in labels or []:
             args.extend(["--label", label])
@@ -129,11 +120,6 @@ class DockerCli(SharedService):
         command: list[str] | None = None,
         pull_image: bool = False,
     ) -> str:
-        """Start existing container or create once. Returns action string.
-
-        Actions: ``reused`` | ``started`` | ``created``.
-        On create name-conflict races, reconnects and returns ``reused``.
-        """
         exists, running = self.inspect_running(name)
         if exists and running:
             return "reused"
@@ -175,7 +161,6 @@ class DockerCli(SharedService):
         raise RuntimeError(f"Failed to create container {name}: {err}")
 
     def host_bind_path(self, path: Path) -> str:
-        """Map a path inside this process to a path the Docker daemon can bind."""
         resolved = path.resolve()
         path_s = str(resolved)
         for mount in self.self_mounts():
@@ -189,7 +174,6 @@ class DockerCli(SharedService):
         return path_s
 
     def self_mounts(self) -> list[dict[str, Any]]:
-        """Mounts of the current container when running under Docker; else ``[]``."""
         if self._self_mounts_cache is not None:
             return self._self_mounts_cache
         if not Path("/.dockerenv").exists() or not self.bin():

@@ -12,7 +12,7 @@ import time
 
 from orchestrator.utils.job_env import JobEnv
 from orchestrator.prompts import INSTALL_MISSING_HINT
-from orchestrator.sandbox import SandboxSession
+from agent_runtime.api import Session as SandboxSession
 from orchestrator.utils.service import SharedService
 
 # Compound / redirected shell is executed as-is — never treated as an apt binary.

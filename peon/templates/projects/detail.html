@@ -67,6 +67,7 @@
       <p class="lead">{{ project.summary|default:"(no summary)" }}</p>
       <div class="mission-meta">
         <span class="status-pill" id="project-status" data-status="{{ project.status }}">{{ project.status }}</span>
+        <span class="meta">Runtime <code>{{ project.get_sandbox_runtime_display }}</code></span>
         <span class="meta" id="project-phase-wrap">Phase <code id="project-phase">{{ ops.project.phase|default:"—" }}</code></span>
         <code class="mission-id">{{ project.id }}</code>
       </div>

@@ -9,12 +9,13 @@ from typing import Any
 
 from django.conf import settings
 
-from orchestrator.sandbox import DockerCli, DockerSandbox, SandboxInfo, SandboxSession
+from agent_runtime.api import RuntimeSpec, Session, SessionInfo
+from agent_runtime.registry import get as get_runtime
+from peon.projects.sandbox import ensure_runtimes
 from orchestrator.tools.catalog import ToolCatalog
 from orchestrator.tools.catalog.catalog import CatalogProvisioner
 from orchestrator.utils.service import SharedService
 
-LEARN_LAB_LABEL = "peon.role=learn-lab"
 LEARN_LAB_FILTER = "label=peon.learn_lab=1"
 
 
@@ -41,66 +42,37 @@ class LearnLab(SharedService):
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    def _cli(self) -> DockerCli:
-        return DockerCli.shared()
+    def _runtime(self):
+        ensure_runtimes()
+        return get_runtime("sandbox")
+
+    def _spec(self, *, pull: bool = False) -> RuntimeSpec:
+        state = Path(getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data")).resolve().parent / "runtime"
+        return RuntimeSpec(
+            name=self.container_name(),
+            image=self.image(),
+            role="learn-lab",
+            container_workdir="/tmp",
+            labels={"peon.role": "learn-lab", "peon.learn_lab": "1"},
+            pull_image=pull,
+            state_dir=str(state),
+        )
 
     def status(self) -> dict[str, Any]:
-        name = self.container_name()
-        image = self.image()
-        cli = self._cli()
-        ok, err = cli.daemon_ok()
-        if not ok:
-            return {
-                "name": name,
-                "image": image,
-                "exists": False,
-                "running": False,
-                "docker": False,
-                "error": (err or "")[:300],
-            }
-        exists, running = cli.inspect_running(name)
-        return {
-            "name": name,
-            "image": image,
-            "exists": exists,
-            "running": running,
-            "docker": True,
-            "error": "",
-        }
+        return self._runtime().status(self._spec())
 
-    def ensure(self) -> SandboxInfo:
+    def ensure(self) -> SessionInfo:
         """Wipe any prior lab and create a fresh container (no leftover tools)."""
-        cli = self._cli()
-        if not cli.available():
-            raise RuntimeError("docker CLI missing — cannot run Learn lab tests")
         name = self.container_name()
-        image = self.image()
-        cli.require_daemon()
-        # Always recreate so apt/git_clone/pip from a previous test cannot leak.
         wiped = self.delete()
         if not wiped.get("ok"):
             raise RuntimeError(
                 f"Failed to reset Learn lab {name}: {wiped.get('error') or 'unknown'}"
             )
-
-        action = cli.ensure_running(
-            name,
-            image=image,
-            workdir="/tmp",
-            labels=[LEARN_LAB_LABEL, "peon.learn_lab=1"],
-            pull_image=True,
-        )
-        info = SandboxInfo(
-            project_id="",
-            name=name,
-            mode="learn-lab",
-            action=action,
-            image=image,
-            workdir="/tmp",
-            base_commands=frozenset(),
-        )
-        self._bind(info)
-        return info
+        spec = self._spec(pull=True)
+        session = self._runtime().provision(spec)
+        self._bind(session)
+        return session.info
 
     def create(self) -> dict[str, Any]:
         """Explicit create/start for the Learn UI switch (always clean slate)."""
@@ -115,70 +87,55 @@ class LearnLab(SharedService):
     def delete(self) -> dict[str, Any]:
         """Remove the canonical lab and any labeled duplicates."""
         name = self.container_name()
-        cli = self._cli()
-        try:
-            cli.require_daemon()
-        except RuntimeError as exc:
-            return {"ok": False, "removed": False, "name": name, "error": str(exc)}
+        runtime = self._runtime()
+        spec = self._spec()
+        st = runtime.status(spec)
+        if st.get("error") and not st.get("docker"):
+            return {"ok": False, "removed": False, "name": name, "error": st.get("error") or ""}
 
         removed_any = False
-        exists, _ = cli.inspect_running(name)
-        if exists:
-            rm = cli.rm_force(name)
-            if not rm.ok:
-                return {
-                    "ok": False,
-                    "removed": False,
-                    "name": name,
-                    "error": (rm.stderr or rm.stdout or "").strip(),
-                }
+        result = runtime.destroy(spec)
+        if not result.get("ok") and result.get("error"):
+            return {
+                "ok": False,
+                "removed": False,
+                "name": name,
+                "error": str(result.get("error") or ""),
+            }
+        removed_any = bool(result.get("removed"))
+        for cid in runtime.find(LEARN_LAB_FILTER):
+            runtime.destroy(RuntimeSpec(name=cid, role="learn-lab", image=self.image()))
             removed_any = True
 
-        for cid in cli.ps_ids(LEARN_LAB_FILTER):
-            cli.rm_force(cid)
-            removed_any = True
-
-        SandboxSession.reset()
+        Session.reset()
         if not removed_any:
             return {"ok": True, "removed": False, "name": name, "reason": "not found"}
         return {"ok": True, "removed": True, "name": name}
 
-    def _bind(self, info: SandboxInfo) -> None:
+    def _bind(self, session) -> None:
         """Bind session + job workdir so exec/provision use the lab cwd."""
         from orchestrator.utils.job_env import JobEnv
 
-        work = (info.workdir or "/tmp").strip() or "/tmp"
+        work = (session.info.workdir or "/tmp").strip() or "/tmp"
         os.environ["ORCHESTRATOR_SANDBOX_WORKDIR"] = work
         if JobEnv.current():
             JobEnv.bind({**JobEnv.current(), "ORCHESTRATOR_SANDBOX_WORKDIR": work})
         else:
             JobEnv.bind({"ORCHESTRATOR_SANDBOX_WORKDIR": work})
-        SandboxSession.bind(
-            DockerSandbox(info, docker_bin=self._cli().require_bin())
-        )
+        session.set_env_lookup(JobEnv.get)
+        Session.bind(session)
 
-    def connect(self) -> SandboxInfo:
-        """Bind SandboxSession to the existing running lab (no create)."""
-        cli = self._cli()
-        if not cli.available():
-            raise RuntimeError("docker CLI missing — cannot run Learn lab tests")
+    def connect(self) -> SessionInfo:
+        """Bind the session to the existing running lab (no create)."""
         name = self.container_name()
         st = self.status()
         if not st.get("running"):
             raise RuntimeError(
                 f"Test docker {name!r} is not running — turn on the lab switch first."
             )
-        info = SandboxInfo(
-            project_id="",
-            name=name,
-            mode="learn-lab",
-            action="reused",
-            image=self.image(),
-            workdir="/tmp",
-            base_commands=frozenset(),
-        )
-        self._bind(info)
-        return info
+        session = self._runtime().attach(self._spec())
+        self._bind(session)
+        return session.info
 
     def test_tool_install(
         self, *, yaml_text: str, install_script: str = ""
@@ -224,7 +181,7 @@ class LearnLab(SharedService):
                 }
             log_lines.append(f"lab={info.name} image={info.image} action={info.action}")
 
-            bootstrap = SandboxSession.current().exec(
+            bootstrap = Session.current().exec(
                 "export DEBIAN_FRONTEND=noninteractive; "
                 "apt-get update -qq && "
                 "apt-get install -y --no-install-recommends ca-certificates curl bash "

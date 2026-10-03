@@ -18,6 +18,20 @@ class ProjectStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
+class SandboxRuntime(models.TextChoices):
+    """Operator pick at project create. Ids match agent_runtime registry keys."""
+
+    SANDBOX = "sandbox", "Sandbox"
+    OPENSHELL = "openshell", "OpenShell"
+
+    @classmethod
+    def resolve(cls, raw: str | None) -> str:
+        value = (raw or "").strip().lower()
+        if value in cls.values:
+            return value
+        return cls.SANDBOX
+
+
 class KillChainPhase(models.TextChoices):
     RECON = "recon", "Reconnaissance"
     INITIAL_ACCESS = "initial-access", "Initial access"
@@ -62,6 +76,12 @@ class Project(models.Model):
         max_length=32,
         choices=ProjectStatus.choices,
         default=ProjectStatus.ACTIVE,
+    )
+    sandbox_runtime = models.CharField(
+        max_length=32,
+        choices=SandboxRuntime.choices,
+        default=SandboxRuntime.SANDBOX,
+        help_text="Chosen at project create. Sandbox is Docker; OpenShell is the locked runtime.",
     )
     focus_tags = models.JSONField(
         default=list,

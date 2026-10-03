@@ -14,7 +14,7 @@ from orchestrator.prompts import INSTALL_CASCADE, PLANNER_INSTALL_SYSTEM
 from orchestrator.tools.catalog.catalog import AptInstallStep, InstallStep
 from orchestrator.tools.catalog import CatalogProvisioner, ToolCatalog
 from orchestrator.skills.misc.registry import SkillRegistry
-from orchestrator.sandbox import SandboxSession
+from agent_runtime.api import Session as SandboxSession
 
 logger = logging.getLogger(__name__)
 
