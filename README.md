@@ -25,7 +25,7 @@ As an operator, you give your prompt with an optional Rules-Of-Engagements, you 
 |---|---|
 | Control plane & UI | **Django** (`peon/`) |
 | Agents / planning / skills | **orchestrator/** — LangChain tool-calling |
-| LLM | **LiteLLM** (default **OpenRouter**) |
+| LLM | **LiteLLM module** in-process (default **OpenRouter**); optional `/v1` proxy profile |
 | Job queue | **Dramatiq** + **Redis** |
 | Edge | **Caddy** TLS → Django |
 | Execution | Per-project **Docker** sandbox |
@@ -33,7 +33,7 @@ As an operator, you give your prompt with an optional Rules-Of-Engagements, you 
 | Live feed | Unix **stream** socket (sandbox → UI) |
 | Host RPC | Unix **RPC** socket (sandbox → host helpers) |
 
-Compose: `edge` · `web` · `redis` · `worker` (build-only `sandbox` profile for the job image).
+Compose: `edge` · `web` · `redis` · `worker` (build-only `sandbox` profile for the job image; optional `llm-proxy` profile for an OpenAI-compatible LiteLLM gateway).
 
 ```mermaid
 flowchart TD
@@ -135,6 +135,10 @@ docker compose up -d --build
 
 # Optional: build the job sandbox image used by projects
 docker compose --profile build build sandbox
+
+# Optional: expose OpenAI-compatible LiteLLM /v1 for external clients (OpenCode, etc.)
+# In .env: LLM_PROXY_ENABLED=true and COMPOSE_PROFILES=llm-proxy (or pass --profile)
+docker compose --profile llm-proxy up -d
 
 curl -k -fsS https://127.0.0.1:${WEB_PORT:-8000}/health/
 ```

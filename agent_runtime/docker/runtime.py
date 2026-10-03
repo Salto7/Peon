@@ -38,7 +38,9 @@ class DockerRuntime(Runtime):
         cli = self._cli()
         args: list[str] = []
         if spec.workspace_host:
-            args.extend(["-v", f"{cli.host_bind_path(Path(spec.workspace_host))}:{_workspace_mount(spec)}"])
+            args.extend(
+                ["-v", f"{cli.host_bind_path(Path(spec.workspace_host))}:/workspace"]
+            )
         if spec.skills_host:
             args.extend(["-v", f"{cli.host_bind_path(Path(spec.skills_host))}:/skills:ro"])
         if spec.tools_host:
@@ -173,10 +175,3 @@ def _mode(spec: RuntimeSpec) -> str:
     if spec.role == "shared":
         return "shared"
     return "docker"
-
-
-def _workspace_mount(spec: RuntimeSpec) -> str:
-    """Per-project mounts the workspace at /workspace. Shared mounts the parent root."""
-    if spec.role == "shared":
-        return "/workspace"
-    return "/workspace"

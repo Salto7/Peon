@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar, Self
 
 
-class SharedService:
+class SharedServiceBase:
     """Process-wide singleton helper.
 
     Prefer public **classmethods** that call ``cls.shared()`` internally

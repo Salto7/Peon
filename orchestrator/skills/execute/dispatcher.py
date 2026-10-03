@@ -4,23 +4,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from orchestrator.skills.execute.executors import (
-    NullSkillExecutor,
-    SkillExecutor,
+from orchestrator.skills.execute.executor_base import (
+    SkillExecutorBase,
     SkillRunRequest,
     SkillRunResult,
 )
-from orchestrator.skills.misc.registry import SkillRegistry
-from orchestrator.skills.misc.utils import resolve_resource
-from orchestrator.utils.service import SharedService
+from orchestrator.skills.execute.executors import NullSkillExecutor
+from orchestrator.skills.registry import SkillRegistry
+from orchestrator.skills.common import resolve_resource
+from orchestrator.utils.service import SharedServiceBase
 
 
-class SkillExecutionDispatcher(SharedService):
+class SkillExecutionDispatcher(SharedServiceBase):
     def __init__(
         self,
         *,
         registry: SkillRegistry | None = None,
-        executors: list[SkillExecutor] | None = None,
+        executors: list[SkillExecutorBase] | None = None,
     ) -> None:
         self._registry = registry or SkillRegistry.shared()
         # Default: refuse until LocalSkillExecutor is registered by the worker.
@@ -28,7 +28,7 @@ class SkillExecutionDispatcher(SharedService):
             list(executors) if executors is not None else [NullSkillExecutor.shared()]
         )
 
-    def register(self, executor: SkillExecutor) -> None:
+    def register(self, executor: SkillExecutorBase) -> None:
         self._executors.insert(0, executor)
 
     def resolve_script(self, skill_name: str, script: str) -> tuple[object | None, Path]:

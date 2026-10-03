@@ -14,7 +14,7 @@ from django.urls import path
 from django.views.decorators.http import require_GET, require_http_methods
 
 from orchestrator.learn import LearnAuthoring
-from orchestrator.skills.misc.registry import SkillRegistry
+from orchestrator.skills.registry import SkillRegistry
 from orchestrator.tools.catalog import ToolCatalog
 from peon.projects.http_helpers import parse_json_body
 from peon.projects.learn_lab import LearnLab
@@ -42,17 +42,24 @@ def _safe_slug(value: str, *, kind: str = "id") -> str:
 
 @require_GET
 def learn_page(request: HttpRequest) -> HttpResponse:
+    from django.conf import settings as dj_settings
+
     tools = [
         {"id": t.id, "binary": t.binary or t.id, "name": t.name or t.id}
         for t in sorted(ToolCatalog.shared().all().values(), key=lambda x: x.id)
         if not t.is_image_tier
     ]
+    proxy_on = bool(getattr(dj_settings, "LLM_PROXY_ENABLED", False))
+    proxy_url = str(getattr(dj_settings, "LLM_PROXY_URL", "") or "").strip() or None
     return render(
         request,
         "learn/index.html",
         {
             "nav": "learn",
             "llm_ready": llm_configured(),
+            "llm_module": str(getattr(dj_settings, "LLM_MODULE", "litellm") or "litellm"),
+            "llm_proxy_enabled": proxy_on,
+            "llm_proxy_url": proxy_url if proxy_on else None,
             "tools": tools,
             "lab": LearnLab.shared().status(),
             "urls": {

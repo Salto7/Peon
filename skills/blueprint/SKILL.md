@@ -4,7 +4,7 @@ description: Blueprint mode — write/refine the project plan or plans/*.md only
 allowed-tools: sandbox_setup run_skill_script run_cli skills_list skill_view
 metadata:
   version: 3.1.0
-  category: platform
+  category: builtin
   tags: platform
   jobable: 'true'
   manually_created: 'true'
@@ -14,7 +14,7 @@ metadata:
 
 ## Goal
 Produce an actionable **blueprint** (phases, skills, paths, success criteria).
-**Do not execute** — no installs, probes, or `spawn_subagent`.
+**Do not execute** — no installs, probes, or `spawn_agent`.
 
 ## Order
 Every project runs **`blueprint` first** and **`analyzer` last** (enforced by the

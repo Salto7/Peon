@@ -191,6 +191,8 @@ DRAMATIQ_TIME_LIMIT_MS = int(_env("DRAMATIQ_TIME_LIMIT_MS", str(6 * 60 * 60 * 10
 DRAMATIQ_MAX_RETRIES = int(_env("DRAMATIQ_MAX_RETRIES", "3") or 3)
 
 LLM_PROVIDER = _env("LLM_PROVIDER", "openrouter")
+# Provider module id (in-process backend). Default litellm; reserved for future modules.
+LLM_MODULE = _env("LLM_MODULE", "litellm") or "litellm"
 LITELLM_MODEL = _env("LITELLM_MODEL", "openrouter/openai/gpt-4o-mini")
 LITELLM_API_BASE = _env("LITELLM_API_BASE") or None
 LITELLM_API_KEY = _env("LITELLM_API_KEY")
@@ -199,6 +201,9 @@ OPENAI_API_KEY = _env("OPENAI_API_KEY")
 LLM_TEMPERATURE = float(_env("LLM_TEMPERATURE", "0") or "0")
 _max_tokens = _env("LLM_MAX_TOKENS").strip()
 LLM_MAX_TOKENS = int(_max_tokens) if _max_tokens.isdigit() else None
+# Optional OpenAI-compatible proxy (Compose profile llm-proxy). Off by default.
+LLM_PROXY_ENABLED = _env_bool("LLM_PROXY_ENABLED", False)
+LLM_PROXY_URL = _env("LLM_PROXY_URL", "http://litellm:4000/v1") or "http://litellm:4000/v1"
 
 # Agent runtime governors (LangGraph job loop — peon passes these into orchestrator).
 # Overridable live via Peon Settings UI (RuntimeSettings); .env values are defaults.

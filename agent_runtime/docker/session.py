@@ -28,13 +28,6 @@ class DockerSession(RuntimeSession):
         super().__init__(info)
         self._docker = docker_bin or DockerCli.shared().bin() or "docker"
 
-    def workdir(self) -> str:
-        return (
-            self.env_get("ORCHESTRATOR_SANDBOX_WORKDIR")
-            or (self.info.workdir or "").strip()
-            or "/workspace"
-        )
-
     def exec(
         self,
         cmd: list[str] | str,

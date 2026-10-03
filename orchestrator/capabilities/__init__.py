@@ -7,6 +7,7 @@ from orchestrator.capabilities.registry import (
     default_allowed_tools,
     ensure_registered,
     get_tools_for_names,
+    resolve_tool_names,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "default_allowed_tools",
     "ensure_registered",
     "get_tools_for_names",
+    "resolve_tool_names",
 ]

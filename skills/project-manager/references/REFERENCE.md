@@ -8,8 +8,8 @@
 ## Sequencing & subgraphs
 - Honor each skill’s prerequisites and project-plan `depends_on`
 - Heavy pipelines: `run_skill_script` in **this** job; independent later phases:
-  one `spawn_subagent` each → `wait_for_subagents` (pass required `skill_names`; never
-  tell a child to skip upstream work)
+  one `spawn_agent(..., link="child")` each → `wait_for_agents` (pass `skill_name`;
+  never tell a child to skip upstream work)
 - One worker per phase unless the operator asks for corroboration
 - Hand off via `workspace/` JSON the next skill documents — not by parsing `findings/*.md`
 - On failure: re-run the skill workflow; don’t shrink inventories to seed-only

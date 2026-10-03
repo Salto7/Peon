@@ -13,15 +13,15 @@ from typing import Any
 
 from django.db import transaction
 
-from orchestrator.planning.job_plan import JobPlanner
-from orchestrator.planning.project_plan import (
+from orchestrator.planning import (
+    JobPlanner,
     ProjectPlanner,
     bookend_project_objectives,
     bookend_skill_names,
     parse_project_objectives,
 )
-from orchestrator.skills.misc.registry import SkillRegistry
-from orchestrator.skills.misc.router import SkillRouter
+from orchestrator.skills.registry import SkillRegistry
+from orchestrator.skills.router import SkillRouter
 from orchestrator.utils.llm import chat_model
 
 from peon.projects.models import (

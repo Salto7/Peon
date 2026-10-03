@@ -1,10 +1,11 @@
-"""Runtime id → backend. Concrete backends register themselves from bootstrap."""
+"""Runtime id → backend."""
 
 from __future__ import annotations
 
 from agent_runtime.api import Runtime
 
 _RUNTIMES: dict[str, Runtime] = {}
+_BUILTIN_DONE = False
 
 
 def register(runtime: Runtime) -> None:
@@ -25,3 +26,15 @@ def get(runtime_id: str) -> Runtime:
 
 def ids() -> list[str]:
     return sorted(_RUNTIMES)
+
+
+def register_builtin() -> None:
+    global _BUILTIN_DONE
+    if _BUILTIN_DONE:
+        return
+    from agent_runtime.docker.runtime import DockerRuntime
+    from agent_runtime.openshell.runtime import OpenShellRuntime
+
+    register(DockerRuntime())
+    register(OpenShellRuntime())
+    _BUILTIN_DONE = True

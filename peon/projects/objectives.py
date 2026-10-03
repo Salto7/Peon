@@ -80,8 +80,13 @@ class ObjectiveScheduler:
         return objective
 
     def skills_for(self, objective: Objective) -> list[str]:
+        """Primary skill for the first Job (single id; not a peer list)."""
         hint = (objective.skill_suggestion or "").strip()
-        return [hint] if hint else []
+        if not hint:
+            return []
+        # If planners historically comma-joined, take the first as primary only.
+        primary = hint.replace(";", ",").split(",")[0].strip()
+        return [primary] if primary else []
 
     def build_brief(self, project: Project, objective: Objective) -> str:
         roe = getattr(project, "roe", None)
@@ -127,8 +132,9 @@ class ObjectiveScheduler:
         plan_path: str = "",
         workspace_id: str | None = None,
         enqueue: bool = True,
+        skill_names: list[str] | None = None,
     ) -> Job | None:
-        """Spawn one Job for one ready objective. No-op if deps unmet or job already active."""
+        """Spawn one Solo Job for an objective. No-op if deps unmet or job already active."""
         if objective.status == ObjectiveStatus.CANCELLED:
             return None
         if not self.dependencies_met(objective) and objective.status == ObjectiveStatus.PENDING:
@@ -142,13 +148,17 @@ class ObjectiveScheduler:
                 }
             ).order_by("-created_at").first()
 
-        skills = self.skills_for(objective)
-        if not skills:
+        preferred = (
+            list(skill_names) if skill_names is not None else self.skills_for(objective)
+        )
+        solo = preferred[:1]
+        if not solo:
             self.mark(
                 objective,
                 ObjectiveStatus.BLOCKED,
                 reason=(
-                    "No skill_suggestion — assign a catalog skill or replan"
+                    "No skill_suggestion — assign a catalog skill (recon, web, …) "
+                    "or replan"
                 ),
             )
             return None
@@ -159,7 +169,7 @@ class ObjectiveScheduler:
             description=self.build_brief(project, objective),
             lifecycle=JobLifecycle.LONG,
             status=JobStatus.PENDING,
-            skill_names=skills,
+            skill_names=solo,
             project=project,
             objective=objective,
             plan_text=plan_text or "",
@@ -171,6 +181,64 @@ class ObjectiveScheduler:
         if enqueue:
             enqueue_job(str(job.id))
         return job
+
+    def enqueue_peer_jobs(
+        self,
+        project: Project,
+        objective: Objective,
+        peers: list[dict] | list[str],
+        *,
+        plan_text: str = "",
+        workspace_id: str | None = None,
+        parent: Job | None = None,
+    ) -> list[Job]:
+        """Enqueue specialist Jobs on the same objective (context-driven peers).
+
+        ``peers`` items are dicts ``{title, description, skill_name}`` or bare
+        skill id strings (legacy). Concurrent peers are allowed while other Jobs
+        on the objective are still running.
+        """
+        created: list[Job] = []
+        if objective.status == ObjectiveStatus.CANCELLED:
+            return created
+        ws = safe_workspace_key(workspace_id or str(project.id))
+        project_workspace_dir(ws)
+        primary = (self.skills_for(objective) or [""])[0]
+        base_brief = self.build_brief(project, objective)
+        for raw in peers:
+            if isinstance(raw, str):
+                skill = raw.strip()
+                title = f"OBJ-{objective.seq}/{skill}: {objective.title}"[:255]
+                description = base_brief
+            elif isinstance(raw, dict):
+                skill = str(raw.get("skill_name") or primary or "").strip()
+                title = str(raw.get("title") or skill or objective.title).strip()[:255]
+                focus = str(raw.get("description") or "").strip()
+                description = (
+                    f"{base_brief}\n\n## Specialist focus\n{focus}" if focus else base_brief
+                )
+            else:
+                continue
+            if not skill and not title:
+                continue
+            job = Job.objects.create(
+                title=title or f"OBJ-{objective.seq}: {objective.title}"[:255],
+                description=description,
+                lifecycle=JobLifecycle.LONG,
+                status=JobStatus.PENDING,
+                skill_names=[skill] if skill else list(self.skills_for(objective)[:1]),
+                project=project,
+                objective=objective,
+                parent=parent,
+                plan_text=plan_text or "",
+                plan_path="plans/latest.md",
+                workspace_id=ws,
+            )
+            if objective.status == ObjectiveStatus.PENDING:
+                self.mark(objective, ObjectiveStatus.IN_PROGRESS)
+            enqueue_job(str(job.id))
+            created.append(job)
+        return created
 
     def enqueue_next(self, project: Project | None) -> Job | None:
         """Create+enqueue a job for the next ready objective (if any)."""

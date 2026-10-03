@@ -40,6 +40,10 @@ def configure_orchestrator() -> None:
             tools_catalog_dir=Path(settings.TOOLS_CATALOG_DIR).resolve(),
             workspaces_dir=Path(settings.PROJECT_WORKSPACES_DIR).resolve(),
             llm_provider=provider,
+            llm_module=str(
+                getattr(settings, "LLM_MODULE", None) or "litellm"
+            ).strip()
+            or "litellm",
             litellm_model=str(
                 getattr(settings, "LITELLM_MODEL", None)
                 or getattr(settings, "LLM_MODEL", None)
@@ -49,6 +53,11 @@ def configure_orchestrator() -> None:
             litellm_api_base=getattr(settings, "LITELLM_API_BASE", None) or None,
             llm_temperature=float(getattr(settings, "LLM_TEMPERATURE", 0.0) or 0.0),
             llm_max_tokens=getattr(settings, "LLM_MAX_TOKENS", None),
+            llm_proxy_enabled=bool(getattr(settings, "LLM_PROXY_ENABLED", False)),
+            llm_proxy_url=str(
+                getattr(settings, "LLM_PROXY_URL", None) or "http://litellm:4000/v1"
+            ).strip()
+            or "http://litellm:4000/v1",
             agent_max_iterations=int(getattr(settings, "AGENT_MAX_ITERATIONS", 40) or 40),
             agent_max_failure_replans=int(
                 getattr(settings, "AGENT_MAX_FAILURE_REPLANS", 2) or 2
@@ -110,6 +119,6 @@ class ProjectsConfig(AppConfig):
         # LocalSkillExecutor is registered from run_job via ensure_skill_executor().
         configure_orchestrator()
         configure_broker()
-        from agent_runtime.bootstrap import register_builtin
+        from agent_runtime.registry import register_builtin
 
         register_builtin()

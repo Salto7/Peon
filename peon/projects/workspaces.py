@@ -10,7 +10,7 @@ from pathlib import Path
 
 from django.conf import settings
 
-from orchestrator.workspace import safe_workspace_key
+from orchestrator.utils.workspace import safe_workspace_key
 
 
 def workspaces_root() -> Path:

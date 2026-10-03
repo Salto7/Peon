@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from orchestrator.skills.misc.utils import (
+from orchestrator.skills.common import (
     LINT_LIFECYCLES,
     MAX_COMPATIBILITY_LEN,
     MAX_DESCRIPTION_LEN,
@@ -27,7 +27,7 @@ from orchestrator.skills.misc.utils import (
     split_frontmatter,
     valid_skill_name,
 )
-from orchestrator.utils.service import SharedService
+from orchestrator.utils.service import SharedServiceBase
 
 # Product fields that belong under ``metadata:`` (Peon layout), not top-level.
 # Legacy top-level ``taskable`` — prefer ``jobable`` under metadata.
@@ -54,7 +54,7 @@ METADATA_TOP_LEVEL_FIELDS = frozenset(
 )
 
 
-class SkillLinter(SharedService):
+class SkillLinter(SharedServiceBase):
     @staticmethod
     def lint_dir(skill_dir: Path) -> dict[str, Any]:
         skill_dir = Path(skill_dir)
@@ -238,12 +238,14 @@ class SkillLinter(SharedService):
                 )
         cat_raw = meta.get("category")
         if cat_raw is not None and str(cat_raw).strip():
-            if not normalize_category(cat_raw):
+            cat = normalize_category(cat_raw)
+            if cat not in {"builtin", "custom"}:
                 issues.append(
                     LintIssue(
                         "warning",
                         "category_slug",
-                        f"`metadata.category` should be a kebab-case slug (got {cat_raw!r}).",
+                        "`metadata.category` should be builtin or custom "
+                        f"(got {cat_raw!r}).",
                     )
                 )
         if "taskable" in meta:

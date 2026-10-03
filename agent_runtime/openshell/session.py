@@ -5,8 +5,8 @@ from __future__ import annotations
 import shlex
 
 from agent_runtime.api import ExecResult, RuntimeSession, SessionInfo
-from agent_runtime.process import run_process
 from agent_runtime.openshell.cli import OpenShellCli
+from agent_runtime.process import run_process
 
 _FORWARD_ENV = (
     "ORCHESTRATOR_JOB_ID",

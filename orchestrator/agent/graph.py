@@ -1,4 +1,4 @@
-"""Minimal LangGraph: gate → act ↔ tools with iteration caps."""
+"""LangGraph StateGraph for one Job: gate → act ↔ tools with iteration caps."""
 
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from orchestrator.agent.config import AgentRunConfig
-from orchestrator.agent.context import AgentRunContext, bind_job
-from orchestrator.agent.policy import resolve_tool_names
-from orchestrator.capabilities.registry import ensure_registered, get_tools_for_names
+from orchestrator.agent.job import JobScope
+from orchestrator.capabilities.registry import (
+    ensure_registered,
+    get_tools_for_names,
+    resolve_tool_names,
+)
 from orchestrator.config import get_config
 from orchestrator.prompts import AGENT_RECOVER_NUDGE
-from orchestrator.skills.misc.registry import SkillRegistry
-from orchestrator.utils.llm import chat_model
+from orchestrator.skills.registry import SkillRegistry
 
 
 def build_system_prompt(*, skill_names: list[str], brief: str) -> str:
@@ -40,34 +42,41 @@ class AgentState(TypedDict):
     failure_replans: int
 
 
-def build_agent_graph(ctx: AgentRunContext, config: AgentRunConfig):
+def build_agent_graph(
+    scope: JobScope,
+    config: AgentRunConfig,
+    *,
+    checkpointer: Any | None = None,
+):
     ensure_registered()
-    names = resolve_tool_names(ctx.skill_names)
+    names = resolve_tool_names(scope.skill_names)
     tools = get_tools_for_names(names)
-    llm = chat_model()
-    if tools:
-        llm = llm.bind_tools(tools)
+    llm = chat_model_bound(tools)
     tool_node = ToolNode(tools) if tools else None
-    system = build_system_prompt(skill_names=ctx.skill_names, brief=ctx.brief)
+    system = build_system_prompt(skill_names=scope.skill_names, brief=scope.brief)
     max_iter = config.max_iterations
     max_replans = config.max_failure_replans
 
     def gate(state: AgentState) -> dict[str, Any]:
-        """Pull operator guidance from host ports before each act cycle."""
+        """Pull operator guidance + peer inbox before each act cycle."""
         del state
+        notes: list[str] = []
         try:
-            notes = list(ctx.ports.drain_operator_guidance() or [])
+            notes.extend(list(scope.bridge.drain_operator_guidance() or []))
         except Exception as exc:
-            ctx.ports.emit("error", f"operator guidance drain failed: {exc}")
-            return {}
+            scope.bridge.emit("error", f"operator guidance drain failed: {exc}")
+        try:
+            notes.extend(list(scope.bridge.drain_peer_messages() or []))
+        except Exception as exc:
+            scope.bridge.emit("error", f"peer message drain failed: {exc}")
         notes = [n.strip() for n in notes if str(n or "").strip()]
         if not notes:
             return {}
         text = "\n\n".join(notes)
-        ctx.ports.emit(
+        scope.bridge.emit(
             "log",
             text[:2000],
-            metadata={"event": "operator_guidance", "role": "assistant"},
+            metadata={"event": "agent_inbox", "role": "assistant"},
         )
         return {"messages": [HumanMessage(content=text[:8000])]}
 
@@ -82,7 +91,6 @@ def build_agent_graph(ctx: AgentRunContext, config: AgentRunConfig):
         }
 
     def after_tools(state: AgentState) -> dict[str, Any]:
-        """Optional recovery nudge when the last tool output looks like an error."""
         replans = int(state.get("failure_replans") or 0)
         if replans >= max_replans:
             return {}
@@ -91,8 +99,10 @@ def build_agent_graph(ctx: AgentRunContext, config: AgentRunConfig):
         content = str(getattr(last, "content", "") or "")
         if not content.lower().startswith("error"):
             return {}
-        nudge = HumanMessage(content=AGENT_RECOVER_NUDGE)
-        return {"messages": [nudge], "failure_replans": replans + 1}
+        return {
+            "messages": [HumanMessage(content=AGENT_RECOVER_NUDGE)],
+            "failure_replans": replans + 1,
+        }
 
     def route(state: AgentState) -> Literal["tools", "end"]:
         if int(state.get("iterations") or 0) >= max_iter:
@@ -113,27 +123,20 @@ def build_agent_graph(ctx: AgentRunContext, config: AgentRunConfig):
         graph.add_node("recover", after_tools)
         graph.add_conditional_edges("agent", route, {"tools": "tools", "end": END})
         graph.add_edge("tools", "recover")
-        # Re-enter gate so mid-run operator chat is applied before the next act.
         graph.add_edge("recover", "gate")
     else:
         graph.add_edge("agent", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
-def invoke_agent(ctx: AgentRunContext, config: AgentRunConfig) -> tuple[bool, str, int]:
-    """Run the graph under job context. Returns (ok, output, iterations)."""
-    compiled = build_agent_graph(ctx, config)
-    human = (ctx.brief or f"Execute skills: {', '.join(ctx.skill_names)}").strip()
-    with bind_job(ctx, config):
-        final = compiled.invoke(
-            {
-                "messages": [HumanMessage(content=human[:8000])],
-                "iterations": 0,
-                "failure_replans": 0,
-            },
-            config={"recursion_limit": max(10, config.max_iterations * 2 + 5)},
-        )
-    iterations = int(final.get("iterations") or 0)
+def chat_model_bound(tools: list[Any]):
+    from orchestrator.utils.llm import chat_model
+
+    llm = chat_model()
+    return llm.bind_tools(tools) if tools else llm
+
+
+def extract_output_text(final: dict[str, Any]) -> str:
     msgs = final.get("messages") or []
     snippets: list[str] = []
     for m in msgs[-8:]:
@@ -144,6 +147,4 @@ def invoke_agent(ctx: AgentRunContext, config: AgentRunConfig) -> tuple[bool, st
             for part in content:
                 if isinstance(part, dict) and part.get("text"):
                     snippets.append(str(part["text"])[:2000])
-    text = "\n\n".join(snippets) if snippets else "(no agent text)"
-    ok = iterations > 0
-    return ok, text, iterations
+    return "\n\n".join(snippets) if snippets else "(no agent text)"

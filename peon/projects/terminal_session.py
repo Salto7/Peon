@@ -1,4 +1,4 @@
-"""Interactive PTY sessions into a project's Docker sandbox.
+"""Interactive PTY sessions into a project's agent runtime.
 
 Operator HITL only — not used by agents. Keys (Ctrl+C, Ctrl+R, …) are handled
 by the browser xterm when the panel is focused; this module just shuttles bytes.
@@ -16,7 +16,11 @@ from typing import Iterator
 
 from django.conf import settings
 
+<<<<<<< Updated upstream
 from agent_runtime.api import TerminalHandle
+=======
+from agent_runtime.api import TerminalHandleBase
+>>>>>>> Stashed changes
 from peon.projects.sandbox import ProjectSandbox
 from peon.projects.workspaces import project_workspace_dir
 
@@ -32,7 +36,11 @@ class TerminalSession:
     id: str
     project_id: str
     container: str
+<<<<<<< Updated upstream
     handle: TerminalHandle
+=======
+    handle: TerminalHandleBase
+>>>>>>> Stashed changes
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
     cols: int = 80
@@ -118,13 +126,15 @@ class TerminalRegistry:
         runtime = ProjectSandbox.shared().runtime_for(pid)
         skills_raw = str(getattr(settings, "SKILLS_DIR", "") or "").strip()
         tools_raw = str(getattr(settings, "TOOLS_CATALOG_DIR", "") or "").strip()
+        skills = Path(skills_raw) if skills_raw else None
+        tools = Path(tools_raw) if tools_raw else None
         handle = runtime.open_terminal(
             ProjectSandbox.shared()._project_spec(
                 pid,
                 runtime_id=runtime.id,
                 workspace=project_workspace_dir(pid, create=True),
-                skills_dir=Path(skills_raw) if skills_raw else None,
-                tools_dir=Path(tools_raw) if tools_raw else None,
+                skills_dir=skills if skills and skills.is_dir() else None,
+                tools_dir=tools if tools and tools.is_dir() else None,
             ),
             cols=int(cols or 80),
             rows=int(rows or 24),

@@ -6,7 +6,19 @@ from django.urls import include, path
 
 
 def health(_request):
-    return JsonResponse({"ok": True, "service": "peon"})
+    from django.conf import settings
+
+    proxy_on = bool(getattr(settings, "LLM_PROXY_ENABLED", False))
+    proxy_url = str(getattr(settings, "LLM_PROXY_URL", "") or "").strip() or None
+    return JsonResponse(
+        {
+            "ok": True,
+            "service": "peon",
+            "llm_module": str(getattr(settings, "LLM_MODULE", "litellm") or "litellm"),
+            "llm_proxy_enabled": proxy_on,
+            "llm_proxy_url": proxy_url if proxy_on else None,
+        }
+    )
 
 
 urlpatterns = [

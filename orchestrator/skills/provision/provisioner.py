@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from orchestrator.skills.misc.mcp import normalize_mcp_servers
-from orchestrator.skills.misc.skill import Skill
-from orchestrator.skills.misc.parser import SkillParser
-from orchestrator.skills.misc.utils import list_resource_files
-from orchestrator.utils.service import SharedService
+from orchestrator.skills.mcp import normalize_mcp_servers
+from orchestrator.skills.model import Skill
+from orchestrator.skills.parser import SkillParser
+from orchestrator.skills.common import list_resource_files
+from orchestrator.utils.service import SharedServiceBase
 
 
-class SkillProvisioner(SharedService):
+class SkillProvisioner(SharedServiceBase):
     def __init__(self, *, parser: SkillParser | None = None) -> None:
         self._parser = parser or SkillParser.shared()
 

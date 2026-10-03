@@ -21,8 +21,10 @@ _DEFAULT_SYSTEM_PREAMBLE = (
     f"{FINDINGS_GUIDANCE}"
 )
 _DEFAULT_LLM_PROVIDER = "openrouter"
+_DEFAULT_LLM_MODULE = "litellm"
 _DEFAULT_LITELLM_MODEL = "openrouter/openai/gpt-4o-mini"
-# Public SoT for provider → env var (also used by peon apps bootstrap / llm utils).
+_DEFAULT_LLM_PROXY_URL = "http://litellm:4000/v1"
+# Public SoT for upstream provider → env var (also used by peon apps bootstrap).
 LLM_PROVIDER_KEY_ENV = {
     "openrouter": "OPENROUTER_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -55,17 +57,24 @@ class RuntimeConfig:
     workspaces_dir: Path = field(default_factory=lambda: Path("workspaces").resolve())
 
     llm_provider: str = _DEFAULT_LLM_PROVIDER
+    llm_module: str = _DEFAULT_LLM_MODULE
     litellm_model: str = _DEFAULT_LITELLM_MODEL
     litellm_api_key: str = ""
     litellm_api_base: str | None = None
     llm_temperature: float = 0.0
     llm_max_tokens: int | None = None
+    # Optional OpenAI-compatible proxy exposure (Compose profile llm-proxy).
+    llm_proxy_enabled: bool = False
+    llm_proxy_url: str = _DEFAULT_LLM_PROXY_URL
 
     agent_max_iterations: int = 40
     agent_max_failure_replans: int = 2
     agent_max_subagents: int = 4
     agent_max_subagent_depth: int = 2
     agent_runtime_enabled: bool = True
+    # LangGraph checkpointer: auto|memory|sqlite (sqlite needs langgraph-checkpoint-sqlite)
+    agent_checkpoint_backend: str = "auto"
+    agent_checkpoint_path: str = ""
 
     sandbox_enabled: bool = True
     sandbox_image: str = "peon-sandbox:local"
@@ -113,6 +122,7 @@ class RuntimeConfig:
             tools_catalog_dir=_env_path("TOOLS_CATALOG_DIR", base / "tools" / "catalog"),
             workspaces_dir=_env_path("PROJECT_WORKSPACES_DIR", base / "workspaces"),
             llm_provider=provider,
+            llm_module=_env("LLM_MODULE", _DEFAULT_LLM_MODULE) or _DEFAULT_LLM_MODULE,
             litellm_model=_env("LITELLM_MODEL")
             or _env("LLM_MODEL")
             or _DEFAULT_LITELLM_MODEL,
@@ -120,11 +130,17 @@ class RuntimeConfig:
             litellm_api_base=_env("LITELLM_API_BASE") or None,
             llm_temperature=float(_env("LLM_TEMPERATURE", "0") or 0),
             llm_max_tokens=max_tokens,
+            llm_proxy_enabled=as_bool(_env("LLM_PROXY_ENABLED", "false"), default=False),
+            llm_proxy_url=_env("LLM_PROXY_URL", _DEFAULT_LLM_PROXY_URL)
+            or _DEFAULT_LLM_PROXY_URL,
             agent_max_iterations=int(_env("AGENT_MAX_ITERATIONS", "40") or 40),
             agent_max_failure_replans=int(_env("AGENT_MAX_FAILURE_REPLANS", "2") or 2),
             agent_max_subagents=int(_env("AGENT_MAX_SUBAGENTS", "4") or 4),
             agent_max_subagent_depth=int(_env("AGENT_MAX_SUBAGENT_DEPTH", "2") or 2),
             agent_runtime_enabled=as_bool(_env("AGENT_RUNTIME_ENABLED", "true"), default=True),
+            agent_checkpoint_backend=_env("AGENT_CHECKPOINT_BACKEND", "auto") or "auto",
+            agent_checkpoint_path=_env("AGENT_CHECKPOINT_PATH")
+            or str((_env_path("PROJECT_WORKSPACES_DIR", base / "workspaces") / ".checkpoints" / "langgraph.sqlite")),
             sandbox_enabled=as_bool(_env("SANDBOX_ENABLED", "true"), default=True),
             sandbox_image=_env("SANDBOX_IMAGE", "peon-sandbox:local"),
             sandbox_prefix=_env("PROJECT_SANDBOX_PREFIX")
@@ -179,9 +195,11 @@ def configure(cfg: RuntimeConfig | None = None, **overrides: object) -> RuntimeC
     base.apply_env()
     _config = base
     try:
-        from orchestrator.skills.misc.registry import SkillRegistry
+        from orchestrator.llm import reset_llm_provider
+        from orchestrator.skills.registry import SkillRegistry
         from orchestrator.tools.catalog.catalog import ToolCatalog
 
+        reset_llm_provider()
         SkillRegistry.reset_shared()
         ToolCatalog.reset_shared()
     except Exception:

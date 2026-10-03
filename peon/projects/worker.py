@@ -10,7 +10,11 @@ from django.db import transaction
 from django.utils import timezone as dj_tz
 
 from orchestrator.utils.job_env import JobEnv
+<<<<<<< Updated upstream
 from agent_runtime.api import Session as SandboxSession
+=======
+from agent_runtime.api import Session
+>>>>>>> Stashed changes
 from orchestrator.skills.execute import LocalSkillExecutor, SkillExecutionDispatcher
 from orchestrator.tools.catalog import CatalogProvisioner
 from peon.projects.models import (
@@ -39,12 +43,43 @@ def mark_job_running(job: Job) -> Job | None:
     return job
 
 
+def reclaim_stuck_jobs(*, older_than_seconds: int | None = None) -> int:
+    """Mark long-stuck RUNNING jobs as FAILED so the queue can continue.
+
+    Returns the number of jobs reclaimed. Uses RuntimeSettings when available.
+    """
+    from datetime import timedelta
+
+    from peon.projects.runtime_settings import PeonSettings
+
+    seconds = older_than_seconds
+    if seconds is None:
+        seconds = PeonSettings.get_int("JOB_STUCK_RUNNING_SECONDS", 7200)
+    seconds = max(60, int(seconds))
+    cutoff = dj_tz.now() - timedelta(seconds=seconds)
+    stuck = list(
+        Job.objects.filter(status=JobStatus.RUNNING, updated_at__lt=cutoff)[:50]
+    )
+    n = 0
+    for job in stuck:
+        job.status = JobStatus.FAILED
+        job.error = (job.error or "")[:1800] + (
+            f"\n[reclaimed] stuck RUNNING > {seconds}s"
+        )
+        job.completed_at = dj_tz.now()
+        job.save(update_fields=["status", "error", "completed_at", "updated_at"])
+        _emit(job, "error", f"Reclaimed stuck RUNNING job (>{seconds}s)")
+        n += 1
+    return n
+
+
 def claim_next_job() -> Job | None:
     """Atomically move one PENDING job to RUNNING.
 
     Skips paused/cancelled projects, children whose parent is stopped, and jobs
     that would exceed parallel project / per-project agent caps.
     """
+    reclaim_stuck_jobs()
     with transaction.atomic():
         qs = Job.objects.filter(status=JobStatus.PENDING).order_by("created_at")
         for job in qs.select_related("project", "parent")[:20]:
@@ -347,7 +382,21 @@ def run_job(job: Job) -> Job:
                 f"sandbox {sb.mode}:{sb.name} ({sb.action})"
                 + (f" base_cmds={len(sb.base_commands)}" if sb.base_commands else ""),
             )
-            provision = CatalogProvisioner.shared().provision(names, workspace=ws)
+            from orchestrator.skills.eligibility import eligible_cli_names
+            from orchestrator.skills.registry import SkillRegistry
+
+            cli_names: list[str] = []
+            reg = SkillRegistry.shared()
+            for sid in names:
+                skill = reg.load_skill(sid)
+                if skill is None:
+                    continue
+                for cli in eligible_cli_names(skill):
+                    if cli not in cli_names:
+                        cli_names.append(cli)
+            provision = CatalogProvisioner.shared().provision(
+                cli_names or names, workspace=ws
+            )
             if provision.installed:
                 _emit(job, "log", "provisioned: " + ", ".join(provision.installed))
             if provision.verified:
@@ -367,15 +416,27 @@ def run_job(job: Job) -> Job:
         if names == ["analyzer"]:
             return _run_analyzer_only(job, ws)
 
-        return run_job_via_agent(job, skill_names=names, workspace=str(ws))
+        resume = bool(getattr(job, "resume_from_checkpoint", False))
+        if resume:
+            job.resume_from_checkpoint = False
+            job.save(update_fields=["resume_from_checkpoint", "updated_at"])
+        return run_job_via_agent(
+            job, skill_names=names, workspace=str(ws), resume=resume
+        )
     finally:
         JobEnv.reset(token)
-        SandboxSession.reset()
+        Session.reset()
 
 
-def run_job_via_agent(job: Job, *, skill_names: list[str], workspace: str) -> Job:
+def run_job_via_agent(
+    job: Job,
+    *,
+    skill_names: list[str],
+    workspace: str,
+    resume: bool = False,
+) -> Job:
     """Execute one Job through orchestrator.agent.run (sandbox already bound)."""
-    from orchestrator.agent import AgentRunContext, run_agent
+    from orchestrator.agent import JobScope, run_agent
     from peon.projects.agent_bridge import JobAgentBridge, agent_run_config
 
     cfg = agent_run_config()
@@ -385,7 +446,7 @@ def run_job_via_agent(job: Job, *, skill_names: list[str], workspace: str) -> Jo
         depth += 1
         parent = parent.parent
 
-    ctx = AgentRunContext(
+    scope = JobScope(
         job_id=str(job.id),
         project_id=str(job.project_id or ""),
         parent_job_id=str(job.parent_id or ""),
@@ -393,10 +454,16 @@ def run_job_via_agent(job: Job, *, skill_names: list[str], workspace: str) -> Jo
         skill_names=list(skill_names),
         brief=(job.description or job.title or "").strip(),
         depth=depth,
-        ports=JobAgentBridge(job),
+        bridge=JobAgentBridge(job),
     )
-    _emit(job, "status", f"Agent runtime (max_iter={cfg.max_iterations})")
-    result = run_agent(ctx, cfg)
+    _emit(
+        job,
+        "status",
+        f"Agent runtime (max_iter={cfg.max_iterations}"
+        + ("; resume" if resume else "")
+        + ")",
+    )
+    result = run_agent(scope, cfg, resume=resume)
     try:
         from peon.projects.findings import ingest_workspace_findings
 
@@ -460,8 +527,17 @@ def apply_directive(job: Job, action: str, *, cascade: bool = True) -> Job:
             job.status = JobStatus.PENDING
             job.error = ""
             job.completed_at = None
-            job.save(update_fields=["status", "error", "completed_at", "updated_at"])
-            _emit(job, "status", "Resumed → pending")
+            job.resume_from_checkpoint = True
+            job.save(
+                update_fields=[
+                    "status",
+                    "error",
+                    "completed_at",
+                    "resume_from_checkpoint",
+                    "updated_at",
+                ]
+            )
+            _emit(job, "status", "Resumed → pending (checkpoint)")
             enqueue_job(str(job.id))
     elif action == "kill":
         if job.status not in TERMINAL_JOB_STATUSES:

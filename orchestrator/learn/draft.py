@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 
 from orchestrator.capabilities import REGISTRY, default_allowed_tools, ensure_registered
-from orchestrator.skills.misc.utils import (
+from orchestrator.skills.common import (
     MAX_COMPATIBILITY_LEN,
     LintIssue,
     coerce_lifecycle,
@@ -22,7 +22,7 @@ from orchestrator.skills.misc.utils import (
 )
 from orchestrator.skills.provision import METADATA_TOP_LEVEL_FIELDS, SkillLinter
 from orchestrator.tools.catalog import ToolCatalog
-from orchestrator.utils.install_docs import has_install_fence
+from orchestrator.tools.install_docs import has_install_fence
 from orchestrator.utils.strings import as_str_list, unique
 
 RUN_PY = "scripts/run.py"

@@ -21,7 +21,7 @@ from orchestrator.learn.draft import (
 )
 from orchestrator.skills.provision import SkillLinter
 from orchestrator.utils.llm import require_llm, chat_json
-from orchestrator.utils.service import SharedService
+from orchestrator.utils.service import SharedServiceBase
 from orchestrator.prompts import CATALOG_INSTALL_PREFER
 
 _TOOLS_SUGGESTOR = "tools-suggestor"
@@ -63,7 +63,7 @@ def _tool_suggestion_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-class LearnAuthoring(SharedService):
+class LearnAuthoring(SharedServiceBase):
     """LLM authoring backed by skill-writer / tools-suggestor prompt files.
 
     Methods are static — no instance state; ``shared()`` remains for DI/tests.

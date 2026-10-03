@@ -11,15 +11,15 @@ from django.conf import settings
 
 from agent_runtime.api import RuntimeSpec, Session, SessionInfo
 from agent_runtime.registry import get as get_runtime
-from peon.projects.sandbox import ensure_runtimes
+from agent_runtime.registry import register_builtin
 from orchestrator.tools.catalog import ToolCatalog
 from orchestrator.tools.catalog.catalog import CatalogProvisioner
-from orchestrator.utils.service import SharedService
+from orchestrator.utils.service import SharedServiceBase
 
 LEARN_LAB_FILTER = "label=peon.learn_lab=1"
 
 
-class LearnLab(SharedService):
+class LearnLab(SharedServiceBase):
     """Minimal throwaway container for testing catalog install recipes.
 
     At most one lab exists: fixed name ``LEARN_LAB_CONTAINER`` (default
@@ -43,11 +43,16 @@ class LearnLab(SharedService):
         return root
 
     def _runtime(self):
-        ensure_runtimes()
+        register_builtin()
         return get_runtime("sandbox")
 
     def _spec(self, *, pull: bool = False) -> RuntimeSpec:
-        state = Path(getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data")).resolve().parent / "runtime"
+        state = (
+            Path(getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data"))
+            .resolve()
+            .parent
+            / "runtime"
+        )
         return RuntimeSpec(
             name=self.container_name(),
             image=self.image(),

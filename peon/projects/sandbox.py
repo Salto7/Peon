@@ -13,17 +13,20 @@ from typing import Any
 
 from django.conf import settings
 
+<<<<<<< Updated upstream
 from agent_runtime.api import Runtime, RuntimeSpec, Session, SessionInfo
-from agent_runtime.bootstrap import register_builtin
 from agent_runtime.registry import get as get_runtime
+from agent_runtime.registry import register_builtin
 from orchestrator.utils.service import SharedService
+=======
+from agent_runtime.api import RuntimeBase, RuntimeSpec, Session, SessionInfo
+from agent_runtime.registry import get as get_runtime
+from agent_runtime.registry import register_builtin
+from orchestrator.utils.service import SharedServiceBase
+>>>>>>> Stashed changes
 from peon.projects.models import SandboxRuntime
 
 logger = logging.getLogger(__name__)
-
-
-def ensure_runtimes() -> None:
-    register_builtin()
 
 
 def runtime_id_for(project_id: str) -> str:
@@ -43,7 +46,11 @@ def runtime_id_for(project_id: str) -> str:
     return SandboxRuntime.resolve(value)
 
 
+<<<<<<< Updated upstream
 class ProjectSandbox(SharedService):
+=======
+class ProjectSandbox(SharedServiceBase):
+>>>>>>> Stashed changes
     """Choose the project's runtime and bind a session. Does not run commands."""
 
     def per_project(self) -> bool:
@@ -63,8 +70,12 @@ class ProjectSandbox(SharedService):
             getattr(settings, "SANDBOX_IMAGE", "peon-sandbox:local") or "peon-sandbox:local"
         )
 
+<<<<<<< Updated upstream
     def runtime_for(self, project_id: str) -> Runtime:
-        ensure_runtimes()
+=======
+    def runtime_for(self, project_id: str) -> RuntimeBase:
+>>>>>>> Stashed changes
+        register_builtin()
         return get_runtime(runtime_id_for(project_id))
 
     def uses_shared(self, project_id: str) -> bool:
@@ -84,8 +95,7 @@ class ProjectSandbox(SharedService):
     @classmethod
     def dedicated_name(cls, project_id: str) -> str:
         self = cls.shared()
-        ensure_runtimes()
-        runtime = get_runtime(runtime_id_for(project_id))
+        runtime = self.runtime_for(project_id)
         return runtime.resource_name(str(project_id or ""), prefix=self.prefix(), shared=False)
 
     @classmethod
@@ -97,6 +107,8 @@ class ProjectSandbox(SharedService):
         skills_dir: Path | None = None,
         tools_dir: Path | None = None,
     ) -> SessionInfo:
+        from orchestrator.utils.job_env import JobEnv
+
         self = cls.shared()
         pid = str(project_id or "").strip()
         runtime = self.runtime_for(pid)
@@ -108,7 +120,12 @@ class ProjectSandbox(SharedService):
             tools_dir=tools_dir,
         )
         session = runtime.provision(spec)
-        _bind_session(session)
+        work = (session.info.workdir or "/workspace").strip() or "/workspace"
+        os.environ["ORCHESTRATOR_SANDBOX_WORKDIR"] = work
+        if JobEnv.current():
+            JobEnv.bind({**JobEnv.current(), "ORCHESTRATOR_SANDBOX_WORKDIR": work})
+        session.set_env_lookup(JobEnv.get)
+        Session.bind(session)
         return session.info
 
     @classmethod
@@ -204,7 +221,12 @@ class ProjectSandbox(SharedService):
 
         sock = str(getattr(settings, "STREAM_SOCKET_PATH", "") or "")
         volume = str(getattr(settings, "SANDBOX_SOCKETS_VOLUME", "") or "").strip()
-        state = Path(getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data")).resolve().parent / "runtime"
+        state = (
+            Path(getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data"))
+            .resolve()
+            .parent
+            / "runtime"
+        )
         return RuntimeSpec(
             project_id=project_id,
             name=name,
@@ -228,14 +250,3 @@ class ProjectSandbox(SharedService):
             tools_dir or getattr(settings, "TOOLS_CATALOG_DIR", "tools/catalog")
         ).resolve()
         return skills, tools
-
-
-def _bind_session(session) -> None:
-    from orchestrator.utils.job_env import JobEnv
-
-    work = (session.info.workdir or "/workspace").strip() or "/workspace"
-    os.environ["ORCHESTRATOR_SANDBOX_WORKDIR"] = work
-    if JobEnv.current():
-        JobEnv.bind({**JobEnv.current(), "ORCHESTRATOR_SANDBOX_WORKDIR": work})
-    session.set_env_lookup(JobEnv.get)
-    Session.bind(session)

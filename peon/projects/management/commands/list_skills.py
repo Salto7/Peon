@@ -6,8 +6,8 @@ import json
 
 from django.core.management.base import BaseCommand
 
-from orchestrator.skills.misc.catalog import filter_skills, format_catalog
-from orchestrator.skills.misc.registry import SkillRegistry
+from orchestrator.skills.catalog import filter_skills, format_catalog
+from orchestrator.skills.registry import SkillRegistry
 
 
 class Command(BaseCommand):

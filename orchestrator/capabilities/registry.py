@@ -98,7 +98,7 @@ def ensure_registered() -> CapabilityRegistry:
     """Import capability tools once so ``@capability`` side-effects populate REGISTRY."""
     global _REGISTERED
     if not _REGISTERED:
-        import orchestrator.tools.llm_tools  # noqa: F401
+        import orchestrator.capabilities.tools  # noqa: F401
 
         _REGISTERED = True
     return REGISTRY
@@ -141,3 +141,29 @@ def get_tools_for_names(names: set[str] | frozenset[str]) -> list[Any]:
     ensure_registered()
     tools = REGISTRY.tool_map()
     return [tools[n] for n in names if n in tools]
+
+
+# Job agent binds these groups by default (catalog CLIs are not LangChain tools).
+_IMPLICIT_JOB_GROUPS = (
+    CapabilityGroup.SANDBOX,
+    CapabilityGroup.SKILLS,
+    CapabilityGroup.ENGAGEMENT,
+    CapabilityGroup.CORE,
+)
+_OPT_IN_JOB_TAGS = frozenset({"watchdog", "periodic"})
+
+
+def resolve_tool_names(skill_names: list[str] | None = None) -> set[str]:
+    """Implicit Peon capability set for a Job (skill_names reserved for future)."""
+    del skill_names
+    ensure_registered()
+    registered = set(REGISTRY.tool_map())
+    allowed: set[str] = set()
+    for name in REGISTRY.names(groups=_IMPLICIT_JOB_GROUPS):
+        if name not in registered:
+            continue
+        entry = REGISTRY.get(name)
+        if entry is None or entry.tags & _OPT_IN_JOB_TAGS:
+            continue
+        allowed.add(name)
+    return allowed

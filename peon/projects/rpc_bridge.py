@@ -6,7 +6,7 @@ import logging
 
 from django.conf import settings
 
-from orchestrator.runtime.rpc import RpcServer
+from orchestrator.rpc import RpcServer
 
 logger = logging.getLogger(__name__)
 

@@ -132,6 +132,29 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Optional OpenAI-compatible LiteLLM proxy (off by default).
+  # Enable: set LLM_PROXY_ENABLED=true in .env and COMPOSE_PROFILES=llm-proxy
+  #   docker compose --profile llm-proxy up -d
+  # Peon agent traffic stays in-process; this gateway is for external clients (e.g. OpenCode).
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    profiles: ["llm-proxy"]
+    env_file:
+      - .env
+    environment:
+      LITELLM_MODEL: ${LITELLM_MODEL:-openrouter/openai/gpt-4o-mini}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      # Bearer key for /v1 clients; default is for local lab only — override in .env.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-peon-litellm}
+    volumes:
+      - ./Docker/litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "4000"]
+    ports:
+      - "${LLM_PROXY_PORT:-4000}:4000"
+    restart: unless-stopped
+
 volumes:
   peon_data:
     name: peon_data

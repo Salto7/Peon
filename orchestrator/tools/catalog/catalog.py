@@ -6,26 +6,33 @@ import json
 import logging
 import os
 import re
-import shlex
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Iterable
+from typing import Any
 
 import yaml
 
+<<<<<<< Updated upstream
 from agent_runtime.api import Session as SandboxSession
 from orchestrator.utils.service import SharedService
+=======
+from orchestrator.utils.service import SharedServiceBase
+>>>>>>> Stashed changes
 
 logger = logging.getLogger(__name__)
 
-_REPO_RE = re.compile(
-    r"^(?:https?://github\.com/)?([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+from orchestrator.tools.install_steps import (
+    AptInstallStep,
+    CustomInstallStep,
+    _fallback_rank,
+    _steps,
 )
+from orchestrator.tools.install_steps.util import _run
+
+
 _TRANSITIVE: dict[str, list[str]] = {
     "ai-osint-subsidiaries": ["domain-enum"],
 }
-_GH_SCRIPT = Path(__file__).with_name("assets") / "install_github_release.sh"
 
 
 def normalize_verify(raw: Any) -> list[dict[str, Any]]:
@@ -102,303 +109,7 @@ class ProvisionResult:
         }
 
 
-def _run(
-    cmd: list[str] | str, *, timeout: int = 300, shell: bool = False
-) -> tuple[int, str, str]:
-    res = SandboxSession.current().exec(cmd, timeout=timeout, shell=shell)
-    return res.code, res.stdout, res.stderr
-
-
-def _pkgs(raw: dict[str, Any]) -> list[str]:
-    return [str(p).strip() for p in (raw.get("packages") or []) if str(p).strip()]
-
-
-# apt may install python3/nodejs while upstream scripts use `#!/usr/bin/env python|node`.
-_APT_ENV_ALIASES: tuple[tuple[str, str], ...] = (
-    ("python", "python3"),
-    ("node", "nodejs"),
-)
-
-
-def _ensure_env_command_aliases(installed_packages: Iterable[str]) -> None:
-    pkgs = {p.strip().lower() for p in installed_packages}
-    for alias, target in _APT_ENV_ALIASES:
-        if target not in pkgs:
-            continue
-        _run(
-            [
-                "bash",
-                "-lc",
-                f"command -v {alias} >/dev/null 2>&1 || "
-                f"{{ command -v {target} >/dev/null 2>&1 && "
-                f'ln -sfn "$(command -v {target})" "/usr/local/bin/{alias}"; }}',
-            ],
-            timeout=30,
-        )
-
-
-class InstallStep(ABC):
-    """One catalog install action (custom / apt / github_release / pip / git_clone)."""
-
-    _registry: ClassVar[dict[str, type[InstallStep]]] = {}
-    _TYPE_ALIASES: ClassVar[dict[str, str]] = {
-        "command": "custom",
-        "shell": "custom",
-        "run": "custom",
-        "bash": "custom",
-        "script": "custom",
-    }
-
-    def __init_subclass__(cls, *, step_type: str = "", **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        if step_type:
-            InstallStep._registry[step_type] = cls
-
-    @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> InstallStep | None:
-        stype = str(raw.get("type") or "").strip().lower()
-        if not stype and str(raw.get("command") or "").strip():
-            stype = "custom"
-        stype = cls._TYPE_ALIASES.get(stype, stype)
-        impl = cls._registry.get(stype)
-        return impl(raw) if impl else None  # type: ignore[call-arg]
-
-    @abstractmethod
-    def apply(self, *, binary: str = "", tool_id: str = "") -> tuple[bool, str]: ...
-
-
-def _under_catalog(catalog_dir: Path, path: Path) -> bool:
-    try:
-        path.resolve().relative_to(catalog_dir.resolve())
-        return True
-    except (OSError, ValueError):
-        return False
-
-
-class CustomInstallStep(InstallStep, step_type="custom"):
-    """Priority install — runs before apt / github_release / pip / git_clone.
-
-    YAML::
-
-        install:
-          - type: custom
-            command: "curl -fsSL https://example/install.sh | bash"
-          - type: apt
-            packages: [fallback-pkg]
-
-        # Or reference the tool's install script (same stem as the YAML):
-        # tools/catalog/dnsx.yaml + tools/catalog/dnsx.sh
-          - type: custom
-            command: dnsx.sh
-
-    ``command`` is either an inline shell line, or a relative path to the single
-    allowed ``{tool_id}.sh`` beside ``{tool_id}.yaml`` (skill-style relative path).
-    """
-
-    def __init__(self, raw: dict[str, Any]) -> None:
-        self.command = str(raw.get("command") or raw.get("run") or "").strip()
-        try:
-            self.timeout = max(30, int(raw.get("timeout") or 600))
-        except (TypeError, ValueError):
-            self.timeout = 600
-
-    def apply(self, *, binary: str = "", tool_id: str = "") -> tuple[bool, str]:
-        del binary
-        tid = (tool_id or "").strip()
-        catalog_dir = ToolCatalog.shared().catalog_dir()
-        payload, label = self._resolve_payload(tid, catalog_dir)
-        if not payload:
-            return False, label or "empty custom install"
-        code, out, err = _run(["bash", "-lc", payload], timeout=self.timeout)
-        if code:
-            detail = (err or out).strip()[:500]
-            return False, f"custom install: {detail or f'exit {code}'}"
-        return True, label
-
-    def _resolve_payload(self, tool_id: str, catalog_dir: Path) -> tuple[str, str]:
-        """Inline shell, or the tool's ``{id}.sh`` under the catalog dir."""
-        raw = self.command
-        script_name = f"{tool_id}.sh" if tool_id else ""
-        script_path = (catalog_dir / script_name).resolve() if script_name else None
-
-        def _is_script_ref(text: str) -> bool:
-            if not script_name:
-                return False
-            norm = text.replace("\\", "/").lstrip("./")
-            return (
-                norm == script_name
-                or norm.endswith(f"/{script_name}")
-                or Path(norm).name == script_name
-            )
-
-        if script_path is not None and (
-            not raw or _is_script_ref(raw)
-        ):
-            if script_path.is_file() and _under_catalog(catalog_dir, script_path):
-                try:
-                    body = script_path.read_text(encoding="utf-8")
-                except OSError as exc:
-                    return "", f"cannot read {script_name}: {exc}"
-                if not body.strip():
-                    return "", f"empty install script {script_name}"
-                return body, f"custom:script:{script_name}"
-            if raw:
-                return "", f"missing install script {script_name} (beside {tool_id}.yaml)"
-            return "", f"empty custom install (no command and no {tool_id}.sh)"
-
-        if not raw:
-            return "", "empty custom install"
-        if raw.endswith(".sh") and ("/" in raw or "\\" in raw or Path(raw).name != raw):
-            # Disallow other script paths — only {tool_id}.sh is allowed.
-            return (
-                "",
-                f"custom script must be {script_name or '{tool_id}.sh'} beside the tool YAML",
-            )
-        return raw, "custom:inline"
-
-
-class AptInstallStep(InstallStep, step_type="apt"):
-    def __init__(self, raw: dict[str, Any]) -> None:
-        self.packages = _pkgs(raw)
-
-    def apply(self, *, binary: str = "", tool_id: str = "") -> tuple[bool, str]:
-        del binary, tool_id
-        if not self.packages:
-            return True, "no apt packages"
-        _run(["apt-get", "update", "-qq"], timeout=180)
-        code, out, err = _run(
-            ["apt-get", "install", "-y", "--no-install-recommends", *self.packages],
-            timeout=600,
-        )
-        if code:
-            return False, f"apt install {self.packages}: {(err or out).strip()[:400]}"
-        _ensure_env_command_aliases(self.packages)
-        return True, f"apt:{','.join(self.packages)}"
-
-
-class GitHubReleaseInstallStep(InstallStep, step_type="github_release"):
-    def __init__(self, raw: dict[str, Any]) -> None:
-        self.repo = str(raw.get("repo") or "").strip()
-        self.binary = str(raw.get("binary") or "").strip()
-        self.asset_substr = str(raw.get("asset_substr") or "linux_amd64").strip()
-        self.tag = str(raw.get("tag") or "").strip()
-
-    def apply(self, *, binary: str = "", tool_id: str = "") -> tuple[bool, str]:
-        del tool_id
-        match = _REPO_RE.match(self.repo)
-        if not match:
-            return False, f"invalid github repo {self.repo!r}"
-        owner, name = match.group(1), match.group(2)
-        bin_name = (self.binary or binary or name).strip()
-        if not bin_name:
-            return False, "binary name required"
-        if not _GH_SCRIPT.is_file():
-            return False, f"missing install script {_GH_SCRIPT}"
-        script = _GH_SCRIPT.read_text(encoding="utf-8")
-        for key, val in {
-            "__OWNER__": shlex.quote(owner),
-            "__REPO__": shlex.quote(name),
-            "__BINARY__": shlex.quote(bin_name),
-            "__TAG__": shlex.quote(self.tag),
-            "__ASSET_SUBSTR__": shlex.quote(self.asset_substr or "linux_amd64"),
-        }.items():
-            script = script.replace(key, val)
-        code, out, err = _run(["bash", "-lc", script], timeout=600)
-        if code:
-            return False, f"github {self.repo}/{bin_name}: {(err or out).strip()[:500]}"
-        return True, f"github:{bin_name}"
-
-
-class PipInstallStep(InstallStep, step_type="pip"):
-    def __init__(self, raw: dict[str, Any]) -> None:
-        self.packages = _pkgs(raw)
-
-    def apply(self, *, binary: str = "", tool_id: str = "") -> tuple[bool, str]:
-        del binary, tool_id
-        if not self.packages:
-            return True, "no pip packages"
-        code, out, err = _run(
-            ["python3", "-m", "pip", "install", "--break-system-packages", *self.packages],
-            timeout=600,
-        )
-        if code:
-            return False, f"pip {self.packages}: {(err or out).strip()[:300]}"
-        return True, f"pip:{' '.join(self.packages)}"
-
-
-class GitCloneInstallStep(InstallStep, step_type="git_clone"):
-    """Shallow-clone a GitHub repo and symlink an entrypoint onto PATH."""
-
-    def __init__(self, raw: dict[str, Any]) -> None:
-        self.repo = str(raw.get("repo") or "").strip()
-        self.ref = str(raw.get("ref") or "").strip()
-        self.entrypoint = str(raw.get("entrypoint") or "").strip()
-        self.binary = str(raw.get("binary") or "").strip()
-        try:
-            self.depth = max(1, int(raw.get("depth") or 1))
-        except (TypeError, ValueError):
-            self.depth = 1
-
-    def apply(self, *, binary: str = "", tool_id: str = "") -> tuple[bool, str]:
-        del tool_id
-        match = _REPO_RE.match(self.repo)
-        if not match:
-            return False, f"invalid github repo {self.repo!r}"
-        owner, name = match.group(1), match.group(2)
-        entry = (self.entrypoint or "").strip().lstrip("/")
-        if not entry or entry.startswith("..") or "/../" in f"/{entry}/":
-            return False, "entrypoint required (repo-relative path)"
-        bin_name = (self.binary or binary or Path(entry).stem).strip()
-        if not bin_name:
-            return False, "binary name required"
-        dest = Path("/opt/catalog-tools") / name
-        url = f"https://github.com/{owner}/{name}.git"
-        entry_path = dest / entry
-        bin_path = f"/usr/local/bin/{bin_name}"
-        AptInstallStep({"packages": ["git"]}).apply()
-        script = f"""
-set -euo pipefail
-mkdir -p /opt/catalog-tools
-rm -rf {shlex.quote(str(dest))}
-git clone --depth {self.depth} {shlex.quote(url)} {shlex.quote(str(dest))}
-"""
-        if self.ref:
-            script += f"git -C {shlex.quote(str(dest))} fetch --depth {self.depth} origin {shlex.quote(self.ref)}\n"
-            script += f"git -C {shlex.quote(str(dest))} checkout {shlex.quote(self.ref)}\n"
-        script += f"""
-ENTRY={shlex.quote(str(entry_path))}
-test -f "$ENTRY"
-chmod +x "$ENTRY" || true
-ln -sfn "$ENTRY" {shlex.quote(bin_path)}
-"""
-        code, out, err = _run(["bash", "-lc", script], timeout=600)
-        if code:
-            return False, f"git_clone {self.repo}: {(err or out).strip()[:500]}"
-        return True, f"git_clone:{bin_name}"
-
-
-def _steps(raw_steps: list[Any]) -> list[InstallStep]:
-    out: list[InstallStep] = []
-    for raw in raw_steps or []:
-        if isinstance(raw, dict):
-            step = InstallStep.from_dict(raw)
-            if step:
-                out.append(step)
-    return out
-
-
-def _fallback_rank(step: InstallStep) -> int:
-    """After custom: apt (batched) → github_release → pip → git_clone."""
-    if isinstance(step, GitHubReleaseInstallStep):
-        return 0
-    if isinstance(step, PipInstallStep):
-        return 1
-    if isinstance(step, GitCloneInstallStep):
-        return 2
-    return 9
-
-
-class ToolCatalog(SharedService):
+class ToolCatalog(SharedServiceBase):
     """Cached view of ``tools/catalog/*.yaml``."""
 
     def __init__(self) -> None:
@@ -540,7 +251,7 @@ class ToolCatalog(SharedService):
 
     def _toolkit_tool_ids(self, skill_name: str) -> list[str]:
         # deferred: SkillRegistry → skills.execute → runtime_shell → runtime → catalog
-        from orchestrator.skills.misc.registry import SkillRegistry
+        from orchestrator.skills.registry import SkillRegistry
 
         skill = SkillRegistry.shared().load_skill((skill_name or "").strip())
         if skill is None:
@@ -594,7 +305,7 @@ class ToolCatalog(SharedService):
         )
 
 
-class CatalogProvisioner(SharedService):
+class CatalogProvisioner(SharedServiceBase):
     """Verify/install catalog CLIs for skills (host or worker container)."""
 
     def __init__(self, *, catalog: ToolCatalog | None = None) -> None:

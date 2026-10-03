@@ -280,6 +280,10 @@ class Job(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    resume_from_checkpoint = models.BooleanField(
+        default=False,
+        help_text="Next agent run should continue LangGraph thread_id=job_id.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -509,3 +513,53 @@ class AssetGraph(models.Model):
 
     def __str__(self) -> str:
         return f"AssetGraph<{self.project_id}> {len(self.assets or [])} assets"
+
+
+class AgentMessage(models.Model):
+    """In-process agent↔agent message (A2A-shaped; protocol adapter later)."""
+
+    class MsgType(models.TextChoices):
+        REQUEST = "request", "Request"
+        INFORM = "inform", "Inform"
+        HANDOFF = "handoff", "Handoff"
+        CHALLENGE = "challenge", "Challenge"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name="agent_messages"
+    )
+    objective = models.ForeignKey(
+        Objective,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="agent_messages",
+    )
+    from_job = models.ForeignKey(
+        Job, on_delete=models.CASCADE, related_name="messages_sent"
+    )
+    to_job = models.ForeignKey(
+        Job,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="messages_received",
+        help_text="Null = broadcast to other jobs on the same objective.",
+    )
+    msg_type = models.CharField(
+        max_length=16, choices=MsgType.choices, default=MsgType.INFORM
+    )
+    body = models.TextField()
+    artifact_refs = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["to_job", "consumed_at"]),
+            models.Index(fields=["objective", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.msg_type}:{str(self.id)[:8]}"
