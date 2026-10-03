@@ -73,11 +73,10 @@ class SkillCards(CatalogCardsBase):
         return bool(checked.get("compatible")), messages_out
 
     @classmethod
-    def from_registry(cls, name: str) -> dict:
-        skill = SkillRegistry.shared().load_skill(name)
-        if skill is None:
-            return cls.card(name=name)
-        compatible, lint_issues = cls.lint_fields(skill.skill_dir)
+    def from_skill(cls, skill, *, lint: bool = True, **card_kw: Any) -> dict:
+        compatible, lint_issues = (True, [])
+        if lint:
+            compatible, lint_issues = cls.lint_fields(skill.skill_dir)
         return cls.card(
             name=skill.name,
             description=skill.description or "",
@@ -89,7 +88,15 @@ class SkillCards(CatalogCardsBase):
             required=bool(skill.is_builtin),
             compatible=compatible,
             lint_issues=lint_issues,
+            **card_kw,
         )
+
+    @classmethod
+    def from_registry(cls, name: str) -> dict:
+        skill = SkillRegistry.shared().load_skill(name)
+        if skill is None:
+            return cls.card(name=name)
+        return cls.from_skill(skill)
 
     @classmethod
     def for_names(cls, names: list[str]) -> list[dict]:
@@ -102,26 +109,11 @@ class SkillCards(CatalogCardsBase):
             SkillRegistry.shared().get_registry().values(),
             key=lambda s: s.name,
         )
-        out: list[dict] = []
-        for s in skills:
-            if jobable_only and not s.jobable:
-                continue
-            compatible, lint_issues = cls.lint_fields(s.skill_dir)
-            out.append(
-                cls.card(
-                    name=s.name,
-                    description=s.description or "",
-                    category=s.category or "",
-                    tags=list(s.tags or []),
-                    lifecycle=str(s.lifecycle or ""),
-                    aliases=list(s.aliases or []),
-                    jobable=bool(s.jobable),
-                    required=bool(s.is_builtin),
-                    compatible=compatible,
-                    lint_issues=lint_issues,
-                )
-            )
-        return out
+        return [
+            cls.from_skill(s)
+            for s in skills
+            if not jobable_only or s.jobable
+        ]
 
     @classmethod
     def picker(cls) -> list[dict]:
@@ -134,13 +126,9 @@ class SkillCards(CatalogCardsBase):
             key=lambda s: (0 if s.is_builtin else 1, s.name),
         )
         return [
-            cls.card(
-                name=s.name,
-                description=s.description or "",
-                category=s.category or "",
-                tags=list(s.tags or []),
-                jobable=bool(s.jobable),
-                required=bool(s.is_builtin),
+            cls.from_skill(
+                s,
+                lint=False,
                 desc_limit=cls.PICKER_DESC_LIMIT,
                 tag_limit=cls.PICKER_TAG_LIMIT,
             )

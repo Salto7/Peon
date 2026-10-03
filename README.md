@@ -133,11 +133,12 @@ cp .env.example .env
 
 docker compose up -d --build
 
-# Optional: build the job sandbox image used by projects
+# Build the Kali-based job sandbox image (Docker sandbox + OpenShell)
 docker compose --profile build build sandbox
 
-# Optional: expose OpenAI-compatible LiteLLM /v1 for external clients (OpenCode, etc.)
-# In .env: LLM_PROXY_ENABLED=true and COMPOSE_PROFILES=llm-proxy (or pass --profile)
+# Optional: LiteLLM /v1 for OpenCode (Toolsmith). Prefer enabling LLM_PROXY_ENABLED
+# in Peon Settings (starts peon-litellm). Or use the Compose profile:
+#   LLM_PROXY_ENABLED=true and COMPOSE_PROFILES=llm-proxy
 docker compose --profile llm-proxy up -d
 
 curl -k -fsS https://127.0.0.1:${WEB_PORT:-8000}/health/

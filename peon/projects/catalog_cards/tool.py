@@ -93,3 +93,16 @@ class ToolCards(CatalogCardsBase):
             out.append(cls.from_tool(t))
         return out
 
+    @classmethod
+    def summaries(cls, *, include_image: bool = False) -> list[dict]:
+        """Compact id/binary/name rows (Learn Toolsmith picker)."""
+        return [
+            {
+                "id": t.id,
+                "binary": t.binary or t.id,
+                "name": t.name or t.id,
+            }
+            for t in sorted(ToolCatalog.shared().all().values(), key=lambda x: x.id)
+            if include_image or not t.is_image_tier
+        ]
+

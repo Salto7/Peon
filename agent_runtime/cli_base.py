@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import shutil
 
-from agent_runtime.api import ExecResult, run_process
+from agent_runtime.api import ExecResult
+from agent_runtime.process import run_process
 from agent_runtime.util import SharedBase
 
 

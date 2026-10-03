@@ -9,32 +9,20 @@ from agent_runtime.api import Runtime, RuntimeSession, RuntimeSpec, SessionInfo,
 from agent_runtime.openshell.cli import OpenShellCli, policy_text
 from agent_runtime.openshell.session import OpenShellSession
 from agent_runtime.pty import PtyTerminal
+from agent_runtime.util import resource_name as make_resource_name
 
 logger = logging.getLogger(__name__)
-
-
-def _sanitize(value: str) -> str:
-    return "".join(
-        ch if ch.isalnum() or ch in "._-" else "-" for ch in str(value).strip()
-    ).strip("-")
-
-
-def _name_for(project_id: str, *, prefix: str) -> str:
-    prefix = (prefix or "peon-project").strip() + "-os"
-    safe = _sanitize(project_id or "lab")
-    budget = max(8, 63 - len(prefix) - 1)
-    return f"{prefix}-{safe[:budget]}"
 
 
 class OpenShellRuntime(Runtime):
     id = "openshell"
 
     def __init__(self) -> None:
-        self._cli = OpenShellCli()
+        self._cli = OpenShellCli.shared()
 
     def resource_name(self, project_id: str, *, prefix: str, shared: bool) -> str:
         del shared
-        return _name_for(project_id, prefix=prefix)
+        return make_resource_name(project_id or "lab", prefix=prefix, suffix="-os")
 
     def _policy_path(self, spec: RuntimeSpec) -> Path:
         root = Path(spec.state_dir or ".").resolve()

@@ -134,13 +134,17 @@ def settings_page(request: HttpRequest) -> HttpResponse:
     """Operator runtime policy (caps + agent governors)."""
     restart_needed = False
     if request.method == "POST":
+        from peon.projects.llm_proxy import LlmProxy
+
         updates = {}
         for field in PeonSettings.field_meta():
             key = field["key"]
             if key not in request.POST:
                 continue
             updates[key] = request.POST.get(key)
+        prev_proxy = PeonSettings.get_bool("LLM_PROXY_ENABLED", False)
         _values, restart_changed = PeonSettings.update(updates)
+        new_proxy = PeonSettings.get_bool("LLM_PROXY_ENABLED", False)
         if restart_changed:
             restart_needed = True
             messages.warning(
@@ -149,6 +153,22 @@ def settings_page(request: HttpRequest) -> HttpResponse:
             )
         else:
             messages.success(request, "Settings saved.")
+        if prev_proxy != new_proxy:
+            st = LlmProxy.shared().status()
+            if new_proxy and st.get("running"):
+                messages.info(
+                    request,
+                    "LiteLLM proxy is running — OpenCode Toolsmith authoring is available.",
+                )
+            elif new_proxy and not st.get("running"):
+                messages.warning(
+                    request,
+                    "LiteLLM proxy enabled but the container is not running. "
+                    f"Check docker for {st.get('name') or 'peon-litellm'}"
+                    + (f": {st.get('error')}" if st.get("error") else "."),
+                )
+            else:
+                messages.info(request, "LiteLLM proxy stopped.")
         return redirect("settings_page")
     return render(
         request,

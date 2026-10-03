@@ -7,24 +7,17 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 
-<<<<<<< Updated upstream
 from agent_runtime.api import Runtime, RuntimeSpec, Session, SessionInfo
 from agent_runtime.registry import get as get_runtime
 from agent_runtime.registry import register_builtin
-from orchestrator.utils.service import SharedService
-=======
-from agent_runtime.api import RuntimeBase, RuntimeSpec, Session, SessionInfo
-from agent_runtime.registry import get as get_runtime
-from agent_runtime.registry import register_builtin
 from orchestrator.utils.service import SharedServiceBase
->>>>>>> Stashed changes
 from peon.projects.models import SandboxRuntime
+from peon.projects.runtime_bind import bind_runtime_session, runtime_state_dir
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +39,7 @@ def runtime_id_for(project_id: str) -> str:
     return SandboxRuntime.resolve(value)
 
 
-<<<<<<< Updated upstream
-class ProjectSandbox(SharedService):
-=======
 class ProjectSandbox(SharedServiceBase):
->>>>>>> Stashed changes
     """Choose the project's runtime and bind a session. Does not run commands."""
 
     def per_project(self) -> bool:
@@ -62,19 +51,15 @@ class ProjectSandbox(SharedServiceBase):
         ).strip()
 
     def image_for(self, runtime_id: str) -> str:
+        sandbox = str(
+            getattr(settings, "SANDBOX_IMAGE", "peon-sandbox:local") or "peon-sandbox:local"
+        ).strip()
         if runtime_id == SandboxRuntime.OPENSHELL:
             raw = str(getattr(settings, "OPENSHELL_IMAGE", "") or "").strip()
-            if raw:
-                return raw
-        return str(
-            getattr(settings, "SANDBOX_IMAGE", "peon-sandbox:local") or "peon-sandbox:local"
-        )
+            return raw or sandbox
+        return sandbox
 
-<<<<<<< Updated upstream
     def runtime_for(self, project_id: str) -> Runtime:
-=======
-    def runtime_for(self, project_id: str) -> RuntimeBase:
->>>>>>> Stashed changes
         register_builtin()
         return get_runtime(runtime_id_for(project_id))
 
@@ -107,8 +92,6 @@ class ProjectSandbox(SharedServiceBase):
         skills_dir: Path | None = None,
         tools_dir: Path | None = None,
     ) -> SessionInfo:
-        from orchestrator.utils.job_env import JobEnv
-
         self = cls.shared()
         pid = str(project_id or "").strip()
         runtime = self.runtime_for(pid)
@@ -120,12 +103,7 @@ class ProjectSandbox(SharedServiceBase):
             tools_dir=tools_dir,
         )
         session = runtime.provision(spec)
-        work = (session.info.workdir or "/workspace").strip() or "/workspace"
-        os.environ["ORCHESTRATOR_SANDBOX_WORKDIR"] = work
-        if JobEnv.current():
-            JobEnv.bind({**JobEnv.current(), "ORCHESTRATOR_SANDBOX_WORKDIR": work})
-        session.set_env_lookup(JobEnv.get)
-        Session.bind(session)
+        bind_runtime_session(session, default_workdir="/workspace")
         return session.info
 
     @classmethod
@@ -221,12 +199,6 @@ class ProjectSandbox(SharedServiceBase):
 
         sock = str(getattr(settings, "STREAM_SOCKET_PATH", "") or "")
         volume = str(getattr(settings, "SANDBOX_SOCKETS_VOLUME", "") or "").strip()
-        state = (
-            Path(getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data"))
-            .resolve()
-            .parent
-            / "runtime"
-        )
         return RuntimeSpec(
             project_id=project_id,
             name=name,
@@ -239,7 +211,7 @@ class ProjectSandbox(SharedServiceBase):
             socket_volume=volume,
             container_workdir=workdir,
             labels=labels,
-            state_dir=str(state),
+            state_dir=str(runtime_state_dir()),
         )
 
     def _skills_tools(

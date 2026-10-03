@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -15,6 +14,7 @@ from agent_runtime.registry import register_builtin
 from orchestrator.tools.catalog import ToolCatalog
 from orchestrator.tools.catalog.catalog import CatalogProvisioner
 from orchestrator.utils.service import SharedServiceBase
+from peon.projects.runtime_bind import bind_runtime_session, runtime_state_dir
 
 LEARN_LAB_FILTER = "label=peon.learn_lab=1"
 
@@ -46,21 +46,37 @@ class LearnLab(SharedServiceBase):
         register_builtin()
         return get_runtime("sandbox")
 
-    def _spec(self, *, pull: bool = False) -> RuntimeSpec:
-        state = (
-            Path(getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data"))
-            .resolve()
-            .parent
-            / "runtime"
-        )
+    def _compose_network(self) -> str:
+        """Attach lab to the Peon Compose network so it can reach litellm."""
+        from agent_runtime.docker.cli import DockerCli
+        from peon.projects.llm_proxy import LlmProxy
+
+        return LlmProxy.shared()._compose_network(DockerCli.shared())
+
+    def _spec(
+        self,
+        *,
+        pull: bool = False,
+        workspace_host: str = "",
+        workdir: str = "/tmp",
+    ) -> RuntimeSpec:
+        network = ""
+        try:
+            network = self._compose_network()
+        except Exception:
+            network = str(
+                getattr(settings, "LLM_PROXY_NETWORK", None) or "peon_default"
+            ).strip()
         return RuntimeSpec(
             name=self.container_name(),
             image=self.image(),
             role="learn-lab",
-            container_workdir="/tmp",
+            container_workdir=workdir,
+            workspace_host=(workspace_host or "").strip(),
             labels={"peon.role": "learn-lab", "peon.learn_lab": "1"},
+            network=network,
             pull_image=pull,
-            state_dir=str(state),
+            state_dir=str(runtime_state_dir()),
         )
 
     def status(self) -> dict[str, Any]:
@@ -75,6 +91,38 @@ class LearnLab(SharedServiceBase):
                 f"Failed to reset Learn lab {name}: {wiped.get('error') or 'unknown'}"
             )
         spec = self._spec(pull=True)
+        session = self._runtime().provision(spec)
+        self._bind(session)
+        return session.info
+
+    def ensure_for_authoring(self, *, workspace_host: str = "") -> SessionInfo:
+        """Ensure a lab with the staging root mounted for OpenCode drafts.
+
+        Reuses a running authoring lab when possible so OpenCode is not
+        reinstalled on every suggest/write. Install-test ``ensure()`` still
+        wipes to a clean image.
+        """
+        host = (workspace_host or "").strip() or str(self.staging_root())
+        Path(host).mkdir(parents=True, exist_ok=True)
+        st = self.status()
+        spec = self._spec(
+            pull=not st.get("exists"),
+            workspace_host=host,
+            workdir="/workspace",
+        )
+        if st.get("running"):
+            # Remount requires recreate when the prior lab had no workspace bind.
+            session = self._runtime().attach(spec)
+            # Verify workspace mount exists; if missing, recreate.
+            probe = session.exec(
+                ["test", "-d", "/workspace"], timeout=20, shell=False
+            )
+            if probe.ok:
+                self._bind(session)
+                return session.info
+            self.delete()
+        elif st.get("exists"):
+            self.delete()
         session = self._runtime().provision(spec)
         self._bind(session)
         return session.info
@@ -119,16 +167,7 @@ class LearnLab(SharedServiceBase):
 
     def _bind(self, session) -> None:
         """Bind session + job workdir so exec/provision use the lab cwd."""
-        from orchestrator.utils.job_env import JobEnv
-
-        work = (session.info.workdir or "/tmp").strip() or "/tmp"
-        os.environ["ORCHESTRATOR_SANDBOX_WORKDIR"] = work
-        if JobEnv.current():
-            JobEnv.bind({**JobEnv.current(), "ORCHESTRATOR_SANDBOX_WORKDIR": work})
-        else:
-            JobEnv.bind({"ORCHESTRATOR_SANDBOX_WORKDIR": work})
-        session.set_env_lookup(JobEnv.get)
-        Session.bind(session)
+        bind_runtime_session(session, default_workdir="/tmp")
 
     def connect(self) -> SessionInfo:
         """Bind the session to the existing running lab (no create)."""

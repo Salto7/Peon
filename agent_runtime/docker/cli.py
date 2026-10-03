@@ -4,44 +4,23 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Any
 
 from agent_runtime.api import ExecResult
-from agent_runtime.process import run_process
+from agent_runtime.cli_base import CLIBase
 
 logger = logging.getLogger(__name__)
 
 
-class DockerCli:
+class DockerCli(CLIBase):
     """Thin wrapper around the docker CLI."""
 
-    _instance: DockerCli | None = None
+    binary_name = "docker"
+    missing_error = "docker CLI missing"
 
     def __init__(self) -> None:
         self._self_mounts_cache: list[dict[str, Any]] | None = None
-
-    @classmethod
-    def shared(cls) -> DockerCli:
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
-
-    def bin(self) -> str | None:
-        return shutil.which("docker")
-
-    def require_bin(self) -> str:
-        path = self.bin()
-        if not path:
-            raise RuntimeError("docker CLI missing")
-        return path
-
-    def available(self) -> bool:
-        return bool(self.bin())
-
-    def run(self, args: list[str], *, timeout: float = 120) -> ExecResult:
-        return run_process([self.require_bin(), *args], timeout=timeout)
 
     def daemon_ok(self) -> tuple[bool, str]:
         if not self.bin():
@@ -97,14 +76,23 @@ class DockerCli:
         workdir: str = "/tmp",
         labels: list[str] | None = None,
         volume_args: list[str] | None = None,
+        network: str = "",
+        env: dict[str, str] | None = None,
+        extra_args: list[str] | None = None,
         command: list[str] | None = None,
         timeout: float = 180,
     ) -> ExecResult:
         args: list[str] = ["run", "-d", "--name", name]
         for label in labels or []:
             args.extend(["--label", label])
+        if network:
+            args.extend(["--network", network])
+        for key, value in (env or {}).items():
+            args.extend(["-e", f"{key}={value}"])
         if volume_args:
             args.extend(volume_args)
+        if extra_args:
+            args.extend(extra_args)
         args.extend(["-w", workdir, image])
         args.extend(command or ["sleep", "infinity"])
         return self.run(args, timeout=timeout)
@@ -117,6 +105,9 @@ class DockerCli:
         workdir: str = "/tmp",
         labels: list[str] | None = None,
         volume_args: list[str] | None = None,
+        network: str = "",
+        env: dict[str, str] | None = None,
+        extra_args: list[str] | None = None,
         command: list[str] | None = None,
         pull_image: bool = False,
     ) -> str:
@@ -146,6 +137,9 @@ class DockerCli:
             workdir=workdir,
             labels=labels,
             volume_args=volume_args,
+            network=network,
+            env=env,
+            extra_args=extra_args,
             command=command,
         )
         if create.ok:
@@ -173,14 +167,20 @@ class DockerCli:
                 return str(Path(src) / rel) if rel else src
         return path_s
 
+    def self_container_id(self) -> str:
+        """Hostname of this process when running inside Docker; else empty."""
+        if not Path("/.dockerenv").exists():
+            return ""
+        try:
+            return Path("/etc/hostname").read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
     def self_mounts(self) -> list[dict[str, Any]]:
         if self._self_mounts_cache is not None:
             return self._self_mounts_cache
-        if not Path("/.dockerenv").exists() or not self.bin():
-            self._self_mounts_cache = []
-            return self._self_mounts_cache
-        cid = Path("/etc/hostname").read_text(encoding="utf-8").strip()
-        if not cid:
+        cid = self.self_container_id()
+        if not cid or not self.bin():
             self._self_mounts_cache = []
             return self._self_mounts_cache
         res = self.inspect_format(cid, "{{json .Mounts}}")
@@ -194,9 +194,3 @@ class DockerCli:
             return self._self_mounts_cache
         self._self_mounts_cache = data if isinstance(data, list) else []
         return self._self_mounts_cache
-
-    @staticmethod
-    def sanitize_name_fragment(value: str) -> str:
-        return "".join(
-            ch if ch.isalnum() or ch in "._-" else "-" for ch in str(value).strip()
-        ).strip("-")

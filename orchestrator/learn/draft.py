@@ -43,11 +43,20 @@ __all__ = [
     "authoring_prompt",
     "catalog_summaries",
     "ensure_skill_entry",
+    "filter_catalog",
+    "finalize_skill_payload",
     "install_guide_markdown",
+    "install_recipe_from_suggestion",
     "lint_draft",
     "parse_skill_payload",
+    "propose_missing_tool",
     "prompt_catalog_hits",
     "proposed_tool_match",
+    "skill_prompt",
+    "skill_result_dict",
+    "tool_replan_human",
+    "tool_suggest_human",
+    "tool_suggestion_from_payload",
     "valid_skill_name",
 ]
 
@@ -112,6 +121,177 @@ def proposed_tool_match(suggestion: dict[str, Any]) -> dict[str, str]:
     binary = str(parsed.get("binary") or tid).strip() or tid
     desc = str(parsed.get("description") or suggestion.get("notes") or "").strip()
     return {"id": tid, "binary": binary, "description": desc[:240]}
+
+
+def skill_prompt(skill_name: str) -> str:
+    """Read ``skills/<name>/references/PROMPT.md``."""
+    from pathlib import Path
+
+    from orchestrator.config import get_config
+
+    path = Path(get_config().skills_dir) / skill_name / "references" / "PROMPT.md"
+    if not path.is_file():
+        raise FileNotFoundError(f"missing prompt for skill {skill_name}: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def tool_suggestion_from_payload(
+    payload: dict[str, Any], *, author: str = ""
+) -> dict[str, Any]:
+    """Normalize tools-suggestor / OpenCode JSON into a recipe dict."""
+    if not isinstance(payload, dict):
+        raise RuntimeError("tools-suggestor returned non-object JSON")
+    yaml_text = str(payload.get("yaml") or "").strip()
+    if not yaml_text:
+        raise RuntimeError("tools-suggestor returned empty yaml")
+    try:
+        parsed = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"suggested YAML is invalid: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("suggested YAML must be a mapping")
+    tid = str(payload.get("id") or parsed.get("id") or "").strip()
+    if not tid:
+        raise RuntimeError("suggested tool missing id")
+    out: dict[str, Any] = {
+        "id": tid,
+        "yaml": yaml_text,
+        "install_script": str(payload.get("install_script") or "").strip(),
+        "notes": str(payload.get("notes") or "").strip(),
+        "parsed": parsed,
+    }
+    if author:
+        out["author"] = author
+    return out
+
+
+def install_recipe_from_suggestion(suggestion: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": suggestion["id"],
+        "yaml": suggestion["yaml"],
+        "install_script": suggestion.get("install_script") or "",
+        "notes": suggestion.get("notes") or "",
+    }
+
+
+def tool_suggest_human(prompt: str) -> str:
+    return (
+        f"Operator request:\n{prompt}\n\n"
+        f"Existing catalog tools (avoid duplicate ids):\n"
+        f"{yaml.safe_dump(catalog_summaries(), sort_keys=False)}"
+    )
+
+
+def tool_replan_human(
+    *,
+    prompt: str,
+    yaml_text: str,
+    install_script: str = "",
+    error: str = "",
+    feedback: str = "",
+) -> str:
+    from orchestrator.prompts import CATALOG_INSTALL_PREFER
+
+    text = (prompt or "").strip() or "Revise the catalog install recipe."
+    fix = (feedback or "").strip()
+    parts = [
+        f"Operator request:\n{text}",
+        f"Previous YAML (failed install test):\n```yaml\n{yaml_text}\n```",
+        f"Previous install script:\n```bash\n{install_script or '(none)'}\n```",
+        f"Install/test error:\n{error or '(unknown)'}",
+    ]
+    if fix:
+        parts.append(f"Operator fix guidance:\n{fix}")
+    parts.append(
+        "Produce a revised catalog YAML that is more likely to install on "
+        "debian:bookworm-slim. Keep the same tool intent as the operator "
+        "request; fix install/verify based on the error"
+        + (" and fix guidance." if fix else ".")
+        + f" {CATALOG_INSTALL_PREFER}\n"
+        f"Existing catalog tools:\n{yaml.safe_dump(catalog_summaries(), sort_keys=False)}"
+    )
+    return "\n\n".join(parts)
+
+
+def filter_catalog(
+    catalog: list[dict[str, str]], tools: list[str] | None
+) -> list[dict[str, str]]:
+    if not tools:
+        return catalog
+    wanted = {t.strip().lower() for t in tools if str(t).strip()}
+    return [t for t in catalog if t["id"] in wanted] or catalog
+
+
+def propose_missing_tool(
+    prompt: str, suggest_fn
+) -> tuple[dict[str, Any] | None, list[dict[str, str]], list[dict[str, Any]]]:
+    """If prompt names no catalog CLI, call ``suggest_fn`` and shape recipes."""
+    if prompt_catalog_hits(prompt):
+        return None, [], []
+    suggestion = suggest_fn(prompt)
+    return (
+        suggestion,
+        [proposed_tool_match(suggestion)],
+        [install_recipe_from_suggestion(suggestion)],
+    )
+
+
+def finalize_skill_payload(
+    payload: dict[str, Any],
+    *,
+    prompt: str,
+    proposed: list[dict[str, str]],
+    install_recipes: list[dict[str, Any]],
+    suggested: list[str] | None = None,
+) -> tuple[str, str, dict[str, str], list[str], str, dict[str, Any]]:
+    """parse → ensure_skill_entry → lint_draft (shared by chat-json + OpenCode)."""
+    name, skill_md, files, sug = parse_skill_payload(
+        {
+            **payload,
+            "suggested_tools": payload.get("suggested_tools") or suggested or [],
+        }
+    )
+    if proposed and not sug:
+        sug = [proposed[0]["id"]]
+    skill_md, files, mode = ensure_skill_entry(
+        skill_md,
+        files,
+        name=name,
+        suggested_tools=sug,
+        prompt=prompt,
+        proposed=proposed,
+        install_recipes=install_recipes,
+    )
+    lint = lint_draft(skill_md, files, mode=mode)
+    return name, skill_md, files, sug, mode, lint
+
+
+def skill_result_dict(
+    *,
+    name: str,
+    skill_md: str,
+    files: dict[str, str],
+    notes: str,
+    suggested: list[str],
+    mode: str,
+    lint: dict[str, Any],
+    tool_suggestion: dict[str, Any] | None = None,
+    author: str = "",
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "name": name,
+        "skill_md": skill_md,
+        "files": files,
+        "notes": notes,
+        "suggested_tools": suggested,
+        "mode": mode,
+        "lint": lint,
+    }
+    if author:
+        result["author"] = author
+    if tool_suggestion is not None:
+        result["tool_suggestion"] = install_recipe_from_suggestion(tool_suggestion)
+    return result
 
 
 def install_guide_markdown(

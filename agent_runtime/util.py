@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 
 T = TypeVar("T", bound="SharedBase")
 
@@ -24,20 +24,36 @@ FORWARD_ENV = (
 )
 
 
+def forward_env_items(
+    lookup, *, skip: frozenset[str] | set[str] | None = None
+) -> list[tuple[str, str]]:
+    """Non-empty ``FORWARD_ENV`` pairs via ``lookup(key) -> str``."""
+    ignore = skip or ()
+    out: list[tuple[str, str]] = []
+    for key in FORWARD_ENV:
+        if key in ignore:
+            continue
+        val = lookup(key)
+        if val:
+            out.append((key, val))
+    return out
+
+
+
 class SharedBase:
     """Process-singleton mixin (mirrors orchestrator SharedServiceBase, no Django)."""
 
-    _instance: SharedBase | None = None
+    _shared: ClassVar[dict[type, Any]] = {}
 
     @classmethod
     def shared(cls: type[T]) -> T:
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance  # type: ignore[return-value]
+        if cls not in cls._shared:
+            cls._shared[cls] = cls()
+        return cls._shared[cls]  # type: ignore[return-value]
 
     @classmethod
     def reset_shared(cls) -> None:
-        cls._instance = None
+        cls._shared.pop(cls, None)
 
 
 def sanitize_name(value: str) -> str:

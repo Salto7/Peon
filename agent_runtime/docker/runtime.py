@@ -9,24 +9,16 @@ from agent_runtime.api import Runtime, RuntimeSession, RuntimeSpec, SessionInfo,
 from agent_runtime.docker.cli import DockerCli
 from agent_runtime.docker.session import DockerSession
 from agent_runtime.pty import PtyTerminal
+from agent_runtime.util import resource_name as make_resource_name
 
 logger = logging.getLogger(__name__)
-
-
-def _name_for(project_id: str, *, prefix: str, shared: bool) -> str:
-    prefix = (prefix or "peon-project").strip()
-    if shared or not (project_id or "").strip():
-        return f"{prefix}-shared"
-    safe = DockerCli.sanitize_name_fragment(project_id)
-    budget = max(8, 63 - len(prefix) - 1)
-    return f"{prefix}-{safe[:budget]}"
 
 
 class DockerRuntime(Runtime):
     id = "sandbox"
 
     def resource_name(self, project_id: str, *, prefix: str, shared: bool) -> str:
-        return _name_for(project_id, prefix=prefix, shared=shared)
+        return make_resource_name(project_id, prefix=prefix, shared=shared)
 
     def _cli(self) -> DockerCli:
         return DockerCli.shared()
@@ -75,6 +67,9 @@ class DockerRuntime(Runtime):
             workdir=spec.container_workdir or "/workspace",
             labels=self._labels(spec),
             volume_args=self._volumes(spec) or None,
+            network=(spec.network or "").strip(),
+            env=dict(spec.env or {}),
+            extra_args=list(spec.extra_run_args or []),
             pull_image=spec.pull_image,
         )
         return self._session(spec, action=action)

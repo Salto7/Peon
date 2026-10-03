@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import shutil
-
-from agent_runtime.api import ExecResult
-from agent_runtime.process import run_process
+from agent_runtime.cli_base import CLIBase
 
 _DEFAULT_POLICY = """version: 1
 filesystem_policy:
@@ -23,21 +20,9 @@ def policy_text() -> str:
     return _DEFAULT_POLICY
 
 
-class OpenShellCli:
-    def bin(self) -> str | None:
-        return shutil.which("openshell")
-
-    def available(self) -> bool:
-        return bool(self.bin())
-
-    def require_bin(self) -> str:
-        path = self.bin()
-        if not path:
-            raise RuntimeError(
-                "openshell CLI missing — install OpenShell or create the project "
-                "with the Sandbox runtime"
-            )
-        return path
-
-    def run(self, args: list[str], *, timeout: float = 180) -> ExecResult:
-        return run_process([self.require_bin(), *args], timeout=timeout)
+class OpenShellCli(CLIBase):
+    binary_name = "openshell"
+    missing_error = (
+        "openshell CLI missing — install OpenShell or create the project "
+        "with the Sandbox runtime"
+    )

@@ -13,13 +13,14 @@ from django.shortcuts import render
 from django.urls import path
 from django.views.decorators.http import require_GET, require_http_methods
 
-from orchestrator.learn import LearnAuthoring
 from orchestrator.skills.registry import SkillRegistry
 from orchestrator.tools.catalog import ToolCatalog
-from peon.projects.http_helpers import parse_json_body
+from peon.projects.catalog_cards.tool import ToolCards
+from peon.projects.http_helpers import parse_json_body, split_csv
 from peon.projects.learn_lab import LearnLab
+from peon.projects.llm_proxy import LlmProxy
+from peon.projects.opencode import PROXY_REQUIRED_MSG, OpenCodeAuthoring
 from orchestrator.utils.llm import LLM_NOT_CONFIGURED, llm_configured
-from peon.projects.http_helpers import split_csv
 
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -40,17 +41,26 @@ def _safe_slug(value: str, *, kind: str = "id") -> str:
     return text
 
 
+def _proxy_gate() -> JsonResponse | None:
+    """Block skill/tool creation when LiteLLM proxy intent is off."""
+    if LlmProxy.intent_enabled():
+        return None
+    return JsonResponse(
+        {
+            "ok": False,
+            "error": PROXY_REQUIRED_MSG,
+            "llm_proxy_enabled": False,
+        },
+        status=403,
+    )
+
+
 @require_GET
 def learn_page(request: HttpRequest) -> HttpResponse:
     from django.conf import settings as dj_settings
 
-    tools = [
-        {"id": t.id, "binary": t.binary or t.id, "name": t.name or t.id}
-        for t in sorted(ToolCatalog.shared().all().values(), key=lambda x: x.id)
-        if not t.is_image_tier
-    ]
-    proxy_on = bool(getattr(dj_settings, "LLM_PROXY_ENABLED", False))
-    proxy_url = str(getattr(dj_settings, "LLM_PROXY_URL", "") or "").strip() or None
+    proxy = LlmProxy.shared().snapshot()
+    authoring_ready = bool(llm_configured() and proxy["enabled"])
     return render(
         request,
         "learn/index.html",
@@ -58,9 +68,11 @@ def learn_page(request: HttpRequest) -> HttpResponse:
             "nav": "learn",
             "llm_ready": llm_configured(),
             "llm_module": str(getattr(dj_settings, "LLM_MODULE", "litellm") or "litellm"),
-            "llm_proxy_enabled": proxy_on,
-            "llm_proxy_url": proxy_url if proxy_on else None,
-            "tools": tools,
+            "llm_proxy_enabled": proxy["enabled"],
+            "llm_proxy_running": proxy["running"],
+            "llm_proxy_url": proxy["url"],
+            "authoring_ready": authoring_ready,
+            "tools": ToolCards.summaries(),
             "lab": LearnLab.shared().status(),
             "urls": {
                 "suggest_tool": "/learn/api/tool/",
@@ -85,9 +97,12 @@ def learn_suggest_tool(request: HttpRequest) -> JsonResponse:
             {"ok": False, "error": LLM_NOT_CONFIGURED},
             status=503,
         )
+    gated = _proxy_gate()
+    if gated is not None:
+        return gated
     try:
         body = _parse_body(request)
-        result = LearnAuthoring.shared().suggest_tool(str(body.get("prompt") or ""))
+        result = OpenCodeAuthoring.shared().suggest_tool(str(body.get("prompt") or ""))
     except ValueError as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=400)
     except Exception as exc:  # noqa: BLE001
@@ -100,6 +115,7 @@ def learn_suggest_tool(request: HttpRequest) -> JsonResponse:
             "yaml": result["yaml"],
             "install_script": result.get("install_script") or "",
             "notes": result.get("notes") or "",
+            "author": result.get("author") or "opencode",
         }
     )
 
@@ -111,12 +127,15 @@ def learn_write_skill(request: HttpRequest) -> JsonResponse:
             {"ok": False, "error": LLM_NOT_CONFIGURED},
             status=503,
         )
+    gated = _proxy_gate()
+    if gated is not None:
+        return gated
     try:
         body = _parse_body(request)
         tools = body.get("tools") or []
         if isinstance(tools, str):
             tools = split_csv(tools)
-        result = LearnAuthoring.shared().write_skill(
+        result = OpenCodeAuthoring.shared().write_skill(
             str(body.get("prompt") or ""), tools=list(tools)
         )
     except ValueError as exc:
@@ -196,9 +215,12 @@ def learn_replan_tool(request: HttpRequest) -> JsonResponse:
             {"ok": False, "error": LLM_NOT_CONFIGURED},
             status=503,
         )
+    gated = _proxy_gate()
+    if gated is not None:
+        return gated
     try:
         body = _parse_body(request)
-        result = LearnAuthoring.shared().replan_tool(
+        result = OpenCodeAuthoring.shared().replan_tool(
             prompt=str(body.get("prompt") or ""),
             yaml_text=str(body.get("yaml") or ""),
             install_script=str(body.get("install_script") or ""),
@@ -211,6 +233,7 @@ def learn_replan_tool(request: HttpRequest) -> JsonResponse:
                 "yaml": result["yaml"],
                 "install_script": result.get("install_script") or "",
                 "notes": result.get("notes") or "",
+                "author": result.get("author") or "opencode",
             }
         )
     except ValueError as exc:
@@ -264,6 +287,8 @@ def learn_lab_delete(request: HttpRequest) -> JsonResponse:
 
 @require_http_methods(["POST"])
 def learn_lint_skill(request: HttpRequest) -> JsonResponse:
+    from orchestrator.learn import LearnAuthoring
+
     try:
         body = _parse_body(request)
         files = body.get("files") or {}
@@ -296,6 +321,8 @@ def learn_lint_skill(request: HttpRequest) -> JsonResponse:
 
 @require_http_methods(["POST"])
 def learn_save_skill(request: HttpRequest) -> JsonResponse:
+    from orchestrator.learn import LearnAuthoring
+
     try:
         body = _parse_body(request)
         name = _safe_slug(str(body.get("name") or ""), kind="skill name")

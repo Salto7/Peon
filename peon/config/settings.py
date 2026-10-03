@@ -87,8 +87,9 @@ TEMPLATES = [
 ]
 
 # Production data lives under data/ (never the repo-root sqlite used by old local runs).
-_DATA_DIR = Path(_env("PEON_DATA_DIR") or (BASE_DIR / "data")).resolve()
-_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PEON_DATA_DIR = Path(_env("PEON_DATA_DIR") or (BASE_DIR / "data")).resolve()
+PEON_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_DATA_DIR = PEON_DATA_DIR
 
 DATABASES = {
     "default": {
@@ -175,7 +176,10 @@ RPC_TOKEN = _resolve_rpc_token()
 # true = one Docker container per Project; false = one shared Docker sandbox.
 SANDBOX_ENABLED = _env_bool("SANDBOX_ENABLED", True)
 PROJECT_SANDBOX_PREFIX = _env("PROJECT_SANDBOX_PREFIX", "peon-project")
+# Kali-based job sandbox (build: compose --profile build build sandbox).
 SANDBOX_IMAGE = _env("SANDBOX_IMAGE", "peon-sandbox:local")
+# OpenShell uses the same Kali image by default (override separately if needed).
+OPENSHELL_IMAGE = _env("OPENSHELL_IMAGE", SANDBOX_IMAGE) or SANDBOX_IMAGE
 # Named Docker volume for stream/RPC sockets when the worker runs in Compose.
 SANDBOX_SOCKETS_VOLUME = _env("SANDBOX_SOCKETS_VOLUME", "")
 
@@ -201,9 +205,20 @@ OPENAI_API_KEY = _env("OPENAI_API_KEY")
 LLM_TEMPERATURE = float(_env("LLM_TEMPERATURE", "0") or "0")
 _max_tokens = _env("LLM_MAX_TOKENS").strip()
 LLM_MAX_TOKENS = int(_max_tokens) if _max_tokens.isdigit() else None
-# Optional OpenAI-compatible proxy (Compose profile llm-proxy). Off by default.
+# Optional OpenAI-compatible proxy for OpenCode / external clients. Off by default.
+# Intent is live-overridable via Peon Settings (LLM_PROXY_ENABLED); enabling starts
+# the peon-litellm container on the Compose network.
 LLM_PROXY_ENABLED = _env_bool("LLM_PROXY_ENABLED", False)
 LLM_PROXY_URL = _env("LLM_PROXY_URL", "http://litellm:4000/v1") or "http://litellm:4000/v1"
+LLM_PROXY_PORT = int(_env("LLM_PROXY_PORT", "4000") or 4000)
+LLM_PROXY_CONTAINER = _env("LLM_PROXY_CONTAINER", "peon-litellm") or "peon-litellm"
+LLM_PROXY_IMAGE = _env(
+    "LLM_PROXY_IMAGE", "ghcr.io/berriai/litellm:main-stable"
+) or "ghcr.io/berriai/litellm:main-stable"
+LLM_PROXY_NETWORK = _env("LLM_PROXY_NETWORK", "peon_default") or "peon_default"
+LITELLM_MASTER_KEY = _env("LITELLM_MASTER_KEY", "sk-peon-litellm") or "sk-peon-litellm"
+# OpenCode model id (provider/model) used inside the Learn lab.
+OPENCODE_MODEL = _env("OPENCODE_MODEL", "peon/default") or "peon/default"
 
 # Agent runtime governors (LangGraph job loop — peon passes these into orchestrator).
 # Overridable live via Peon Settings UI (RuntimeSettings); .env values are defaults.

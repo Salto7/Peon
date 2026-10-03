@@ -8,15 +8,19 @@ from django.urls import include, path
 def health(_request):
     from django.conf import settings
 
-    proxy_on = bool(getattr(settings, "LLM_PROXY_ENABLED", False))
-    proxy_url = str(getattr(settings, "LLM_PROXY_URL", "") or "").strip() or None
+    from peon.projects.llm_proxy import LlmProxy
+
+    proxy = LlmProxy.shared()
+    proxy_on = LlmProxy.intent_enabled()
+    proxy_st = proxy.status()
     return JsonResponse(
         {
             "ok": True,
             "service": "peon",
             "llm_module": str(getattr(settings, "LLM_MODULE", "litellm") or "litellm"),
             "llm_proxy_enabled": proxy_on,
-            "llm_proxy_url": proxy_url if proxy_on else None,
+            "llm_proxy_running": bool(proxy_st.get("running")),
+            "llm_proxy_url": proxy.proxy_url() if proxy_on else None,
         }
     )
 

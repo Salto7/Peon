@@ -97,11 +97,12 @@ class ProvisionService(SharedServiceBase):
             return True, ""
         if binary in _SHELL_BUILTINS:
             return True, ""
-        if Session.current().which(binary):
+        from orchestrator.tools.install import InstallResolver, cli_on_path
+
+        if cli_on_path(binary):
             return True, f"{binary} already installed"
         if binary in Session.current().base_commands() and not package:
             return False, f"image base binary {binary!r} missing from PATH"
-        from orchestrator.tools.install import InstallResolver
 
         skill = (os.environ.get("ORCHESTRATOR_SKILL_NAME") or "").strip()
         ok, msg = InstallResolver.shared().resolve(

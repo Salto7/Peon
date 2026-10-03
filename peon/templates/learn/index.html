@@ -6,14 +6,25 @@
   <div>
     <h1>Toolsmith</h1>
     <p class="lead">
-      Author catalog tools and skills, edit the draft, then save
-      (<code>tools-suggestor</code> / <code>skill-writer</code>).
+      Author catalog tools and skills with OpenCode in the Learn lab, edit the draft, then save.
     </p>
   </div>
 </header>
 
 {% if not llm_ready %}
 <p class="msg warning">Configure an LLM API key under Settings before using Toolsmith.</p>
+{% endif %}
+{% if not llm_proxy_enabled %}
+<p class="msg warning" id="learn-proxy-warning">
+  LiteLLM proxy is required to create new skills/tools with OpenCode.
+  Enable <strong>LiteLLM proxy enabled</strong> in
+  <a href="{% url 'settings_page' %}#LLM_PROXY_ENABLED">Settings</a>, then return here.
+</p>
+{% elif not llm_proxy_running %}
+<p class="msg warning" id="learn-proxy-warning">
+  LiteLLM proxy is enabled in Settings but the gateway container is not running yet.
+  Re-save Settings or check <code>peon-litellm</code> with docker.
+</p>
 {% endif %}
 
 <div id="learn-app"
@@ -29,7 +40,9 @@
      data-lab-status="{% url 'learn_api_lab' %}"
      data-lab-exists="{% if lab.exists %}1{% else %}0{% endif %}"
      data-lab-running="{% if lab.running %}1{% else %}0{% endif %}"
-     data-lab-name="{{ lab.name }}">
+     data-lab-name="{{ lab.name }}"
+     data-llm-proxy-enabled="{% if llm_proxy_enabled %}1{% else %}0{% endif %}"
+     data-authoring-ready="{% if authoring_ready %}1{% else %}0{% endif %}">
 
   <div class="learn-mode-switch" role="tablist" aria-label="Toolsmith mode">
     <button type="button" class="learn-mode-btn is-active" data-mode="tool" role="tab" aria-selected="true">Tool</button>
@@ -42,11 +55,11 @@
       <label for="learn-prompt">Describe what to author</label>
       <textarea id="learn-prompt" name="prompt" rows="4"
                 placeholder="e.g. Add ProjectDiscovery nuclei for authorized vulnerability scanning"
-                {% if not llm_ready %}disabled{% endif %}></textarea>
+                {% if not authoring_ready %}disabled{% endif %}></textarea>
 
       <div id="skill-tools-wrap" class="learn-skill-only" hidden>
         <label for="skill-tools">Prefer catalog tools (optional)</label>
-        <select id="skill-tools" name="tools" multiple size="6" {% if not llm_ready %}disabled{% endif %}>
+        <select id="skill-tools" name="tools" multiple size="6" {% if not authoring_ready %}disabled{% endif %}>
           {% for t in tools %}
           <option value="{{ t.id }}">{{ t.id }}{% if t.binary and t.binary != t.id %} ({{ t.binary }}){% endif %}</option>
           {% endfor %}
@@ -54,7 +67,7 @@
       </div>
 
       <div class="bar learn-generate-row">
-        <button type="submit" id="learn-generate-btn" {% if not llm_ready %}disabled{% endif %}>Suggest tool</button>
+        <button type="submit" id="learn-generate-btn" {% if not authoring_ready %}disabled{% endif %}>Suggest tool</button>
         <div id="learn-thinking" class="learn-thinking" hidden aria-live="polite">
           <span class="learn-thinking-dots" aria-hidden="true"></span>
           <span class="learn-thinking-label">Thinking</span>

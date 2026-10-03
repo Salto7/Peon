@@ -12,12 +12,7 @@ from typing import Any
 
 import yaml
 
-<<<<<<< Updated upstream
-from agent_runtime.api import Session as SandboxSession
-from orchestrator.utils.service import SharedService
-=======
 from orchestrator.utils.service import SharedServiceBase
->>>>>>> Stashed changes
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +212,7 @@ class ToolCatalog(SharedServiceBase):
         return out
 
     def for_skills(self, skill_names: list[str] | set[str]) -> list[CatalogTool]:
+        """Resolve catalog tools from skill toolkits and/or binary/id keys."""
         catalog = self.all()
         expanded: list[str] = []
         seen: set[str] = set()
@@ -238,6 +234,13 @@ class ToolCatalog(SharedServiceBase):
             for tid in self._toolkit_tool_ids(skill_name):
                 if tid not in tool_ids:
                     tool_ids.append(tid)
+        # Also accept catalog binary/id keys (worker eligible_cli_names).
+        for key in expanded:
+            tool = self.lookup(key)
+            if tool is None or tool.is_image_tier:
+                continue
+            if tool.id not in tool_ids:
+                tool_ids.append(tool.id)
 
         out: list[CatalogTool] = []
         for tid in tool_ids:
@@ -339,7 +342,8 @@ class CatalogProvisioner(SharedServiceBase):
         if tool is None:
             return False, f"no catalog entry for {binary!r}"
         if self._verified(tool):
-            return True, f"{tool.binary or tool.id} verified"
+            label = tool.binary or tool.id
+            return True, f"{label} already installed"
         result = ProvisionResult()
         self._apply_custom_steps(tool, result)
         if self._verified(tool):
@@ -412,7 +416,20 @@ class CatalogProvisioner(SharedServiceBase):
             result.errors.append(f"{tool.id}: verify failed after install")
 
     @staticmethod
+    def _cli_present(tool: CatalogTool) -> bool:
+        """Same PATH gate as ``InstallResolver`` / ``ProvisionService``."""
+        from orchestrator.tools.install import cli_on_path
+
+        return cli_on_path(tool.binary or tool.id)
+
+    @staticmethod
     def _verified(tool: CatalogTool) -> bool:
+        """Ready when CLI is on PATH; YAML ``verify`` still required when present."""
+        if not CatalogProvisioner._cli_present(tool):
+            return False
+        verify_steps = normalize_verify(tool.verify)
+        if not verify_steps:
+            return True
         return bool(CatalogProvisioner.run_verify(tool).get("ok"))
 
     @staticmethod
@@ -423,11 +440,17 @@ class CatalogProvisioner(SharedServiceBase):
         chunks: list[str] = []
         verify_steps = normalize_verify(tool.verify)
         if not verify_steps:
+            on_path = CatalogProvisioner._cli_present(tool)
+            name = (tool.binary or tool.id or "").strip()
             return {
-                "ok": False,
+                "ok": on_path,
                 "steps": [],
-                "output": "(no verify commands in YAML — add verify: [{command: \"…\"}])",
+                "output": (
+                    f"(no verify commands — {name or tool.id} "
+                    f"{'on PATH' if on_path else 'not on PATH'})"
+                ),
             }
+
         for step in verify_steps:
             cmd = str(step.get("command") or "").strip()
             if not cmd:

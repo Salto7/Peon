@@ -20,6 +20,12 @@ from agent_runtime.api import Session
 logger = logging.getLogger(__name__)
 
 
+def cli_on_path(binary: str) -> bool:
+    """True when the bound sandbox has ``binary`` on PATH (pre-install gate)."""
+    name = (binary or "").strip()
+    return bool(name and Session.current().which(name))
+
+
 class InstallResolver(SharedServiceBase):
     """Cascade install instructions until the binary is on PATH."""
 
@@ -34,7 +40,7 @@ class InstallResolver(SharedServiceBase):
         if not name:
             return True, "no binary to provision"
 
-        if Session.current().which(name):
+        if cli_on_path(name):
             return True, f"{name} already installed"
 
         errors: list[str] = []
@@ -179,7 +185,7 @@ class InstallResolver(SharedServiceBase):
                 return False, f"{source}: {msg}"
             if msg:
                 applied.append(msg)
-        if Session.current().which(binary):
+        if cli_on_path(binary):
             return True, f"{source}: " + (", ".join(applied) or f"installed {binary}")
         return False, f"{source}: applied steps but {binary!r} still missing from PATH"
 
@@ -189,6 +195,6 @@ class InstallResolver(SharedServiceBase):
         ok, msg = AptInstallStep({"packages": packages}).apply(binary=binary)
         if not ok:
             return False, msg
-        if Session.current().which(binary):
+        if cli_on_path(binary):
             return True, msg
         return False, f"installed {packages} but {binary!r} still not on PATH"

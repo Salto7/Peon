@@ -16,11 +16,7 @@ from typing import Iterator
 
 from django.conf import settings
 
-<<<<<<< Updated upstream
 from agent_runtime.api import TerminalHandle
-=======
-from agent_runtime.api import TerminalHandleBase
->>>>>>> Stashed changes
 from peon.projects.sandbox import ProjectSandbox
 from peon.projects.workspaces import project_workspace_dir
 
@@ -36,11 +32,7 @@ class TerminalSession:
     id: str
     project_id: str
     container: str
-<<<<<<< Updated upstream
     handle: TerminalHandle
-=======
-    handle: TerminalHandleBase
->>>>>>> Stashed changes
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
     cols: int = 80

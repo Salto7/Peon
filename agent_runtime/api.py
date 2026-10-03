@@ -12,6 +12,8 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Callable
 
+from agent_runtime.util import SharedBase
+
 _BASE_CMDS_FILE = "/etc/peon/base-commands"
 
 EnvLookup = Callable[[str, str], str]
@@ -54,6 +56,9 @@ class RuntimeSpec:
     socket_volume: str = ""
     container_workdir: str = "/workspace"
     labels: dict[str, str] = field(default_factory=dict)
+    network: str = ""
+    env: dict[str, str] = field(default_factory=dict)
+    extra_run_args: list[str] = field(default_factory=list)
     recreate: bool = False
     pull_image: bool = False
     state_dir: str = ""
@@ -93,8 +98,22 @@ class RuntimeSession(ABC):
         cwd: str | None = None,
     ) -> ExecResult: ...
 
-    @abstractmethod
-    def which(self, binary: str) -> bool: ...
+    def which(self, binary: str) -> bool:
+        """True when ``command -v`` finds ``binary`` in the bound environment."""
+        import shlex
+
+        if not binary:
+            return False
+        return self.exec(
+            ["sh", "-c", f"command -v {shlex.quote(str(binary))}"],
+            timeout=15,
+        ).ok
+
+    def load_base_commands(self) -> frozenset[str]:
+        """Populate ``info.base_commands`` from the image marker (cached)."""
+        found = self.base_commands()
+        self.info.base_commands = found
+        return found
 
     def workdir(self) -> str:
         return (
@@ -210,19 +229,11 @@ class Runtime(ABC):
         return []
 
 
-class BaseCommandCache:
+class BaseCommandCache(SharedBase):
     """One base-command set per image, shared inside the process."""
-
-    _instance: BaseCommandCache | None = None
 
     def __init__(self) -> None:
         self._by_image: dict[str, frozenset[str]] = {}
-
-    @classmethod
-    def shared(cls) -> BaseCommandCache:
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
 
     @staticmethod
     def marker_path() -> str:
@@ -240,6 +251,11 @@ class BaseCommandCache:
         frozen = frozenset(commands)
         self._by_image[key] = frozen
         return frozen
+
+    @classmethod
+    def reset(cls) -> None:
+        """Drop the process-wide cache (tests / image rebuild)."""
+        cls.reset_shared()
 
     @staticmethod
     def parse_marker(stdout: str) -> frozenset[str]:

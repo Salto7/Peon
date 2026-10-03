@@ -23,6 +23,7 @@ _SPECS: dict[str, tuple[str, str, int, int, int]] = {
     "AGENT_MAX_SUBAGENTS": ("AGENT_MAX_SUBAGENTS", "int", 0, 32, 4),
     "AGENT_MAX_SUBAGENT_DEPTH": ("AGENT_MAX_SUBAGENT_DEPTH", "int", 1, 8, 2),
     "AGENT_RUNTIME_ENABLED": ("AGENT_RUNTIME_ENABLED", "bool", 0, 1, 1),
+    "LLM_PROXY_ENABLED": ("LLM_PROXY_ENABLED", "bool", 0, 1, 0),
 }
 
 
@@ -112,15 +113,26 @@ class PeonSettings:
         current = cls.as_dict()
         merged = dict(current)
         restart_changed: list[str] = []
+        proxy_changed = False
         for key, raw in (updates or {}).items():
             if key not in _SPECS:
                 continue
             new = cls._coerce(key, raw)
             if key in RESTART_REQUIRED and current.get(key) != new:
                 restart_changed.append(key)
+            if key == "LLM_PROXY_ENABLED" and current.get(key) != new:
+                proxy_changed = True
             merged[key] = new
         row.values = {k: merged[k] for k in _SPECS}
         row.save(update_fields=["values", "updated_at"])
+        if proxy_changed:
+            try:
+                from peon.projects.llm_proxy import LlmProxy
+
+                LlmProxy.shared().apply(bool(merged.get("LLM_PROXY_ENABLED")))
+            except Exception:
+                # Settings row is already saved; UI surfaces proxy status separately.
+                pass
         return merged, restart_changed
 
     @classmethod
@@ -165,6 +177,11 @@ class PeonSettings:
             "AGENT_RUNTIME_ENABLED": (
                 "Agent runtime enabled",
                 "Emergency kill switch for LangGraph job agents.",
+                False,
+            ),
+            "LLM_PROXY_ENABLED": (
+                "LiteLLM proxy enabled",
+                "Start the OpenAI-compatible /v1 gateway for OpenCode (required for Toolsmith skill/tool creation).",
                 False,
             ),
         }

@@ -301,6 +301,13 @@
     if (!form) return;
     form.addEventListener("submit", function (ev) {
       ev.preventDefault();
+      if (app.getAttribute("data-authoring-ready") !== "1") {
+        toast(
+          "Enable LiteLLM proxy in Settings — required to create skills/tools with OpenCode.",
+          "error"
+        );
+        return;
+      }
       var prompt = (document.getElementById("learn-prompt") || {}).value || "";
       var btn = document.getElementById("learn-generate-btn");
       setBusy(btn, true);

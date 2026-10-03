@@ -8,7 +8,7 @@
 name: peon
 
 services:
-  # Build-only profile: image used by per-project job sandboxes (not a long-running service).
+  # Build-only profile: Kali-based image for Docker sandbox + OpenShell (not long-running).
   #   docker compose --profile build build sandbox
   sandbox:
     build:
@@ -45,6 +45,7 @@ services:
       STREAM_SOCKET_PATH: /tmp/peon/stream.sock
       SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-peon-sandbox:local}
+      OPENSHELL_IMAGE: ${OPENSHELL_IMAGE:-peon-sandbox:local}
       PROJECT_SANDBOX_PREFIX: ${PROJECT_SANDBOX_PREFIX:-peon-project}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       DRAMATIQ_ENABLED: ${DRAMATIQ_ENABLED:-true}
@@ -92,6 +93,7 @@ services:
       ORCHESTRATOR_RPC_SOCKET: /tmp/peon/rpc.sock
       SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-peon-sandbox:local}
+      OPENSHELL_IMAGE: ${OPENSHELL_IMAGE:-peon-sandbox:local}
       PROJECT_SANDBOX_PREFIX: ${PROJECT_SANDBOX_PREFIX:-peon-project}
       SANDBOX_SOCKETS_VOLUME: ${SANDBOX_SOCKETS_VOLUME:-peon_sockets}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
@@ -133,9 +135,9 @@ services:
     restart: unless-stopped
 
   # Optional OpenAI-compatible LiteLLM proxy (off by default).
-  # Enable: set LLM_PROXY_ENABLED=true in .env and COMPOSE_PROFILES=llm-proxy
-  #   docker compose --profile llm-proxy up -d
-  # Peon agent traffic stays in-process; this gateway is for external clients (e.g. OpenCode).
+  # Prefer: enable LLM_PROXY_ENABLED in Peon Settings (web starts peon-litellm).
+  # Or: COMPOSE_PROFILES=llm-proxy / docker compose --profile llm-proxy up -d
+  # Peon agent traffic stays in-process; gateway is for OpenCode (Toolsmith Learn lab).
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     profiles: ["llm-proxy"]

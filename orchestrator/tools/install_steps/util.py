@@ -24,6 +24,19 @@ def _run(
 def _pkgs(raw: dict[str, Any]) -> list[str]:
     return [str(p).strip() for p in (raw.get("packages") or []) if str(p).strip()]
 
+
+def _apt_package_installed(package: str) -> bool:
+    """True when dpkg reports the package installed (Kali often preloads these)."""
+    pkg = (package or "").strip()
+    if not pkg:
+        return False
+    code, out, _err = _run(
+        ["dpkg-query", "-W", "-f=${Status}", pkg],
+        timeout=30,
+    )
+    return code == 0 and "install ok installed" in (out or "")
+
+
 _APT_ENV_ALIASES: tuple[tuple[str, str], ...] = (
     ("python", "python3"),
     ("node", "nodejs"),

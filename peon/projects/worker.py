@@ -10,11 +10,7 @@ from django.db import transaction
 from django.utils import timezone as dj_tz
 
 from orchestrator.utils.job_env import JobEnv
-<<<<<<< Updated upstream
-from agent_runtime.api import Session as SandboxSession
-=======
 from agent_runtime.api import Session
->>>>>>> Stashed changes
 from orchestrator.skills.execute import LocalSkillExecutor, SkillExecutionDispatcher
 from orchestrator.tools.catalog import CatalogProvisioner
 from peon.projects.models import (
@@ -394,8 +390,11 @@ def run_job(job: Job) -> Job:
                 for cli in eligible_cli_names(skill):
                     if cli not in cli_names:
                         cli_names.append(cli)
+            # Skill names resolve toolkits; CLI names catch tag/suggested catalog hits.
+            # CatalogProvisioner skips CLIs already on PATH (Kali base image).
+            provision_keys = list(dict.fromkeys([*names, *cli_names]))
             provision = CatalogProvisioner.shared().provision(
-                cli_names or names, workspace=ws
+                provision_keys, workspace=ws
             )
             if provision.installed:
                 _emit(job, "log", "provisioned: " + ", ".join(provision.installed))
