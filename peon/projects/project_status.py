@@ -3,6 +3,16 @@
 
 from __future__ import annotations
 
+from django.db.models import Count
+
+from orchestrator.utils.commands import (
+    capability_names_payload,
+    cli_names_payload,
+    pick_agent_command,
+)
+from orchestrator.utils.stream_events import display_command
+from peon.projects.catalog_cards.role import RoleCards
+from peon.projects.console_chat import pending_operator_prompts
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
     Job,
@@ -12,8 +22,10 @@ from peon.projects.models import (
     StreamMessage,
     StreamMessageType,
 )
+from peon.projects.objectives import ObjectiveScheduler
+from peon.projects.role_job_tree import RoleJobTree
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.catalog_cards.role import RoleCards
+from peon.projects.workspaces import reports_payload
 
 # Prefer tool lines; fall back to recent log/status for graph snippets.
 _COMMAND_TYPES = (
@@ -22,7 +34,6 @@ _COMMAND_TYPES = (
     StreamMessageType.STATUS,
     StreamMessageType.RESULT,
 )
-
 
 
 class ProjectOpsPayload:
@@ -41,7 +52,6 @@ class ProjectOpsPayload:
             "updated_at": job.updated_at.isoformat() if job.updated_at else "",
             "terminal": job.status in TERMINAL_JOB_STATUSES,
         }
-
 
     @classmethod
     def _objective_fields(cls, job: Job) -> dict:
@@ -64,43 +74,19 @@ class ProjectOpsPayload:
             "objective_phase": obj.phase or "",
         }
 
-
-    @classmethod
-    def _primary_role_id(cls, job: Job) -> str:
-        for raw in job.role_ids or []:
-            rid = str(raw).strip()
-            if rid:
-                return rid
-        obj = getattr(job, "objective", None)
-        if obj is not None:
-            return str(obj.role_id or "").strip()
-        return ""
-
-    @classmethod
-    def _reports_to(cls, role_id: str) -> str:
-        if not role_id:
-            return ""
-        try:
-            from orchestrator.crew.roles.registry import RoleRegistry
-
-            role = RoleRegistry.shared().get(role_id)
-            return (role.reports_to or "") if role else ""
-        except Exception:
-            return ""
-
     @classmethod
     def _agent_base(cls, job: Job, *, role: str) -> dict:
+
         obj = getattr(job, "objective", None)
         obj_cmds = [
             str(c).strip() for c in ((obj.commands if obj is not None else None) or [])
             if str(c).strip()
         ]
-        from peon.projects.agent_commands import pick_agent_command
-
         description = (job.description or "").strip()
         # Edit/re-run targets agent-emitted CLI/tool lines — never the full brief.
         operator_command = pick_agent_command(*obj_cmds)
-        primary = cls._primary_role_id(job)
+        primary = RoleJobTree.primary_role_id(job)
+        meta = RoleJobTree.role_meta(primary)
         return {
             "id": str(job.id),
             "title": job.title,
@@ -108,7 +94,11 @@ class ProjectOpsPayload:
             "profile": job.profile or "",
             "role_ids": job.role_ids or [],
             "primary_role_id": primary,
-            "reports_to": cls._reports_to(primary),
+            "role_label": meta["role_label"],
+            "crew_role": meta["crew_role"],
+            "role_goal": meta["role_goal"],
+            "capabilities": meta["capabilities"],
+            "reports_to": RoleJobTree.reports_to(primary),
             "terminal": job.status in TERMINAL_JOB_STATUSES,
             "updated_at": job.updated_at.isoformat() if job.updated_at else "",
             "error": job.error or "",
@@ -121,7 +111,6 @@ class ProjectOpsPayload:
             **cls._objective_fields(job),
         }
 
-
     @classmethod
     def agent_payload(cls, 
         job: Job, *, subagents: list[Job] | None = None, role: str = "ROOT"
@@ -132,7 +121,6 @@ class ProjectOpsPayload:
             {**cls._agent_base(c, role="SUB"), "subagents": []} for c in kids
         ]
         return payload
-
 
     @classmethod
     def objective_payload(cls, obj: Objective) -> dict:
@@ -147,7 +135,6 @@ class ProjectOpsPayload:
             "status": obj.status,
         }
 
-
     @classmethod
     def sandbox_payload(cls, project: Project) -> dict:
         runtime_id = getattr(project, "sandbox_runtime", "") or "sandbox"
@@ -159,7 +146,6 @@ class ProjectOpsPayload:
             "name": ProjectSandbox.container_name(str(project.id)),
             "mode": mode,
         }
-
 
     @classmethod
     def progress_payload(cls, *, objectives: list[Objective], jobs: list[Job]) -> dict:
@@ -181,7 +167,6 @@ class ProjectOpsPayload:
             "ratio": round(ratio, 4),
         }
 
-
     @classmethod
     def active_phase(cls, objectives: list[Objective]) -> str:
         for obj in objectives:
@@ -191,7 +176,6 @@ class ProjectOpsPayload:
             if obj.status == ObjectiveStatus.PENDING:
                 return obj.phase or ""
         return ""
-
 
     @classmethod
     def roles_used_from_jobs(cls, jobs: list[Job]) -> list[dict]:
@@ -206,55 +190,11 @@ class ProjectOpsPayload:
                 names.append(name)
         return RoleCards.for_names(names)
 
-
     @classmethod
     def agents_tree(cls, jobs: list[Job]) -> list[dict]:
         """Build agent graph: ROLE.yaml reports_to first, then Job.parent edges."""
-        by_id = {str(j.id): j for j in jobs}
-        # Latest job per role_id (for supervisor lookup).
-        by_role: dict[str, Job] = {}
-        for job in jobs:
-            rid = cls._primary_role_id(job)
-            if rid and rid not in by_role:
-                by_role[rid] = job
 
-        children: dict[str, list[Job]] = {str(j.id): [] for j in jobs}
-        roots: list[Job] = []
-        attached: set[str] = set()
-
-        for job in jobs:
-            jid = str(job.id)
-            primary = cls._primary_role_id(job)
-            supervisor_role = cls._reports_to(primary)
-            supervisor_job = by_role.get(supervisor_role) if supervisor_role else None
-            if (
-                supervisor_job is not None
-                and str(supervisor_job.id) != jid
-                and str(supervisor_job.id) in children
-            ):
-                children[str(supervisor_job.id)].append(job)
-                attached.add(jid)
-                continue
-            if job.parent_id and str(job.parent_id) in by_id:
-                children[str(job.parent_id)].append(job)
-                attached.add(jid)
-                continue
-            roots.append(job)
-
-        # Jobs that became children via reports_to should not also be roots.
-        roots = [j for j in roots if str(j.id) not in attached]
-
-        def _root_key(j: Job) -> tuple:
-            obj = getattr(j, "objective", None)
-            seq = obj.seq if obj is not None else 10**9
-            created = j.created_at.timestamp() if j.created_at else 0
-            # Managers (no reports_to) first.
-            reports = 0 if not cls._reports_to(cls._primary_role_id(j)) else 1
-            return (reports, seq, created)
-
-        roots = sorted(roots, key=_root_key)
-        for kids in children.values():
-            kids.sort(key=lambda j: j.created_at.timestamp() if j.created_at else 0)
+        roots, children = RoleJobTree.build_job_hierarchy(jobs)
 
         def _payload(job: Job, *, role: str) -> dict:
             kids = children.get(str(job.id), [])
@@ -264,13 +204,11 @@ class ProjectOpsPayload:
 
         return [_payload(root, role="ROOT") for root in roots]
 
-
     @classmethod
     def recent_activity_by_job(cls, 
         job_ids: list[str], *, per_job: int = 4
     ) -> dict[str, dict]:
         """Latest command snippets + tool-call counts keyed by job id."""
-        from django.db.models import Count
 
         ids = [str(j) for j in job_ids if j]
         empty: dict[str, dict] = {
@@ -294,27 +232,29 @@ class ProjectOpsPayload:
                 job_id__in=ids, message_type__in=_COMMAND_TYPES
             )
             .order_by("-id")
-            .values("job_id", "message_type", "content")[
+            .values("job_id", "message_type", "content", "metadata")[
                 : max(80, per_job * len(ids) * 4)
             ]
         )
         buckets: dict[str, list[str]] = {jid: [] for jid in ids}
         for row in qs:
             jid = str(row["job_id"])
-            text = str(row.get("content") or "").strip()
+            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            text = display_command(meta, str(row.get("content") or ""))
             if not text:
                 continue
+            snippet = text[:160]
             is_tool = row["message_type"] == StreamMessageType.TOOL
             if is_tool:
                 # Tools always win a slot (graph command snippets).
                 existing = {c.lower() for c in buckets[jid]}
-                if text.lower() not in existing:
-                    buckets[jid].insert(0, text[:160])
+                if snippet.lower() not in existing:
+                    buckets[jid].insert(0, snippet)
                     buckets[jid] = buckets[jid][:per_job]
                 continue
             if len(buckets[jid]) >= per_job:
                 continue
-            buckets[jid].append(text[:160])
+            buckets[jid].append(snippet)
 
         out: dict[str, dict] = {}
         for jid in ids:
@@ -334,10 +274,8 @@ class ProjectOpsPayload:
             }
         return out
 
-
     @classmethod
     def _annotate_activity(cls, agents: list[dict], activity: dict[str, dict]) -> None:
-        from peon.projects.agent_commands import pick_agent_command
 
         for agent in agents:
             info = activity.get(str(agent.get("id") or ""), {})
@@ -358,7 +296,6 @@ class ProjectOpsPayload:
             if kids:
                 cls._annotate_activity(kids, activity)
 
-
     @classmethod
     def project_status_payload(cls, 
         project: Project,
@@ -378,7 +315,6 @@ class ProjectOpsPayload:
             "phase": cls.active_phase(objs),
         }
 
-
     @classmethod
     def for_project(cls, project: Project, *, jobs_limit: int) -> dict:
         jobs = list(
@@ -388,11 +324,8 @@ class ProjectOpsPayload:
         agents = cls.agents_tree(jobs)
         activity = cls.recent_activity_by_job([str(j.id) for j in jobs])
         cls._annotate_activity(agents, activity)
-        from peon.projects.objectives import ObjectiveScheduler
-        from peon.projects.workspaces import reports_payload
 
         next_obj = ObjectiveScheduler().next_ready(project)
-        from peon.projects.console_chat import pending_operator_prompts
 
         return {
             "project": cls.project_status_payload(project, objectives=objectives, jobs=jobs),
@@ -403,4 +336,9 @@ class ProjectOpsPayload:
             "reports": reports_payload(str(project.id)),
             "next_objective_ready": next_obj is not None,
             "pending_inputs": pending_operator_prompts(project),
+            # Catalog/role-driven CLI + capability names for command detection UI.
+            "command_hints": {
+                "cli": cli_names_payload(),
+                "capabilities": capability_names_payload(),
+            },
         }

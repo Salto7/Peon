@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 # Three-layer CLI install path (runtime + authoring + agent preamble).
-INSTALL_CASCADE = "tools/catalog → skill references/INSTALL.md → LLM"
+INSTALL_CASCADE = "tools/catalog → role references/INSTALL.md → LLM"
 
 INSTALL_MISSING_HINT = (
     f"If missing: {INSTALL_CASCADE} via provision_cli."
 )
 
-# Last-resort LLM install recipe (aligned with skills/tools-suggestor PROMPT.md).
+# Last-resort LLM install recipe (aligned with roles/tool-suggestor PROMPT.md).
 # Steps in ``install`` run in list order — put apt deps before git_clone / pip.
 PLANNER_INSTALL_SYSTEM = (
     "Install a missing CLI in a minimal debian:bookworm-slim Docker sandbox "
@@ -37,7 +37,7 @@ CATALOG_INSTALL_PREFER = (
 
 AGENT_RECOVER_NUDGE = (
     "The last tool call failed. Call provision_cli for a missing CLI, adjust "
-    "arguments, or use run_skill_script — then retry. Do not repeat the identical "
+    "arguments, or use run_cli — then retry. Do not repeat the identical "
     "failing call."
 )
 
@@ -47,7 +47,7 @@ FINDINGS_GUIDANCE = (
     "(network assets, files, malware/samples, source, packages, identities, "
     "cloud resources, or other producer-labeled assets), each with evidence. "
     "kind and asset_type are free-form slugs — not a fixed taxonomy. "
-    "Do NOT record findings for job/objective/agent progress or skill completion; "
+    "Do NOT record findings for job/objective/agent progress or role run completion; "
     "use update_objective_status for objectives and stream/logs for run status."
 )
 

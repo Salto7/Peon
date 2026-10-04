@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 
 from agent_runtime.docker.cli import DockerCli
-from orchestrator.config import get_config, configure
+from orchestrator.config import configure, get_config
 from orchestrator.utils.service import SharedServiceBase
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,7 @@ class LlmProxy(SharedServiceBase):
     def intent_enabled() -> bool:
         """Operator intent from Peon Settings (falls back to .env default)."""
         try:
+            # circular: runtime_settings ↔ llm_proxy
             from peon.projects.runtime_settings import PeonSettings
 
             return PeonSettings.get_bool("LLM_PROXY_ENABLED", False)
@@ -85,8 +87,6 @@ class LlmProxy(SharedServiceBase):
             return bool(getattr(settings, "LLM_PROXY_ENABLED", False))
 
     def sync_orchestrator(self, *, enabled: bool | None = None) -> None:
-        from dataclasses import replace
-
         on = self.intent_enabled() if enabled is None else bool(enabled)
         try:
             cfg = get_config()

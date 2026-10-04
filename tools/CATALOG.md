@@ -1,7 +1,7 @@
 # Tools catalog (`tools/catalog`)
 
 Sandbox CLIs are defined as YAML files under `tools/catalog/`.
-Peon loads them via `ToolCatalog` / `CatalogProvisioner` before skill runs.
+Peon loads them via `ToolCatalog` / `CatalogProvisioner` before role runs.
 
 ## File layout
 
@@ -36,7 +36,7 @@ install:
     packages: [nmap]
 verify:
   - command: "nmap --version"
-skills: [network-scanner]
+roles: [network-scanner]
 tags: [recon]
 ```
 
@@ -50,7 +50,7 @@ tags: [recon]
 | `binaries` | no | Extra CLI names this entry provides. |
 | `install` | yes* | List of install steps (*empty only for `tier: image`). |
 | `verify` | yes | Shell checks that must succeed after install. |
-| `skills` | no | Skill names that pull this tool in. |
+| `roles` | no | Role ids associated with this tool (metadata). |
 | `tags` | no | Free-form labels for UI/search. |
 
 ## Install priority
@@ -165,7 +165,7 @@ verify:
   - command: "dnsx -version"
     # must_match: "dnsx"                 # optional regex on stdout/stderr
     # must_not_match: "not found"
-skills: [domain-enum]
+roles: [domain-enum]
 tags: [recon, osint]
 ```
 
@@ -190,5 +190,5 @@ Prefer **`custom`** in new YAML.
 ## Related code
 
 - Loader / provisioner: `orchestrator/tools/catalog/catalog.py`
-- Missing-CLI cascade (catalog → skill docs → planner): `orchestrator/runtime/resolve.py`
-- Learn UI (suggest YAML / write skills): Peon **Learn** page + `tools-suggestor` / `skill-writer` skills
+- Missing-CLI cascade (catalog → planner): `orchestrator/tools/install.py`
+- Learn UI (suggest YAML / draft roles): Peon **Learn** page + role/tool authoring

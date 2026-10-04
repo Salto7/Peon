@@ -10,24 +10,22 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.http import require_GET, require_http_methods
 
 from peon.projects.http_helpers import parse_json_body
-from peon.projects.jobs import anchor_job
 from peon.projects.models import Project
-from peon.projects.streaming import emit_job_stream, stream_meta
+from peon.projects.streaming import audit_project_stream
 from peon.projects.terminal_session import get_registry
 
 logger = logging.getLogger(__name__)
 
 
 def _audit(project: Project, text: str, *, tag: str = "shell") -> None:
-    job = anchor_job(project, prefer_live=False)
-    if job is None:
-        return
-    emit_job_stream(
-        job,
-        "status",
+    audit_project_stream(
+        project,
         text,
-        stream_meta(project, role="system", tag=tag, event="terminal"),
-        swallow_errors=True,
+        tag=tag,
+        event="terminal",
+        role="system",
+        message_type="status",
+        prefer_live=False,
     )
 
 

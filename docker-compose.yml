@@ -59,7 +59,8 @@ services:
       - ./orchestrator:/app/orchestrator
       - ./agent_runtime:/app/agent_runtime
       - ./manage.py:/app/manage.py
-      - ./skills:/app/skills:ro
+      - ./helpers:/app/helpers:ro
+      - ./roles:/app/roles:ro
       - ./tools:/app/tools:ro
     expose:
       - "8000"
@@ -106,7 +107,8 @@ services:
       - ./orchestrator:/app/orchestrator
       - ./agent_runtime:/app/agent_runtime
       - ./manage.py:/app/manage.py
-      - ./skills:/app/skills:ro
+      - ./helpers:/app/helpers:ro
+      - ./roles:/app/roles:ro
       - ./tools:/app/tools:ro
       - /var/run/docker.sock:/var/run/docker.sock
     entrypoint: ["/entrypoint-worker.sh"]

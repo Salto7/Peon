@@ -33,8 +33,12 @@ class DockerRuntime(Runtime):
             args.extend(
                 ["-v", f"{cli.host_bind_path(Path(spec.workspace_host))}:/workspace"]
             )
-        if spec.skills_host:
-            args.extend(["-v", f"{cli.host_bind_path(Path(spec.skills_host))}:/skills:ro"])
+        if spec.roles_host:
+            args.extend(["-v", f"{cli.host_bind_path(Path(spec.roles_host))}:/roles:ro"])
+        if spec.helpers_host:
+            args.extend(
+                ["-v", f"{cli.host_bind_path(Path(spec.helpers_host))}:/helpers:ro"]
+            )
         if spec.tools_host:
             tools = Path(spec.tools_host)
             tools_root = tools.parent if tools.name == "catalog" else tools
@@ -50,7 +54,7 @@ class DockerRuntime(Runtime):
         cli = self._cli()
         if not cli.available():
             raise RuntimeError(
-                "docker CLI missing — skill execution requires a sandbox runtime "
+                "docker CLI missing — sandbox runtime required "
                 "(host execution is disabled)"
             )
         name = (spec.name or "").strip()

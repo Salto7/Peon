@@ -1,6 +1,6 @@
 """OAM-inspired engagement asset graph store (open types & relations).
 
-Producers (RoE, findings, skills, operator, tools) upsert assets and typed
+Producers (RoE, findings, roles, operator, tools) upsert assets and typed
 edges. Types and ``rel`` labels are free-form slugs — the UI must render
 unknown kinds without a Python/JS allowlist.
 
@@ -15,11 +15,14 @@ import ipaddress
 from typing import Any, Iterable
 
 from peon.projects.models import AssetGraph, Project
-from peon.projects.targets import (
+from peon.projects.target_discovery import (
+    discovery_assets_from_finding,
+    expand_related_assets,
+)
+from peon.projects.target_shapes import (
     accept_asset,
     coerce_targets,
     detect_shape,
-    expand_related_assets,
     sanitize_label,
     url_host,
 )
@@ -355,104 +358,131 @@ def sync_roe(graph: AssetGraph, roe) -> None:
                 )
 
 
-def sync_finding(graph: AssetGraph, finding) -> None:
-    """Upsert finding node + subject asset + finding edge."""
-    host = (getattr(finding, "host", None) or "").strip()
-    evidence_path = (getattr(finding, "evidence_path", None) or "").strip()
-    asset_type = sanitize_label(getattr(finding, "asset_type", None) or "", default="")
+def _finding_as_row(finding) -> dict[str, Any]:
+    """Normalize a Finding ORM/row into the discovery-asset dict shape."""
     meta = getattr(finding, "metadata", None)
     if not isinstance(meta, dict):
         meta = {}
-
-    subject = ""
-    subj_type = asset_type or "other"
-    for key, hint in (
-        ("subject", asset_type),
-        ("asset", asset_type),
-        ("file", "file"),
-        ("path", "file"),
-        ("sample", "sample"),
-        ("malware", "malware"),
-        ("hash", "hash"),
-        ("sha256", "hash"),
-        ("repo", "repo"),
-        ("package", "package"),
-        ("source", "source"),
-    ):
-        raw = meta.get(key)
-        if raw:
-            subject = str(raw).strip()
-            subj_type = sanitize_label(hint or asset_type, default="other")
-            break
-    if not subject and host:
-        subject, subj_type = host, asset_type or "host"
-    if not subject and evidence_path:
-        subject, subj_type = evidence_path, asset_type or "file"
-
-    seq = getattr(finding, "seq", None)
-    fid = f"finding:{getattr(finding, 'id', seq or 'x')}"
-    title = (getattr(finding, "title", None) or "").strip()
-    label_val = f"FIND-{seq}" if seq is not None else "FIND"
-    if subject:
-        short = _basename(subject) or subject
-        label_val = f"{label_val} · {short[:28]}"
-
-    finding_row = {
-        "id": fid,
-        "type": sanitize_label(getattr(finding, "kind", None) or "finding", default="finding")
-        or "finding",
-        "value": label_val[:256],
-        "key": fid,
-        "bucket": "finding",
-        "source": "finding",
-        "props": {
-            "title": title[:200],
-            "severity": getattr(finding, "severity", "") or "",
-            "status": getattr(finding, "status", "") or "",
-            "seq": seq,
-            "kind": "finding",
-        },
+    return {
+        "host": getattr(finding, "host", None) or "",
+        "port": getattr(finding, "port", None),
+        "evidence_path": getattr(finding, "evidence_path", None) or "",
+        "asset_type": getattr(finding, "asset_type", None) or "",
+        "kind": getattr(finding, "kind", None) or "",
+        "title": getattr(finding, "title", None) or "",
+        "metadata": meta,
+        "url": meta.get("url") or meta.get("uri") or "",
+        "uri": meta.get("uri") or "",
+        "repo": meta.get("repo") or "",
+        "hash": meta.get("hash") or meta.get("sha256") or "",
+        "sample": meta.get("sample") or meta.get("malware") or "",
+        "malware": meta.get("malware") or "",
+        "file": meta.get("file") or meta.get("path") or "",
+        "source": meta.get("source") or "",
+        "package": meta.get("package") or "",
     }
-    assets = [a for a in (graph.assets or []) if str(a.get("id") or "") != fid]
-    assets.append(finding_row)
-    graph.assets = assets
 
-    subject_id = None
-    if subject:
+
+def _is_pollution_asset(asset: dict[str, Any]) -> bool:
+    """FIND-XXX / finding:* nodes are board rows — not attack-surface subjects."""
+    aid = str(asset.get("id") or "")
+    key = str(asset.get("key") or "")
+    value = str(asset.get("value") or "").strip()
+    bucket = str(asset.get("bucket") or "")
+    typ = str(asset.get("type") or "")
+    props = asset.get("props") if isinstance(asset.get("props"), dict) else {}
+    if bucket == "finding" or props.get("kind") == "finding":
+        return True
+    if aid.startswith("finding:") or key.startswith("finding:"):
+        return True
+    if typ in {"finding", "findings"}:
+        return True
+    if value.upper().startswith("FIND-") or value.upper() == "FIND":
+        return True
+    return False
+
+
+def _prune_finding_pollution(graph: AssetGraph) -> None:
+    """Drop FIND-* nodes and dangling edges from a previously polluted graph."""
+    keep: list[dict[str, Any]] = []
+    drop_ids: set[str] = set()
+    for a in graph.assets or []:
+        if _is_pollution_asset(a):
+            drop_ids.add(str(a.get("id") or ""))
+            continue
+        keep.append(a)
+    graph.assets = keep
+    if not drop_ids:
+        return
+    graph.relations = [
+        e
+        for e in (graph.relations or [])
+        if str(e.get("source") or "") not in drop_ids
+        and str(e.get("target") or "") not in drop_ids
+    ]
+
+
+def _attach_finding_props(row: dict[str, Any], finding) -> None:
+    """Annotate an asset with lightweight finding refs (no FIND-* graph nodes)."""
+    props = dict(row.get("props") or {})
+    refs = list(props.get("finding_refs") or [])
+    seq = getattr(finding, "seq", None)
+    ref = {
+        "seq": seq,
+        "title": (getattr(finding, "title", None) or "")[:200],
+        "severity": getattr(finding, "severity", "") or "",
+        "status": getattr(finding, "status", "") or "",
+        "kind": sanitize_label(getattr(finding, "kind", None) or "", default="") or "",
+    }
+    # De-dupe by seq when present.
+    refs = [
+        r
+        for r in refs
+        if not (seq is not None and r.get("seq") == seq)
+    ]
+    refs.append(ref)
+    props["finding_refs"] = refs[-12:]
+    # Surface highest severity for UI chips without a FIND node.
+    order = ("critical", "high", "medium", "low", "info")
+    severities = [str(r.get("severity") or "").lower() for r in props["finding_refs"]]
+    for sev in order:
+        if sev in severities:
+            props["severity"] = sev
+            break
+    if not props.get("title"):
+        props["title"] = ref["title"]
+    row["props"] = props
+
+
+def sync_finding(graph: AssetGraph, finding) -> None:
+    """Promote finding *subjects* onto the graph — never FIND-XXX nodes."""
+    subjects = discovery_assets_from_finding(_finding_as_row(finding))
+    if not subjects:
+        return
+    host_id = None
+    for item in subjects:
+        typ = str(item.get("type") or "other")
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        # Meaningful discovery stays as discovered (candidates come from RoE).
         row = upsert_asset(
             graph,
-            typ=subj_type,
-            value=subject,
+            typ=typ,
+            value=value,
             bucket="discovered",
             source="finding",
         )
-        if row:
-            subject_id = row["id"]
+        if row is None:
+            continue
+        _attach_finding_props(row, finding)
+        # Keep host↔service spokes when both land.
+        if typ in {"host", "ip", "fqdn"} and host_id is None:
+            host_id = row["id"]
+        elif typ == "service" and host_id and ":" in value:
             upsert_relation(
-                graph, rel="finding", source_id=subject_id, target_id=fid
+                graph, rel="port", source_id=host_id, target_id=row["id"]
             )
-
-    port = getattr(finding, "port", None)
-    if subject_id and port is not None and ":" not in subject and "/" not in subject:
-        try:
-            port_i = int(port)
-        except (TypeError, ValueError):
-            port_i = None
-        if port_i is not None and 1 <= port_i <= 65535:
-            svc = upsert_asset(
-                graph,
-                typ="service",
-                value=f"{subject}:{port_i}",
-                bucket="discovered",
-                source="finding",
-            )
-            if svc:
-                upsert_relation(
-                    graph, rel="port", source_id=subject_id, target_id=svc["id"]
-                )
-                upsert_relation(
-                    graph, rel="finding", source_id=svc["id"], target_id=fid
-                )
 
 
 def sync_project_graph(
@@ -461,12 +491,14 @@ def sync_project_graph(
     findings: list | None = None,
     persist: bool = True,
 ) -> AssetGraph:
-    """Rebuild/merge graph from RoE + findings (idempotent upserts)."""
+    """Rebuild/merge graph from RoE + finding subjects (idempotent upserts)."""
     graph = get_or_create_graph(project)
+    _prune_finding_pollution(graph)
     roe = getattr(project, "roe", None)
     sync_roe(graph, roe)
     for f in findings or []:
         sync_finding(graph, f)
+    _prune_finding_pollution(graph)
     _enrich_shape_relations(graph)
 
     # Hub: first seed else first in_scope (always the circle-layout center).
@@ -482,10 +514,11 @@ def sync_project_graph(
                 props["center"] = True
                 a["props"] = props
                 a["bucket"] = a.get("bucket") or "seed"
-            # Spoke edges from hub to other RoE assets
+            # Spoke edges from hub to other meaningful assets
             if (
                 a.get("id") != hub["id"]
-                and a.get("bucket") in {"seed", "in_scope", "candidate", "exclusion", "discovered"}
+                and a.get("bucket")
+                in {"seed", "in_scope", "candidate", "exclusion", "discovered"}
             ):
                 upsert_relation(
                     graph,
@@ -499,29 +532,34 @@ def sync_project_graph(
 
 
 def view_payload(graph: AssetGraph) -> dict[str, Any]:
-    """UI payload: nodes/edges with open types; legend lists discovered kinds."""
+    """UI payload: meaningful assets only (no FIND-XXX board rows)."""
     nodes: list[dict[str, Any]] = []
     types: set[str] = set()
     buckets: set[str] = set()
     rels: set[str] = set()
 
     for a in graph.assets or []:
+        if _is_pollution_asset(a):
+            continue
         typ = str(a.get("type") or "other")
         value = str(a.get("value") or "")
         bucket = str(a.get("bucket") or "other")
         props = a.get("props") if isinstance(a.get("props"), dict) else {}
-        kind = str(props.get("kind") or ("finding" if bucket == "finding" else "asset"))
+        kind = str(props.get("kind") or "asset")
         raw_source = str(a.get("source") or "")
         if raw_source in {"roe", "rules_of_engagement"}:
             display_source = "Rules of Engagement"
+        elif raw_source == "finding":
+            display_source = "Finding subject"
         else:
             display_source = raw_source
         types.add(typ)
         buckets.add(bucket)
+        refs = props.get("finding_refs") or []
         nodes.append(
             {
                 "id": str(a.get("id") or ""),
-                "label": value[:48] if kind != "finding" else value[:48],
+                "label": value[:48],
                 "type": typ,
                 "bucket": bucket,
                 "kind": kind,
@@ -531,6 +569,7 @@ def view_payload(graph: AssetGraph) -> dict[str, Any]:
                 "title": str(props.get("title") or ""),
                 "severity": str(props.get("severity") or ""),
                 "status": str(props.get("status") or ""),
+                "finding_count": len(refs) if isinstance(refs, list) else 0,
                 "props": props,
             }
         )

@@ -1,6 +1,7 @@
 """Shared utilities (import leaf modules directly).
 
-Leaves: ``llm``, ``stream``, ``job_env``, ``service``, ``strings``, ``paths``,
-``workspace``. Domain parsers (e.g. install fences) live next to their owners
-under ``tools`` / ``skills`` — not here.
+Leaves: ``llm``, ``stream``, ``stream_events``, ``job_env``, ``service``,
+``strings``, ``paths``, ``commands``. ``paths`` also hosts workspace roots and
+RoE line formatting. ``stream_events`` is the JSON envelope + getters for
+logs / traces / tool messages.
 """

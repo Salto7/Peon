@@ -1,4 +1,4 @@
-"""CatalogCardsBase — shared helpers for skill/tool UI card projections."""
+"""CatalogCardsBase — shared helpers for role/tool UI card projections."""
 
 from __future__ import annotations
 

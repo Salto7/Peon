@@ -1,4 +1,4 @@
-"""Objective scheduling — Peontester-style per-objective readiness (not per-skill)."""
+"""Objective scheduling — Peontester-style per-objective readiness."""
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ from peon.projects.models import (
     Project,
     ProjectStatus,
 )
+from orchestrator.utils.commands import normalize_objective_commands
+from orchestrator.utils.paths import format_roe_block
 from peon.projects.tasks import enqueue_job
-from peon.projects.targets import format_targets
 from peon.projects.workspaces import project_workspace_dir, safe_workspace_key
 
 
@@ -30,10 +31,20 @@ class ObjectiveScheduler:
         return all(d.status == ObjectiveStatus.COMPLETED for d in deps)
 
     def next_ready(self, project: Project | None) -> Objective | None:
+        """Next objective that should get a Job.
+
+        Includes ``in_progress`` rows with no active Job (PM "release" without
+        enqueue, or worker crash) so the pipeline cannot stall forever.
+        """
         if project is None:
             return None
         for obj in project.objectives.order_by("seq", "created_at"):
-            if obj.status != ObjectiveStatus.PENDING:
+            if obj.status == ObjectiveStatus.IN_PROGRESS:
+                if self.has_active_job(obj):
+                    # Wait for the running specialist before advancing.
+                    return None
+                # Orphaned release — fall through and (re)enqueue.
+            elif obj.status != ObjectiveStatus.PENDING:
                 continue
             if not self.dependencies_met(obj):
                 continue
@@ -80,7 +91,7 @@ class ObjectiveScheduler:
         return objective
 
     def roles_for(self, objective: Objective) -> list[str]:
-        """Primary skill for the first Job (single id; not a peer list)."""
+        """Primary role id for the first Job (single id; not a peer list)."""
         hint = (objective.role_id or "").strip()
         if not hint:
             return []
@@ -89,30 +100,47 @@ class ObjectiveScheduler:
         return [primary] if primary else []
 
     def build_brief(self, project: Project, objective: Objective) -> str:
-        roe = getattr(project, "roe", None)
-        in_scope = ", ".join(format_targets(roe.in_scope if roe else [])) or "(empty)"
-        excl = ", ".join(format_targets(roe.exclusions if roe else [])) or "(none)"
-        seed = (
-            ", ".join(format_targets(getattr(roe, "seed", None) if roe else []))
-            or "(none)"
+        from peon.projects.workspaces import (
+            format_workspace_artifact_index,
+            project_workspace_dir,
         )
-        return (
-            f"Execute project objective OBJ-{objective.seq}: {objective.title}\n"
-            f"Phase: {objective.phase}\n"
-            f"Description: {objective.description or '(none)'}\n"
-            f"Acceptance criteria: {objective.acceptance_criteria or '(none)'}\n\n"
-            f"Project: {project.title}\n"
-            f"In-scope (authorized assets; type is optional hint): {in_scope}\n"
-            f"Exclusions: {excl}\n"
-            f"Seed / intent: {seed}\n"
-            "Type labels (ip:, file:, malware:, …) are hints only — skills interpret values. "
-            "Discoveries go to candidates/findings — not authorized until promoted "
-            "into in-scope. "
-            "record_finding is for engagement discoveries about subjects (any asset "
-            "class) with evidence — not job/objective/agent progress. "
-            "Write evidence under workspace/; curated notes under findings/<skill>.md. "
-            "Do not write findings/report.md unless this objective is the analyzer."
-        )
+
+        parts = [
+            f"Execute project objective OBJ-{objective.seq}: {objective.title}",
+            f"Phase: {objective.phase}",
+            f"Description: {objective.description or '(none)'}",
+            f"Acceptance criteria: {objective.acceptance_criteria or '(none)'}",
+            "",
+            f"Project: {project.title}",
+            format_roe_block(getattr(project, "roe", None)),
+            (
+                "Type labels (ip:, file:, malware:, …) are hints only — roles interpret "
+                "values. Discoveries go to candidates/findings — not authorized until "
+                "promoted into in-scope. record_finding is for engagement discoveries "
+                "about subjects (any asset class) with evidence — not job/objective/"
+                "agent progress. Write evidence under workspace/; curated notes under "
+                "findings/<role-id>.md. Do not write findings/report.md unless this "
+                "objective is the analyzer."
+            ),
+        ]
+        # Dynamic index of prior-agent outputs (any tool format) so reporting
+        # roles do not guess paths or re-collect.
+        try:
+            ws = project_workspace_dir(str(project.id), create=False)
+            index = format_workspace_artifact_index(ws)
+        except Exception:
+            index = ""
+        if index:
+            parts.extend(
+                [
+                    "",
+                    "## Workspace artifacts from prior agents",
+                    "Read these with list_workspace_artifacts / read_workspace_artifact "
+                    "(do not re-scan to rediscover them):",
+                    index,
+                ]
+            )
+        return "\n".join(parts)
 
     def has_active_job(self, objective: Objective) -> bool:
         return objective.jobs.exclude(
@@ -194,8 +222,8 @@ class ObjectiveScheduler:
     ) -> list[Job]:
         """Enqueue specialist Jobs on the same objective (context-driven peers).
 
-        ``peers`` items are dicts ``{title, description, skill_name}`` or bare
-        skill id strings (legacy). Concurrent peers are allowed while other Jobs
+        ``peers`` items are dicts ``{title, description, role_id}`` or bare
+        bare role id strings. Concurrent peers are allowed while other Jobs
         on the objective are still running.
         """
         created: list[Job] = []
@@ -271,13 +299,9 @@ def _normalize_phase(value: object) -> str:
 
 
 def _default_commands(objective: dict) -> list[str]:
-    role_id = str(objective.get("role_id") or "").strip()
-    if not role_id:
-        return []
-    return [
-        "roe_status()",
-        f'run_cli(command="<fill for role {role_id}>")',
-    ]
+    """No synthetic tool-call wrappers — specialists fill real shell CLIs."""
+    del objective
+    return []
 
 
 class ObjectivePlanSync:
@@ -307,7 +331,7 @@ class ObjectivePlanSync:
                 continue
             phase = _normalize_phase(item.get("phase"))
             key = (title.lower(), phase)
-            cmds = [str(c).strip() for c in (item.get("commands") or []) if str(c).strip()]
+            cmds = normalize_objective_commands(item.get("commands"))
             mitre = item.get("mitre") or item.get("mitre_techniques") or []
             if not isinstance(mitre, list):
                 mitre = []

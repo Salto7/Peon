@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from orchestrator.crew.roles.hierarchy import engagement_bookends, manager_role
+from orchestrator.crew.roles.registry import engagement_bookends, manager_role
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.utils.llm import chat_text, llm_configured
 from orchestrator.utils.service import SharedServiceBase

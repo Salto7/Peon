@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
+from django.db.models import Count, Q
+
 from peon.projects.models import Finding, FindingStatus, Job, Objective, Project
-from peon.projects.targets import sanitize_label
+from peon.projects.roe_ops import add_candidates
+from peon.projects.role_artifacts import ingest_role_artifacts
+from peon.projects.target_discovery import discovery_assets_from_finding
+from peon.projects.target_shapes import coerce_targets, sanitize_label
 
 # Ranking scale for reports/UI — not a domain taxonomy.
 _SEVERITY_RANK = frozenset({"critical", "high", "medium", "low", "info"})
@@ -19,47 +23,9 @@ REPORT_HIDDEN_STATUSES = frozenset(
     {FindingStatus.FALSE_POSITIVE, FindingStatus.ACCEPTED}
 )
 
-# Kinds that mean run/lifecycle noise, not engagement discoveries.
-_STATUS_KINDS = frozenset(
-    {
-        "status",
-        "progress",
-        "lifecycle",
-        "agent",
-        "agent_status",
-        "job_status",
-        "objective_status",
-        "run",
-        "heartbeat",
-    }
-)
-
-# Titles that are clearly skill/job/objective status (not findings).
-_STATUS_TITLE_RE = re.compile(
-    r"(?ix)"
-    r"("
-    r"^\S+\s*/\s*\S+\s+completed\s*$"  # "network-scanner / nmap completed"
-    r"|^(skill|job|agent|objective|obj-\d+|scan|task)\b.*\b"
-    r"(completed|finished|started|running|failed|blocked|cancelled)\b"
-    r"|\b(objective|job|agent)\s+(status|progress|update)\b"
-    r"|^(updated|marked)\s+obj-\d+"
-    r")"
-)
-
-
-def is_status_noise(title: str, kind: str = "") -> bool:
-    """True when the payload looks like agent/objective/run status, not a finding."""
-    k = sanitize_label(kind or "")
-    if k in _STATUS_KINDS:
-        return True
-    t = (title or "").strip()
-    if not t:
-        return True
-    return bool(_STATUS_TITLE_RE.search(t))
-
 
 class FindingNormalizer:
-    """Coerce skill/queue dicts into Finding field values."""
+    """Coerce agent/queue dicts into Finding field values."""
 
     def normalize(self, record: dict[str, Any]) -> dict[str, Any] | None:
         title = str(record.get("title") or "").strip()
@@ -69,8 +35,6 @@ class FindingNormalizer:
             str(record.get("kind") or ""),
             default="observation",
         )
-        if is_status_noise(title, kind):
-            return None
         asset = sanitize_label(str(record.get("asset_type") or ""), default="")
         severity = sanitize_label(
             str(record.get("severity") or ""),
@@ -159,11 +123,6 @@ class FindingStore:
         roe = getattr(project, "roe", None)
         if roe is None:
             return
-        from peon.projects.targets import (
-            add_candidates,
-            coerce_targets,
-            discovery_assets_from_finding,
-        )
 
         found = discovery_assets_from_finding(row)
         if not found:
@@ -215,7 +174,6 @@ class FindingStore:
     @staticmethod
     def board_counts(project: Project) -> dict:
         """Aggregate finding counts for the triage board header."""
-        from django.db.models import Count, Q
 
         return project.findings.aggregate(
             all=Count("id"),
@@ -266,7 +224,6 @@ class FindingStore:
             qs = qs.filter(status=status)
         if severity and severity != "all":
             qs = qs.filter(severity=severity)
-        # Severity-first for the board; seq as tiebreaker.
         order = {s: i for i, s in enumerate(_SEVERITY_ORDER)}
         rows = list(qs[: max(1, min(limit, 500))])
         rows.sort(
@@ -361,4 +318,7 @@ class FindingQueueIngestor:
 
 
 def ingest_workspace_findings(job: Job, workspace: Path) -> int:
+    """Run role artifact hooks, then ingest ``findings_queue.jsonl``."""
+    if job.project_id is not None:
+        ingest_role_artifacts(job, workspace)
     return FindingQueueIngestor().ingest(job, workspace)

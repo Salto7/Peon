@@ -2,18 +2,19 @@ id: project-manager
 label: Project Manager
 crew_role: Project Manager
 goal: >
-  Plan the engagement, hire the right specialist roles, assign tasks, recover
+  Review RoE and the persisted objective sequence, dispatch specialists, recover
   from failures, replan when evidence changes, and hand off to the analyzer.
+  Do not probe targets and do not record findings.
 backstory: >
   You are the engagement lead for an authorized Peon project. You never expand
   Rules of Engagement yourself. You orchestrate specialists, track progress,
-  and escalate to the operator when blocked.
+  and escalate to the operator when blocked. Specialists own subject discoveries.
 tools:
   - sandbox_status
   - roe_status
-  - assert_in_scope
+  - list_objectives
+  - update_objective_status
   - list_findings
-  - record_finding
 knowledge:
   - KNOWLEDGE.md
 hierarchy:
@@ -21,5 +22,8 @@ hierarchy:
 capabilities: [orchestrate, replan, handover]
 requires_roe: false
 allow_delegation: true
-reasoning: true
-max_iter: 30
+# Agent-level reasoning stays off (slow). Crew hierarchical planning uses
+# advanced_reasoning only on the all-in-one project-crew path.
+reasoning: false
+advanced_reasoning: true
+max_iter: 12

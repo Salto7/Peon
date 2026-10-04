@@ -7,6 +7,8 @@ from typing import Any, ClassVar
 
 from langchain_core.language_models import BaseChatModel
 
+from orchestrator.config import get_config
+
 
 class LLMProviderBase(ABC):
     """Unified LLM backend interface.
@@ -28,8 +30,6 @@ class LLMProviderBase(ABC):
 
     def describe(self) -> dict[str, Any]:
         """Operator-facing snapshot. Subclasses may extend via ``_describe_extra``."""
-        from orchestrator.config import get_config
-
         cfg = get_config()
         out: dict[str, Any] = {
             "module": self.id,

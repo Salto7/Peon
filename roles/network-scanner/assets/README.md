@@ -1,4 +1,7 @@
 # network-scanner assets
 
-Custom files for this role (templates, wordlists, helpers).
-Copy into `workspace/` when you need to edit for an engagement.
+Role-pack role pack: executables live here (not under `scripts/`).
+
+- `run.py` — optional thin nmap entry (`-oX` only)
+
+Copy into `workspace/` before editing. Analyzer reads raw XML from `workspace/`.

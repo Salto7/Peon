@@ -10,6 +10,9 @@ from typing import Any
 
 from django.conf import settings
 
+from peon.projects.llm_proxy import LlmProxy
+from peon.projects.models import RuntimeSettings
+
 # Keys that only take effect after restarting the Dramatiq worker process.
 RESTART_REQUIRED = frozenset({"DRAMATIQ_THREADS"})
 
@@ -50,8 +53,6 @@ class PeonSettings:
 
     @classmethod
     def row(cls):
-        from peon.projects.models import RuntimeSettings
-
         obj, _ = RuntimeSettings.objects.get_or_create(
             pk=1, defaults={"values": cls.defaults()}
         )
@@ -127,8 +128,6 @@ class PeonSettings:
         row.save(update_fields=["values", "updated_at"])
         if proxy_changed:
             try:
-                from peon.projects.llm_proxy import LlmProxy
-
                 LlmProxy.shared().apply(bool(merged.get("LLM_PROXY_ENABLED")))
             except Exception:
                 # Settings row is already saved; UI surfaces proxy status separately.
@@ -181,7 +180,7 @@ class PeonSettings:
             ),
             "LLM_PROXY_ENABLED": (
                 "LiteLLM proxy enabled",
-                "Start the OpenAI-compatible /v1 gateway for OpenCode (required for Toolsmith skill/tool creation).",
+                "Start the OpenAI-compatible /v1 gateway for OpenCode (required for Toolsmith role/tool creation).",
                 False,
             ),
         }

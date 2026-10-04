@@ -53,6 +53,7 @@ def get_agent_runtime() -> AgentRuntimeBase:
     """Return Job runtime for ``AGENT_MODULE`` (crewai)."""
     global _DEFAULT
     if _DEFAULT is None:
+        # circular: crew.registry → AgentRuntimeBase
         from orchestrator.crew.registry import get_job_runtime
 
         _DEFAULT = get_job_runtime()
@@ -63,6 +64,7 @@ def set_agent_runtime(runtime: AgentRuntimeBase | None) -> None:
     global _DEFAULT
     _DEFAULT = runtime
     if runtime is None:
+        # circular: crew.registry → AgentRuntimeBase
         from orchestrator.crew.registry import reset_agent_modules
 
         reset_agent_modules()

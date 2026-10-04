@@ -9,15 +9,72 @@ from pathlib import Path
 import dramatiq
 from django.apps import AppConfig
 from django.conf import settings
+from django.core.checks import Error, register
 from dramatiq.brokers.redis import RedisBroker
 from dramatiq.brokers.stub import StubBroker
+
+from agent_runtime.registry import register_builtin
+from orchestrator.config import LLM_PROVIDER_KEY_ENV, RuntimeConfig, configure
+from orchestrator.crew.roles.registry import RoleRegistry, analyzer_role, manager_role
 
 logger = logging.getLogger(__name__)
 
 
+@register()
+def crewai_roles_check(app_configs, **kwargs):
+    """Fail fast when CrewAI is configured without a usable role catalog."""
+    del app_configs, kwargs
+    module = str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai").strip().lower()
+    if module != "crewai":
+        return []
+
+    try:
+        registry = RoleRegistry.shared()
+        roles = registry.list_roles()
+    except Exception as exc:
+        return [
+            Error(
+                f"Could not load CrewAI roles: {exc}",
+                hint="Check ROLES_DIR and every roles/*/ROLE.yaml file.",
+                id="projects.E001",
+            )
+        ]
+
+    errors = []
+    roles_dir = registry.roles_dir()
+    if not roles:
+        errors.append(
+            Error(
+                f"No CrewAI roles found in {roles_dir}.",
+                hint="Package or mount roles/ into both the web and worker services.",
+                id="projects.E002",
+            )
+        )
+        return errors
+    if manager_role(registry) is None:
+        errors.append(
+            Error(
+                "CrewAI role catalog has no engagement manager.",
+                hint=(
+                    "Add a non-authoring role with allow_delegation: true "
+                    "and an empty hierarchy.reports_to."
+                ),
+                id="projects.E003",
+            )
+        )
+    if analyzer_role(registry) is None:
+        errors.append(
+            Error(
+                "CrewAI role catalog has no analyzer.",
+                hint="Add a role whose capabilities include report or analyzer.",
+                id="projects.E004",
+            )
+        )
+    return errors
+
+
 def configure_orchestrator() -> None:
     """Push Django settings into orchestrator.RuntimeConfig (idempotent)."""
-    from orchestrator.config import LLM_PROVIDER_KEY_ENV, RuntimeConfig, configure
 
     provider = str(getattr(settings, "LLM_PROVIDER", "openrouter") or "openrouter")
     key_attr = LLM_PROVIDER_KEY_ENV.get(provider, "LITELLM_API_KEY")
@@ -27,16 +84,10 @@ def configure_orchestrator() -> None:
         or str(getattr(settings, "OPENROUTER_API_KEY", "") or "")
         or ""
     )
-    external = [
-        Path(os.path.expandvars(os.path.expanduser(str(p)))).resolve()
-        for p in (getattr(settings, "SKILLS_EXTERNAL_DIRS", None) or [])
-        if str(p).strip()
-    ]
-
     configure(
         RuntimeConfig(
-            skills_dir=Path(settings.SKILLS_DIR).resolve(),
-            skills_external_dirs=external,
+            roles_dir=Path(settings.ROLES_DIR).resolve(),
+            helpers_dir=Path(settings.HELPERS_DIR).resolve(),
             tools_catalog_dir=Path(settings.TOOLS_CATALOG_DIR).resolve(),
             workspaces_dir=Path(settings.PROJECT_WORKSPACES_DIR).resolve(),
             llm_provider=provider,
@@ -71,7 +122,6 @@ def configure_orchestrator() -> None:
             .strip()
             .lower()
             or "crewai",
-            roles_dir=Path(getattr(settings, "ROLES_DIR", settings.BASE_DIR / "roles")).resolve(),
             sandbox_enabled=bool(getattr(settings, "SANDBOX_ENABLED", True)),
             sandbox_image=str(getattr(settings, "SANDBOX_IMAGE", "peon-sandbox:local")),
             sandbox_prefix=str(
@@ -123,6 +173,18 @@ class ProjectsConfig(AppConfig):
         # which may call django.setup(); nested populate() would fail).
         configure_orchestrator()
         configure_broker()
-        from agent_runtime.registry import register_builtin
 
         register_builtin()
+        self._warm_crewai()
+
+    @staticmethod
+    def _warm_crewai() -> None:
+        """Pay CrewAI import cost at process boot, not on the first job."""
+        module = str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai").strip().lower()
+        if module != "crewai":
+            return
+        try:
+            # deferred: startup warm
+            import crewai  # noqa: F401
+        except Exception as exc:
+            logger.debug("crewai warm import skipped: %s", exc)

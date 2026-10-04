@@ -17,5 +17,5 @@ install:
       - https://codeload.github.com
 verify:
   - command: "feroxbuster --version"
-skills: []
+roles: []
 tags: [recon, web]

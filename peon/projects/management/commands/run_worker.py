@@ -8,9 +8,8 @@ import time
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from peon.projects.rpc_bridge import start_peon_rpc_server
-from peon.projects.streaming import start_stream_server
-from peon.projects.worker import process_one
+from peon.projects.job_run import process_one
+from peon.projects.streaming import start_peon_rpc_server, start_stream_server
 
 
 class Command(BaseCommand):

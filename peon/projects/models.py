@@ -494,7 +494,7 @@ class Finding(models.Model):
 class AssetGraph(models.Model):
     """Engagement asset graph (open types / relations).
 
-    Types and relation labels are free-form slugs from producers (skills,
+    Types and relation labels are free-form slugs from producers (roles,
     findings, operator, tools). Not a closed taxonomy — new node/edge kinds
     appear in the UI without schema changes.
     """

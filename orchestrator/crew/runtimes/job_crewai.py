@@ -8,10 +8,10 @@ from orchestrator.agent.runtime_base import (
     AgentRunResult,
     AgentRuntimeBase,
 )
-from orchestrator.crew.roles.factory import build_crew_agent
-from orchestrator.crew.roles.hierarchy import manager_role
+from orchestrator.crew.roles.model import build_crew_agent
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtimes.project_crewai import run_project_crew_from_scope
+from orchestrator.utils.stream_events import envelope
 
 
 def resolve_role_id(scope) -> str:
@@ -27,8 +27,14 @@ def resolve_role_id(scope) -> str:
     return ""
 
 
+def project_crew_requested(scope) -> bool:
+    """True only for explicit project-crew runs, never merely for a manager role."""
+    extras = getattr(scope, "extras", None) or {}
+    return str(extras.get("crew_mode") or "").strip().lower() == "project"
+
+
 class CrewAIJobRuntime(AgentRuntimeBase):
-    """Run one CrewAI role, or the full project crew when role is project-manager."""
+    """Run one CrewAI role, or an explicitly requested full project crew."""
 
     def start(self, request: AgentRunRequest) -> AgentRunResult:
         if not request.config.runtime_enabled:
@@ -51,11 +57,23 @@ class CrewAIJobRuntime(AgentRuntimeBase):
         except KeyError as exc:
             return AgentRunResult(ok=False, error=str(exc))
 
-        mgr = manager_role()
-        if (mgr and role_id == mgr.id) or scope.extras.get("crew_mode") == "project":
+        if project_crew_requested(scope):
+            planned = tuple(
+                str(r).strip()
+                for r in (scope.role_ids or ())
+                if str(r).strip() and str(r).strip() != role_id
+            )
+            extra_roles = scope.extras.get("crew_role_ids") or scope.extras.get(
+                "specialist_role_ids"
+            )
+            if extra_roles:
+                planned = tuple(
+                    str(r).strip() for r in extra_roles if str(r or "").strip()
+                ) or planned
             crew_result = run_project_crew_from_scope(
                 scope,
                 request.config,
+                role_ids=planned,
                 resume=request.resume,
                 replan=bool(scope.extras.get("replan")),
                 steer=request.steer,
@@ -100,7 +118,7 @@ class CrewAIJobRuntime(AgentRuntimeBase):
         scope.bridge.emit(
             "status",
             f"crewai role={role.id} starting",
-            metadata={"event": "crewai_role_start", "role_id": role.id},
+            metadata=envelope("crewai_role_start", {"role_id": role.id}),
         )
 
         with bind_job(scope, request.config):
@@ -115,6 +133,6 @@ class CrewAIJobRuntime(AgentRuntimeBase):
         scope.bridge.emit(
             "status",
             f"crewai role={role.id} finished",
-            metadata={"event": "crewai_role_done", "role_id": role.id},
+            metadata=envelope("crewai_role_done", {"role_id": role.id}),
         )
         return AgentRunResult(ok=True, output=output, iterations=1)

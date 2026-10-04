@@ -1,4 +1,4 @@
-"""tools/catalog: load YAML definitions and provision CLIs before skill runs."""
+"""tools/catalog: load YAML definitions and provision CLIs before role runs."""
 
 from __future__ import annotations
 
@@ -12,10 +12,7 @@ from typing import Any
 
 import yaml
 
-from orchestrator.utils.service import SharedServiceBase
-
-logger = logging.getLogger(__name__)
-
+from orchestrator.config import get_config
 from orchestrator.tools.install_steps import (
     AptInstallStep,
     CustomInstallStep,
@@ -23,6 +20,10 @@ from orchestrator.tools.install_steps import (
     _steps,
 )
 from orchestrator.tools.install_steps.util import _run
+from orchestrator.utils.commands import clear_command_caches
+from orchestrator.utils.service import SharedServiceBase
+
+logger = logging.getLogger(__name__)
 
 
 _TRANSITIVE: dict[str, list[str]] = {
@@ -65,7 +66,7 @@ class CatalogTool:
     binaries: list[str] = field(default_factory=list)
     install: list[dict[str, Any]] = field(default_factory=list)
     verify: list[dict[str, Any]] = field(default_factory=list)
-    skills: list[str] = field(default_factory=list)
+    roles: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
 
     @property
@@ -114,11 +115,14 @@ class ToolCatalog(SharedServiceBase):
         raw = (os.environ.get("TOOLS_CATALOG_DIR") or "").strip()
         if raw:
             return Path(raw).resolve()
-        from orchestrator.config import get_config
-
         return Path(get_config().tools_catalog_dir).resolve()
 
     def invalidate(self) -> None:
+        try:
+            clear_command_caches()
+        except Exception:
+            pass
+
         self._cache = None
 
     @staticmethod
@@ -129,7 +133,7 @@ class ToolCatalog(SharedServiceBase):
             tool.tier,
             tool.binary,
             tuple(tool.binaries or []),
-            tuple(tool.skills or []),
+            tuple(tool.roles or []),
             tuple(tool.tags or []),
         )
 
@@ -211,8 +215,8 @@ class ToolCatalog(SharedServiceBase):
                 break
         return out
 
-    def for_skills(self, skill_names: list[str] | set[str]) -> list[CatalogTool]:
-        """Resolve catalog tools from skill toolkits and/or binary/id keys."""
+    def for_keys(self, keys: list[str] | set[str]) -> list[CatalogTool]:
+        """Resolve catalog tools from CLI/binary/tool id keys."""
         catalog = self.all()
         expanded: list[str] = []
         seen: set[str] = set()
@@ -226,15 +230,10 @@ class ToolCatalog(SharedServiceBase):
             for dep in _TRANSITIVE.get(name, []):
                 add(dep)
 
-        for raw in skill_names or []:
+        for raw in keys or []:
             add(str(raw))
 
         tool_ids: list[str] = []
-        for skill_name in expanded:
-            for tid in self._toolkit_tool_ids(skill_name):
-                if tid not in tool_ids:
-                    tool_ids.append(tid)
-        # Also accept catalog binary/id keys (worker eligible_cli_names).
         for key in expanded:
             tool = self.lookup(key)
             if tool is None or tool.is_image_tier:
@@ -246,30 +245,10 @@ class ToolCatalog(SharedServiceBase):
         for tid in tool_ids:
             entry = catalog.get(tid)
             if entry is None:
-                logger.warning("Unknown catalog tool %r for skills %s", tid, expanded)
+                logger.warning("Unknown catalog tool %r for keys %s", tid, expanded)
                 continue
             if not entry.is_image_tier:
                 out.append(entry)
-        return out
-
-    def _toolkit_tool_ids(self, skill_name: str) -> list[str]:
-        # deferred: SkillRegistry → skills.execute → runtime_shell → runtime → catalog
-        from orchestrator.skills.registry import SkillRegistry
-
-        skill = SkillRegistry.shared().load_skill((skill_name or "").strip())
-        if skill is None:
-            return []
-        out: list[str] = []
-        for item in skill.toolkit or []:
-            key = str(item).strip().lower()
-            if not key:
-                continue
-            tool = self.lookup(key)
-            if tool is None:
-                logger.warning("No catalog tool for skill %s CLI %r", skill_name, key)
-                continue
-            if tool.id not in out:
-                out.append(tool.id)
         return out
 
     @staticmethod
@@ -303,22 +282,26 @@ class ToolCatalog(SharedServiceBase):
             if isinstance(raw.get("install"), list)
             else [],
             verify=normalize_verify(raw.get("verify")),
-            skills=[str(s).strip() for s in (raw.get("skills") or []) if str(s).strip()],
+            roles=[
+                str(s).strip()
+                for s in (raw.get("roles") or [])
+                if str(s).strip()
+            ],
             tags=[str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()],
         )
 
 
 class CatalogProvisioner(SharedServiceBase):
-    """Verify/install catalog CLIs for skills (host or worker container)."""
+    """Verify/install catalog CLIs for role allowlists (host or worker container)."""
 
     def __init__(self, *, catalog: ToolCatalog | None = None) -> None:
         self._catalog = catalog or ToolCatalog.shared()
 
     def provision(
-        self, skill_names: list[str], *, workspace: Path | None = None
+        self, keys: list[str], *, workspace: Path | None = None
     ) -> ProvisionResult:
         result = ProvisionResult()
-        tools = self._catalog.for_skills(skill_names)
+        tools = self._catalog.for_keys(keys)
         result.cli_ids = [t.id for t in tools]
         needed = [t for t in tools if not self._verified(t)]
         if needed:
@@ -334,7 +317,7 @@ class CatalogProvisioner(SharedServiceBase):
         result.verified.extend(t.id for t in tools if self._verified(t))
         # de-dupe verified while preserving order
         result.verified = list(dict.fromkeys(result.verified))
-        self._write_manifest(workspace, skill_names, result)
+        self._write_manifest(workspace, keys, result)
         return result
 
     def provision_binary(self, binary: str) -> tuple[bool, str]:
@@ -418,6 +401,7 @@ class CatalogProvisioner(SharedServiceBase):
     @staticmethod
     def _cli_present(tool: CatalogTool) -> bool:
         """Same PATH gate as ``InstallResolver`` / ``ProvisionService``."""
+        # circular: install → CatalogProvisioner / ToolCatalog
         from orchestrator.tools.install import cli_on_path
 
         return cli_on_path(tool.binary or tool.id)
@@ -505,7 +489,7 @@ class CatalogProvisioner(SharedServiceBase):
 
     @staticmethod
     def _write_manifest(
-        workspace: Path | None, skill_names: list[str], result: ProvisionResult
+        workspace: Path | None, keys: list[str], result: ProvisionResult
     ) -> None:
         if workspace is None:
             return
@@ -514,7 +498,7 @@ class CatalogProvisioner(SharedServiceBase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 json.dumps(
-                    {"skill_names": list(skill_names or []), **result.to_dict()}, indent=2
+                    {"cli_keys": list(keys or []), **result.to_dict()}, indent=2
                 )
                 + "\n",
                 encoding="utf-8",

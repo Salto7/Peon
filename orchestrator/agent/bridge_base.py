@@ -68,6 +68,20 @@ class AgentBridgeBase(ABC):
         del kind
         return "list_findings bridge not configured."
 
+    def write_report_note(self, section: str, body: str) -> str:
+        """Append a markdown section into findings/report.md (not a Finding row)."""
+        del section, body
+        return "write_report_note bridge not configured."
+
+    def list_workspace_artifacts(self) -> str:
+        """List evidence files under the job workspace (prior agent outputs)."""
+        return "list_workspace_artifacts bridge not configured."
+
+    def read_workspace_artifact(self, path: str, max_chars: int = 100_000) -> str:
+        """Read one workspace/ or findings/ evidence file."""
+        del path, max_chars
+        return "read_workspace_artifact bridge not configured."
+
     def drain_operator_guidance(self) -> list[str]:
         return []
 

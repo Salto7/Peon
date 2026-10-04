@@ -25,7 +25,6 @@
     in_scope: 0,
     discovered: 1,
     candidate: 1,
-    finding: 2,
     exclusion: 2,
   };
 
@@ -36,7 +35,6 @@
     in_scope: "var(--accent)",
     candidate: "#7eb0f0",
     exclusion: "var(--bad)",
-    finding: "var(--ok)",
     discovered: "var(--accent-dim)",
   };
 
@@ -108,12 +106,9 @@
     var rings = {};
     nodes.forEach(function (node) {
       if (hub && node.id === hub.id) return;
-      var ri =
-        node.kind === "finding"
-          ? 2
-          : RING_ORDER.hasOwnProperty(node.bucket)
-            ? RING_ORDER[node.bucket]
-            : 1;
+      var ri = RING_ORDER.hasOwnProperty(node.bucket)
+        ? RING_ORDER[node.bucket]
+        : 1;
       if (!rings[ri]) rings[ri] = [];
       rings[ri].push(node);
     });
@@ -166,20 +161,35 @@
       );
     }
     if (n.kind === "hub") row("Role", "project seed (center)");
-    if (n.kind === "finding") {
-      row("Finding", n.title || n.label || n.id);
-      row("Severity", n.severity);
-      row("Status", n.status);
-      row("Kind", n.type);
-    } else {
-      row("Type", n.type || "asset");
-      row("Value", n.value || n.label || n.id);
-      row("Bucket", n.bucket);
-      row("Source", displaySource(n.source));
-    }
+    row("Type", n.type || "asset");
+    row("Value", n.value || n.label || n.id);
+    row("Bucket", n.bucket);
+    row("Source", displaySource(n.source));
+    if (n.severity) row("Severity", n.severity);
+    if (n.finding_count) row("Findings", String(n.finding_count));
     var props = n.props || {};
+    var refs = props.finding_refs;
+    if (Array.isArray(refs) && refs.length) {
+      refs.slice(0, 6).forEach(function (ref, i) {
+        if (!ref || typeof ref !== "object") return;
+        var label =
+          (ref.seq != null ? "FIND-" + ref.seq : "Finding " + (i + 1)) +
+          (ref.title ? ": " + ref.title : "");
+        row("Finding", label);
+        if (ref.severity) row("  severity", ref.severity);
+        if (ref.status) row("  status", ref.status);
+      });
+    }
     Object.keys(props).forEach(function (k) {
-      if (k === "kind" || k === "title" || k === "severity" || k === "status" || k === "seq")
+      if (
+        k === "kind" ||
+        k === "title" ||
+        k === "severity" ||
+        k === "status" ||
+        k === "seq" ||
+        k === "finding_refs" ||
+        k === "center"
+      )
         return;
       var v = props[k];
       if (v == null || v === "" || typeof v === "object") return;
@@ -465,7 +475,7 @@
       empty.setAttribute("fill", "currentColor");
       empty.setAttribute("opacity", "0.55");
       empty.textContent =
-        "No assets yet — add Rules of Engagement subjects or wait for findings / skills.";
+        "No assets yet — add Rules of Engagement subjects or wait for findings / roles.";
       _svg.appendChild(empty);
       return;
     }
@@ -509,14 +519,17 @@
       g.setAttribute("data-bucket", n.bucket || "");
       g.setAttribute("data-id", n.id || "");
 
-      var r = n.kind === "hub" ? 20 : n.kind === "finding" ? 10 : 14;
+      var r = n.kind === "hub" ? 20 : n.finding_count ? 16 : 14;
       var circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
       circle.setAttribute("r", String(r));
       circle.setAttribute("fill", nodeColor(n));
-      circle.setAttribute("opacity", n.kind === "finding" ? "0.85" : "0.95");
+      circle.setAttribute("opacity", "0.95");
       if (n.kind === "hub") {
         circle.setAttribute("stroke", "var(--warn)");
         circle.setAttribute("stroke-width", "2.5");
+      } else if (n.severity) {
+        circle.setAttribute("stroke", "var(--ok)");
+        circle.setAttribute("stroke-width", "1.5");
       }
       g.appendChild(circle);
 

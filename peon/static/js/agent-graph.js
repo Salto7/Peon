@@ -1,10 +1,10 @@
-/* n8n-style agent flow: roots left→right; subagents stacked; draggable nodes. */
+/* Paperclip-style agent hierarchy: top-down tree, clickable nodes. */
 (function () {
-  var NODE_W = 210;
-  var NODE_H = 118;
-  var GAP_X = 72;
-  var GAP_Y = 28;
-  var PAD = 16;
+  var NODE_W = 220;
+  var NODE_H = 78;
+  var GAP_X = 28;
+  var GAP_Y = 42;
+  var PAD = 24;
 
   function statusPill(status) {
     if (window.PeonUI && window.PeonUI.statusPill) {
@@ -29,11 +29,11 @@
   function shortCmd(text) {
     var t = String(text || "").replace(/\s+/g, " ").trim();
     if (!t) return "";
-    return t.length > 72 ? t.slice(0, 70) + "…" : t;
+    return t.length > 56 ? t.slice(0, 54) + "…" : t;
   }
 
   function storageKey(projectPk) {
-    return "peon-graph-pos:" + String(projectPk || "");
+    return "peon-org-pos:" + String(projectPk || "");
   }
 
   function loadPositions(projectPk) {
@@ -58,54 +58,76 @@
     } catch (_) {}
   }
 
+  function roleIcon(agent) {
+    var rid = String(agent.primary_role_id || "").toLowerCase();
+    var caps = (agent.capabilities || []).join(" ").toLowerCase();
+    if (rid.indexOf("manager") >= 0 || !agent.reports_to) return "♛";
+    if (caps.indexOf("report") >= 0) return "☰";
+    if (
+      rid.indexOf("scan") >= 0 ||
+      rid.indexOf("network") >= 0 ||
+      caps.indexOf("recon") >= 0
+    ) {
+      return "◎";
+    }
+    if (rid.indexOf("osint") >= 0) return "◈";
+    if (caps.indexOf("exploit") >= 0 || rid.indexOf("code") >= 0) return "</>";
+    return "◉";
+  }
+
+  function flatten(agents, out) {
+    (agents || []).forEach(function (a) {
+      out.push(a);
+      flatten(a.subagents || [], out);
+    });
+    return out;
+  }
+
+  function subtreeWidth(agent) {
+    var kids = agent.subagents || [];
+    if (!kids.length) return NODE_W;
+    var w = 0;
+    kids.forEach(function (k, i) {
+      w += subtreeWidth(k);
+      if (i < kids.length - 1) w += GAP_X;
+    });
+    return Math.max(NODE_W, w);
+  }
+
+  function place(agent, x, y, positions, edges) {
+    var width = subtreeWidth(agent);
+    var cx = x + width / 2 - NODE_W / 2;
+    positions[agent.id] = {
+      x: cx,
+      y: y,
+      w: NODE_W,
+      h: NODE_H,
+      agent: agent,
+    };
+    var kids = agent.subagents || [];
+    if (!kids.length) return width;
+    var cursor = x;
+    kids.forEach(function (kid, i) {
+      var kw = subtreeWidth(kid);
+      place(kid, cursor, y + NODE_H + GAP_Y, positions, edges);
+      edges.push({ from: agent.id, to: kid.id });
+      cursor += kw + (i < kids.length - 1 ? GAP_X : 0);
+    });
+    return width;
+  }
+
   function layout(agents) {
     var positions = {};
     var edges = [];
     var x = PAD;
-    var maxY = PAD + NODE_H;
-
-    (agents || []).forEach(function (root, idx) {
-      var kids = root.subagents || [];
-      var stackH =
-        kids.length > 0
-          ? kids.length * (NODE_H + GAP_Y) - GAP_Y
-          : NODE_H;
-      var rootY = PAD + Math.max(0, (stackH - NODE_H) / 2);
-      positions[root.id] = {
-        x: x,
-        y: rootY,
-        w: NODE_W,
-        h: NODE_H,
-        agent: root,
-      };
-
-      var kidX = x + NODE_W + GAP_X;
-      var ky = PAD;
-      kids.forEach(function (kid) {
-        positions[kid.id] = {
-          x: kidX,
-          y: ky,
-          w: NODE_W,
-          h: NODE_H,
-          agent: kid,
-        };
-        edges.push({ from: root.id, to: kid.id });
-        ky += NODE_H + GAP_Y;
-      });
-
-      if (idx > 0) {
-        var prev = agents[idx - 1];
-        if (prev && prev.id) {
-          edges.push({ from: prev.id, to: root.id, sequential: true });
-        }
-      }
-
-      var blockW = kids.length ? NODE_W + GAP_X + NODE_W : NODE_W;
-      maxY = Math.max(maxY, PAD + stackH);
-      x += blockW + GAP_X;
+    var roots = agents || [];
+    roots.forEach(function (root, idx) {
+      var w = place(root, x, PAD, positions, edges);
+      x += w + (idx < roots.length - 1 ? GAP_X * 2 : 0);
     });
 
-    var maxX = x - GAP_X + PAD;
+    var maxX = NODE_W + PAD * 2;
+    var maxY = NODE_H + PAD * 2;
     Object.keys(positions).forEach(function (id) {
       var p = positions[id];
       maxX = Math.max(maxX, p.x + p.w + PAD);
@@ -136,75 +158,40 @@
     return { width: maxX, height: maxY };
   }
 
-  function bezier(x1, y1, x2, y2) {
-    var dx = Math.max(40, (x2 - x1) * 0.45);
-    return (
-      "M " +
-      x1 +
-      " " +
-      y1 +
-      " C " +
-      (x1 + dx) +
-      " " +
-      y1 +
-      ", " +
-      (x2 - dx) +
-      " " +
-      y2 +
-      ", " +
-      x2 +
-      " " +
-      y2
-    );
-  }
-
   function drawEdges(svg, positions, edges) {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
     edges.forEach(function (e) {
       var a = positions[e.from];
       var b = positions[e.to];
       if (!a || !b) return;
+      var x1 = a.x + a.w / 2;
+      var y1 = a.y + a.h;
+      var x2 = b.x + b.w / 2;
+      var y2 = b.y;
+      var mid = y1 + (y2 - y1) / 2;
       var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      var x1 = a.x + a.w;
-      var y1 = a.y + a.h / 2;
-      var x2 = b.x;
-      var y2 = b.y + b.h / 2;
-      if (e.sequential && Math.abs(b.x - a.x) < 8) {
-        x1 = a.x + a.w / 2;
-        y1 = a.y + a.h;
-        x2 = b.x + b.w / 2;
-        y2 = b.y;
-        path.setAttribute(
-          "d",
-          "M " +
-            x1 +
-            " " +
-            y1 +
-            " C " +
-            x1 +
-            " " +
-            (y1 + 28) +
-            ", " +
-            x2 +
-            " " +
-            (y2 - 28) +
-            ", " +
-            x2 +
-            " " +
-            y2
-        );
-      } else {
-        path.setAttribute("d", bezier(x1, y1, x2, y2));
-      }
-      path.setAttribute("class", "flow-edge" + (e.sequential ? " flow-edge-seq" : ""));
+      path.setAttribute(
+        "d",
+        "M " +
+          x1 +
+          " " +
+          y1 +
+          " C " +
+          x1 +
+          " " +
+          mid +
+          ", " +
+          x2 +
+          " " +
+          mid +
+          ", " +
+          x2 +
+          " " +
+          y2
+      );
+      path.setAttribute("class", "flow-edge");
       path.setAttribute("fill", "none");
       svg.appendChild(path);
-      var dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      dot.setAttribute("cx", String(x2));
-      dot.setAttribute("cy", String(y2));
-      dot.setAttribute("r", "3.5");
-      dot.setAttribute("class", "flow-edge-dot");
-      svg.appendChild(dot);
     });
   }
 
@@ -239,80 +226,67 @@
     var node = document.createElement("button");
     node.type = "button";
     node.className =
-      "flow-node" +
+      "flow-node org-agent-node" +
       (String(agent.id) === String(selectedId) ? " is-selected" : "") +
       (led === "active" ? " is-running" : "");
     node.dataset.agentId = String(agent.id);
     node.dataset.status = String(agent.status || "");
     node.dataset.led = led;
 
-    var head = document.createElement("div");
-    head.className = "flow-node-head";
+    var row = document.createElement("div");
+    row.className = "org-agent-row";
 
+    var iconWrap = document.createElement("div");
+    iconWrap.className = "org-agent-icon";
+    iconWrap.setAttribute("aria-hidden", "true");
+    var glyph = document.createElement("span");
+    glyph.className = "org-agent-glyph";
+    glyph.textContent = roleIcon(agent);
+    iconWrap.appendChild(glyph);
     var ledEl = document.createElement("span");
-    ledEl.className = "flow-node-led";
+    ledEl.className = "flow-node-led org-agent-led";
     ledEl.dataset.led = led;
     ledEl.title = agent.status || "pending";
-    ledEl.setAttribute("aria-hidden", "true");
-    head.appendChild(ledEl);
+    iconWrap.appendChild(ledEl);
+    row.appendChild(iconWrap);
 
-    var role = document.createElement("div");
-    role.className = "flow-node-role";
-    var roleId = agent.primary_role_id || (agent.role_ids && agent.role_ids[0]) || "";
-    role.textContent = roleId || agent.role || "ROOT";
-    if (agent.reports_to) {
-      role.title = "reports to " + agent.reports_to;
-    }
-    head.appendChild(role);
-    node.appendChild(head);
+    var text = document.createElement("div");
+    text.className = "org-agent-text";
 
     var title = document.createElement("div");
-    title.className = "flow-node-title";
-    title.textContent = agent.title || agent.id;
-    node.appendChild(title);
+    title.className = "flow-node-title org-agent-title";
+    title.textContent =
+      agent.role_label ||
+      agent.primary_role_id ||
+      agent.crew_role ||
+      agent.title ||
+      "Agent";
+    text.appendChild(title);
 
-    if (agent.reports_to) {
-      var reports = document.createElement("div");
-      reports.className = "flow-node-cmd";
-      reports.textContent = "→ " + agent.reports_to;
-      reports.title = "ROLE.yaml hierarchy.reports_to";
-      node.appendChild(reports);
-    }
+    var sub = document.createElement("div");
+    sub.className = "org-agent-sub";
+    sub.textContent =
+      agent.crew_role ||
+      agent.primary_role_id ||
+      (agent.role_ids && agent.role_ids[0]) ||
+      "role";
+    text.appendChild(sub);
 
-    var cmd = document.createElement("div");
-    cmd.className = "flow-node-cmd";
-    var snippet =
+    var live = document.createElement("div");
+    live.className = "org-agent-live";
+    live.textContent =
       shortCmd(agent.last_command) ||
-      shortCmd((agent.commands && agent.commands[0]) || "") ||
-      shortCmd(agent.operator_command) ||
-      shortCmd(agent.objective_description) ||
-      "—";
-    cmd.textContent = snippet;
-    cmd.title =
-      agent.operator_command ||
+      shortCmd(agent.objective_title) ||
+      String(agent.status || "pending");
+    live.title =
       agent.last_command ||
-      (agent.commands && agent.commands[0]) ||
+      agent.objective_title ||
+      agent.status ||
       "";
-    node.appendChild(cmd);
+    text.appendChild(live);
 
-    var foot = document.createElement("div");
-    foot.className = "flow-node-foot";
-    var calls = document.createElement("span");
-    calls.className = "meta";
-    var n = Number(agent.tool_calls || 0);
-    calls.textContent = "calls " + n;
-    foot.appendChild(calls);
-    foot.appendChild(statusPill(agent.status));
-    node.appendChild(foot);
-
-    var live = document.createElement("a");
-    live.className = "flow-node-live";
-    live.href = "/projects/" + projectPk + "/jobs/" + agent.id + "/";
-    live.textContent = "live";
-    live.addEventListener("click", function (ev) {
-      ev.stopPropagation();
-    });
-    node.appendChild(live);
+    row.appendChild(text);
+    node.appendChild(row);
 
     node.addEventListener("click", function (ev) {
       if (node.dataset.didDrag === "1") {
@@ -399,7 +373,7 @@
     lay.height = Math.max(lay.height, bounds.height);
 
     var canvas = document.createElement("div");
-    canvas.className = "flow-canvas";
+    canvas.className = "flow-canvas org-agent-canvas";
     canvas.style.width = lay.width + "px";
     canvas.style.height = lay.height + "px";
 
@@ -428,7 +402,6 @@
     });
 
     listEl.appendChild(canvas);
-    // Measure real node boxes (content can exceed NODE_H) so the card fits vertically.
     requestAnimationFrame(function () {
       resizeCanvas(canvas, svg, lay.positions);
       drawEdges(svg, lay.positions, lay.edges);
@@ -437,5 +410,11 @@
     drawEdges(svg, lay.positions, lay.edges);
   }
 
-  window.PeonAgentGraph = { render: render, layout: layout, ledKind: ledKind };
+  window.PeonAgentGraph = {
+    render: render,
+    layout: layout,
+    ledKind: ledKind,
+    flatten: flatten,
+    statusPill: statusPill,
+  };
 })();

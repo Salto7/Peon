@@ -1,18 +1,25 @@
 # network-scanner usage
 
 ## CLIs
-`nmap` is auto-provisioned from **`tools/catalog`** by the worker. See the Tools page
-if a binary is still missing after provision.
+`nmap` is auto-provisioned from **`tools/catalog`** by the worker.
 
-## Paths
-- Raw output → `workspace/`
-- Curated notes → `findings/network-scanner.md` (not `findings/report.md`)
+## Pack layout
+```
+roles/network-scanner/
+├── ROLE.yaml
+├── KNOWLEDGE.md
+├── assets/run.py      # optional thin entry (no scripts/)
+└── references/
+```
+
+## Output
+Use **XML only**: `-oX workspace/<host>-scan.xml`
+
+Leave the file as-is. The **analyzer** reads raw nmap XML for the report.
+Do not filter ports, do not write `findings_queue.jsonl`, do not use
+`-oN` / `-oG` / `-oA`.
 
 ## Rules
 - Match requested port scope — never `-p-` / `1-65535` unless explicitly asked
-- Obey RoE / `list_objectives`
-- `record_finding` for notable discoveries about probed subjects (with evidence) —
-  not skill/run completion status
-- Companion scanners: use a dedicated skill when one exists; ensure the CLI is in
-  **`tools/catalog`** so the worker can provision it
-- Reuse collected output for notes — do not re-scan just to fill text
+- One scan per host/objective
+- Reuse existing XML — do not re-scan just to regenerate output

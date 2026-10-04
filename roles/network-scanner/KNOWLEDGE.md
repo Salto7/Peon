@@ -1,21 +1,19 @@
 # Network Scanner
 
 ## Focus
-- Authorized host/port discovery with **nmap** (and light DNS helpers)
+- Authorized host/port discovery with **nmap**
 - Prefer `-sT --top-ports 100` unless the operator asks for more
 - Never use `-p-` / full 1–65535 unless explicitly requested
-
-## Pack assets
-- `references/USAGE.md` — scan scope rules and output paths
-- `scripts/run.py` — optional thin entry (prefer `provision_cli` + `run_cli`)
-- `assets/` — drop wordlists / custom helpers here; copy into `workspace/` to edit
 
 ## Workflow
 1. `roe_status` → confirm targets
 2. `assert_in_scope("<host>")` before each networked scan
-3. `provision_cli("nmap")` then `run_cli(...)`
-4. Write notes under `workspace/` / `findings/`; `record_finding` for notable open services
+3. `provision_cli("nmap")` then **one** `run_cli(...)` with **`-oX workspace/<host>-scan.xml`**
+4. Stop when the XML exists — do not re-scan
 
 ## Hard rules
 - In-scope hosts only; never invent targets
-- Do not write the final client report (that is **analyzer**)
+- **One scan per host/objective.** Always use `-oX` (XML only)
+- Leave the **raw** XML under `workspace/` — no filtering, no findings queue, no report
+- Do not call `record_finding` / `list_findings` (analyzer owns synthesis)
+- Do not dump full `.xml` into the tool stream

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -115,13 +116,13 @@ STATICFILES_DIRS = [BASE_DIR / "peon" / "static"]
 STATIC_ROOT = _DATA_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-_skills = Path(_env("SKILLS_DIR") or (BASE_DIR / "skills"))
-SKILLS_DIR = _skills if _skills.is_absolute() else (BASE_DIR / _skills).resolve()
-SKILLS_EXTERNAL_DIRS: list[str] = []
-
 _roles = Path(_env("ROLES_DIR") or (BASE_DIR / "roles"))
 ROLES_DIR = _roles if _roles.is_absolute() else (BASE_DIR / _roles).resolve()
 os.environ.setdefault("ROLES_DIR", str(ROLES_DIR))
+
+_helpers = Path(_env("HELPERS_DIR") or (BASE_DIR / "helpers"))
+HELPERS_DIR = _helpers if _helpers.is_absolute() else (BASE_DIR / _helpers).resolve()
+os.environ.setdefault("HELPERS_DIR", str(HELPERS_DIR))
 
 _tools_catalog = Path(_env("TOOLS_CATALOG_DIR") or (BASE_DIR / "tools" / "catalog"))
 TOOLS_CATALOG_DIR = (
@@ -142,7 +143,7 @@ if not _stream_path.is_absolute() or ".." in _stream_path.parts:
 STREAM_SOCKET_PATH = str(_stream_path)
 Path(STREAM_SOCKET_PATH).parent.mkdir(parents=True, exist_ok=True)
 
-# Host RPC bridge for sandboxed skills (skill_view / MCP). Same dir as stream.
+# Host RPC bridge for sandboxed helpers (MCP). Same dir as stream.
 _rpc_raw = _env("RPC_SOCKET_PATH") or str(Path(STREAM_SOCKET_PATH).parent / "rpc.sock")
 _rpc_path = Path(_rpc_raw)
 if not _rpc_path.is_absolute() or ".." in _rpc_path.parts:
@@ -153,7 +154,6 @@ Path(RPC_SOCKET_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 def _resolve_rpc_token() -> str:
     """Share one token across worker / rpc processes (env or sibling file)."""
-    import secrets
 
     raw = _env("ORCHESTRATOR_RPC_TOKEN") or _env("RPC_TOKEN")
     if raw:
@@ -223,6 +223,8 @@ LLM_PROXY_NETWORK = _env("LLM_PROXY_NETWORK", "peon_default") or "peon_default"
 LITELLM_MASTER_KEY = _env("LITELLM_MASTER_KEY", "sk-peon-litellm") or "sk-peon-litellm"
 # OpenCode model id (provider/model) used inside the Learn lab.
 OPENCODE_MODEL = _env("OPENCODE_MODEL", "peon/default") or "peon/default"
+# Learn Toolsmith binds to this ROLE.yaml pack (prompts + engine live on the role).
+LEARN_AUTHORING_ROLE = (_env("LEARN_AUTHORING_ROLE", "code-writer") or "code-writer").strip()
 
 # Agent runtime governors (peon passes these into orchestrator).
 # Overridable live via Peon Settings UI (RuntimeSettings); .env values are defaults.

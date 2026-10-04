@@ -17,6 +17,37 @@ def register_tool(name: str, factory: ToolFactory) -> ToolFactory:
     return factory
 
 
+def crew_tool(name: str, description: str) -> Callable[[Callable[..., str]], Callable[..., str]]:
+    """Register a function as a named CrewAI tool factory."""
+
+    def deco(fn: Callable[..., str]) -> Callable[..., str]:
+        if description and not (fn.__doc__ or "").strip():
+            fn.__doc__ = description
+
+        def factory() -> Any:
+            try:
+                # deferred: optional heavy crewai
+                from crewai.tools import tool as crewai_tool
+            except ImportError as exc:  # pragma: no cover
+                raise RuntimeError(
+                    "crewai is required for AGENT_MODULE=crewai "
+                    "(pip install 'crewai>=1.0.0')"
+                ) from exc
+
+            wrapped = crewai_tool(name)(fn)
+            if description and hasattr(wrapped, "description"):
+                try:
+                    wrapped.description = description
+                except Exception:
+                    pass
+            return wrapped
+
+        register_tool(name, factory)
+        return fn
+
+    return deco
+
+
 def known_tool_names() -> list[str]:
     _ensure()
     return sorted(_FACTORIES)
@@ -41,7 +72,5 @@ def build_tools(names: tuple[str, ...] | list[str]) -> list[Any]:
 def _ensure() -> None:
     if _FACTORIES:
         return
-    # Side-effect registration
-    from orchestrator.crew.tools import findings as _findings  # noqa: F401
-    from orchestrator.crew.tools import roe as _roe  # noqa: F401
-    from orchestrator.crew.tools import sandbox as _sandbox  # noqa: F401
+    # circular: adapters → crew_tool from this module
+    from orchestrator.crew.tools import adapters as _adapters  # noqa: F401

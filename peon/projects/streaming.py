@@ -6,18 +6,41 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from peon.projects.models import Job, Project, StreamMessage, StreamMessageType
+from django.conf import settings
+
+from orchestrator.rpc import RpcServer
+from peon.projects.models import Job, JobStatus, Project, StreamMessage, StreamMessageType
 
 logger = logging.getLogger(__name__)
 
 _VALID_TYPES = frozenset(StreamMessageType.values)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_LIVE = frozenset({JobStatus.RUNNING, JobStatus.PENDING, JobStatus.PAUSED})
+
+
+def anchor_job(project: Project, *, prefer_live: bool = True) -> Job | None:
+    """Pick a job to hang stream/audit lines on."""
+    roots = project.jobs.filter(parent__isnull=True)
+    if prefer_live:
+        live = roots.filter(status__in=_LIVE).order_by("-updated_at").first()
+        if live is not None:
+            return live
+    return (
+        roots.order_by("-updated_at").first()
+        or project.jobs.order_by("-updated_at").first()
+    )
+
+
+def has_live_agents(project: Project) -> bool:
+    return project.jobs.filter(status__in=_LIVE).exists()
 
 
 def scrub_stream_noise(content: object) -> str:
@@ -120,19 +143,56 @@ def stream_meta(
     role: str = "assistant",
     tag: str = "",
     event: str = "",
+    payload: dict[str, Any] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
-    """Standard console/feed metadata blob for ``record_stream_message``."""
+    """Standard console/feed metadata blob for ``record_stream_message``.
+
+    Prefer ``event`` + ``payload`` for machine-readable structure; keep
+    free-text in ``content``. Consumers should use
+    ``orchestrator.utils.stream_events`` getters.
+    """
     meta: dict[str, Any] = {"role": role}
     if tag:
         meta["tag"] = tag
     if event:
-        meta["event"] = event
+        meta["event"] = str(event).strip()
+    if payload is not None:
+        meta["payload"] = dict(payload)
     pid = str(getattr(project, "id", project) or "").strip()
     if pid:
         meta["project_id"] = pid
     meta.update(extra)
     return meta
+
+
+def audit_project_stream(
+    project: Project | str | None,
+    text: str,
+    *,
+    tag: str = "",
+    event: str = "",
+    role: str = "assistant",
+    message_type: str = "log",
+    job: Job | None = None,
+    prefer_live: bool = True,
+    swallow_errors: bool = True,
+) -> Job | None:
+    """Anchor a project job (if needed) and emit one audited stream line."""
+    if not (text or "").strip():
+        return job
+    if job is None:
+        job = anchor_job(project, prefer_live=prefer_live) if project is not None else None
+    if job is None:
+        return None
+    emit_job_stream(
+        job,
+        message_type,
+        text,
+        stream_meta(project, role=role, tag=tag, event=event),
+        swallow_errors=swallow_errors,
+    )
+    return job
 
 
 def project_message_dicts(
@@ -344,7 +404,6 @@ def start_stream_server(
     on_message: Callable[[dict], None] | None = None,
 ) -> StreamSocketServer:
     """Build and start the Unix NDJSON stream listener (settings path by default)."""
-    from django.conf import settings
 
     sock = path or getattr(settings, "STREAM_SOCKET_PATH", "/tmp/peon/stream.sock")
     server = StreamSocketServer(sock, on_message or handle_incoming_message)
@@ -354,8 +413,6 @@ def start_stream_server(
 
 def run_until_signal(*, on_stop: Callable[[], None] | None = None) -> None:
     """Block until SIGINT/SIGTERM, then optionally call ``on_stop``."""
-    import signal
-    import time
 
     stop = False
 
@@ -371,4 +428,16 @@ def run_until_signal(*, on_stop: Callable[[], None] | None = None) -> None:
     finally:
         if on_stop is not None:
             on_stop()
+
+
+def start_peon_rpc_server():
+    """Listen on ``RPC_SOCKET_PATH`` with the shared ``RPC_TOKEN``."""
+
+    path = str(getattr(settings, "RPC_SOCKET_PATH", "") or "").strip()
+    if not path:
+        raise RuntimeError("RPC_SOCKET_PATH is not configured")
+    token = str(getattr(settings, "RPC_TOKEN", "") or "").strip() or None
+    server = RpcServer.start(path, token=token)
+    logger.info("RPC Unix socket listening on %s", path)
+    return server
 

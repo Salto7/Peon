@@ -1,4 +1,4 @@
-/* Project ops console: agent graph, context, skills cards, live feed. */
+/* Project ops console: agent graph, context, roles cards, live feed. */
 (function () {
   function el(id) {
     return document.getElementById(id);
@@ -52,10 +52,28 @@
     return pill;
   }
 
+  function streamPayload(meta) {
+    meta = meta || {};
+    var payload = meta.payload;
+    return payload && typeof payload === "object" ? payload : {};
+  }
+
+  function streamEvent(meta) {
+    return String((meta && meta.event) || "").trim().toLowerCase();
+  }
+
+  function streamCommandText(msg) {
+    var meta = (msg && msg.metadata) || {};
+    var payload = streamPayload(meta);
+    var cmd = String(payload.command || "").trim();
+    if (cmd) return cmd;
+    return String((msg && msg.content) || "").trim();
+  }
+
   function badgeForType(typ, meta) {
     meta = meta || {};
     var tag = String(meta.tag || meta.feed_tag || "").toLowerCase();
-    var event = String(meta.event || "").toLowerCase();
+    var event = streamEvent(meta);
     var role = String(meta.role || meta.chat_role || "").toLowerCase();
     if (role === "user" || tag === "you") return "YOU";
     if (tag === "need" || event === "need_input") return "NEED";
@@ -71,10 +89,18 @@
     if (tag === "find" || tag === "finding" || event.indexOf("finding") >= 0)
       return "FIND";
     if (tag === "net" || tag === "host" || event.indexOf("host") >= 0) return "NET";
-    if (tag === "shell" || tag === "terminal" || event === "terminal") return "SHELL";
+    if (
+      tag === "shell" ||
+      tag === "terminal" ||
+      event === "terminal" ||
+      event === "run_cli" ||
+      event === "run_periodic"
+    )
+      return "SHELL";
     if (tag === "loot") return "LOOT";
     var t = String(typ || "log").toLowerCase();
-    if (t === "tool") return "TOOL";
+    if (t === "tool" || event === "provision_cli")
+      return "TOOL";
     if (t === "error" || t === "stderr") return "ERR";
     if (t === "status") return "STATUS";
     if (t === "result") return "RESULT";
@@ -273,40 +299,68 @@
     return ta ? (ta.value || "").trim() : "";
   }
 
+  /** Populated from jobs.json ``command_hints`` (catalog + role allowlists). */
+  var commandHints = { cli: {}, capabilities: {} };
+
+  function setCommandHints(hints) {
+    hints = hints || {};
+    var cli = {};
+    (hints.cli || []).forEach(function (n) {
+      var key = String(n || "")
+        .trim()
+        .toLowerCase();
+      if (key) cli[key] = true;
+    });
+    var caps = {};
+    (hints.capabilities || []).forEach(function (n) {
+      var key = String(n || "")
+        .trim()
+        .toLowerCase();
+      if (key) caps[key] = true;
+    });
+    commandHints = { cli: cli, capabilities: caps };
+  }
+
   function looksLikeAgentCommand(text) {
     const raw = String(text || "").trim();
     if (!raw) return false;
     const low = raw.toLowerCase();
-    if (
-      low.indexOf("execute project") === 0 ||
-      low.indexOf("operator ") === 0 ||
-      low.indexOf("obj-") === 0
-    ) {
-      return false;
+    if (raw.indexOf("\n") >= 0 && raw.length > 120) {
+      var hasCap = false;
+      Object.keys(commandHints.capabilities).forEach(function (name) {
+        if (low.indexOf(name + "(") >= 0) hasCap = true;
+      });
+      if (!hasCap && !/command\s*=/.test(low)) return false;
     }
-    if (raw.indexOf("\n") >= 0 && low.indexOf("acceptance criteria") >= 0) {
-      return false;
-    }
-    if (low.indexOf("run_skill_script") >= 0 || low.indexOf("sandbox_setup") >= 0) {
-      return true;
-    }
+    var capHit = false;
+    Object.keys(commandHints.capabilities).forEach(function (name) {
+      if (low.indexOf(name + "(") >= 0 || low.indexOf(name + " ") === 0) {
+        capHit = true;
+      }
+    });
+    if (capHit) return true;
     const first = (low.split(/\s+/)[0] || "").replace(/[^a-z0-9._/-]/g, "");
-    return (
-      first === "nmap" ||
-      first === "httpx" ||
-      first === "curl" ||
-      first === "dig" ||
-      first.indexOf("/") >= 0 ||
-      /\.py$/.test(first)
-    );
+    if (!first) return false;
+    if (commandHints.cli[first]) return true;
+    return first.indexOf("/") >= 0 || /\.py$/.test(first);
   }
 
-  function unwrapSkillCommand(text) {
+  function unwrapAgentCommand(text) {
     const raw = String(text || "").trim();
     const m = raw.match(
-      /run_skill_script\s*\([^)]*command\s*=\s*(['"])([\s\S]*?)\1/i
+      /([A-Za-z_][\w]*)\s*\([^)]*command\s*=\s*(['"])([\s\S]*?)\2/i
     );
-    if (m && m[2]) return String(m[2]).trim();
+    if (m && m[3]) {
+      var name = String(m[1] || "")
+        .trim()
+        .toLowerCase();
+      if (
+        !Object.keys(commandHints.capabilities).length ||
+        commandHints.capabilities[name]
+      ) {
+        return String(m[3]).trim();
+      }
+    }
     return raw;
   }
 
@@ -318,7 +372,7 @@
       .concat(agent.commands || []);
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i];
-      if (looksLikeAgentCommand(c)) return unwrapSkillCommand(c);
+      if (looksLikeAgentCommand(c)) return unwrapAgentCommand(c);
     }
     return "";
   }
@@ -354,9 +408,9 @@
         '<div class="agent-command-dialog-card">' +
         '<h3 id="agent-command-dialog-title">Edit agent command</h3>' +
         '<p class="meta agent-command-dialog-sub"></p>' +
-        '<label class="meta" for="agent-command-dialog-input">Emitted command (e.g. nmap …)</label>' +
+        '<label class="meta" for="agent-command-dialog-input">Emitted command (catalog CLI or tool call)</label>' +
         '<textarea id="agent-command-dialog-input" rows="5" ' +
-        'placeholder="e.g. nmap -sT --top-ports 100 8.8.8.8"></textarea>' +
+        'placeholder="e.g. &lt;catalog-binary&gt; …flags… &lt;target&gt;"></textarea>' +
         '<div class="agent-command-dialog-actions">' +
         '<button type="button" class="secondary" data-act="cancel">Cancel</button>' +
         '<button type="button" class="secondary" data-act="apply">Apply to context</button>' +
@@ -474,18 +528,26 @@
     const head = document.createElement("div");
     head.className = "context-head";
     const name = document.createElement("strong");
-    name.textContent = agent.title || agent.id;
+    name.textContent =
+      agent.role_label || agent.primary_role_id || agent.title || agent.id;
     head.appendChild(name);
     head.appendChild(statusPill(agent.status));
     const role = document.createElement("span");
     role.className = "meta context-role";
-    role.textContent = agent.role || "ROOT";
+    role.textContent = agent.crew_role || agent.primary_role_id || agent.role || "agent";
     head.appendChild(role);
     body.appendChild(head);
 
+    if (agent.role_goal) {
+      const goal = document.createElement("p");
+      goal.className = "meta";
+      goal.textContent = agent.role_goal;
+      body.appendChild(goal);
+    }
+
     if (agent.role_ids && agent.role_ids.length) {
       const roles = document.createElement("div");
-      roles.className = "chip-row context-skills";
+      roles.className = "chip-row context-roles";
       agent.role_ids.forEach(function (s) {
         const chip = document.createElement("span");
         chip.className = "chip";
@@ -501,7 +563,7 @@
       const label = document.createElement("div");
       label.className = "meta";
       label.textContent =
-        "OBJ-" +
+        "Objective OBJ-" +
         (agent.objective_seq != null ? agent.objective_seq : "?") +
         " · " +
         (agent.objective_phase || "");
@@ -525,6 +587,30 @@
       body.appendChild(obj);
     }
 
+    const tasks = document.createElement("div");
+    tasks.className = "context-objective";
+    const tasksLabel = document.createElement("div");
+    tasksLabel.className = "meta";
+    tasksLabel.textContent = "Tasks / recent tools";
+    tasks.appendChild(tasksLabel);
+    const cmds = (agent.commands || []).slice(0, 4);
+    if (cmds.length) {
+      const list = document.createElement("ul");
+      list.className = "context-task-list";
+      cmds.forEach(function (c) {
+        const li = document.createElement("li");
+        li.textContent = c;
+        list.appendChild(li);
+      });
+      tasks.appendChild(list);
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "meta";
+      empty.textContent = "No tool activity yet.";
+      tasks.appendChild(empty);
+    }
+    body.appendChild(tasks);
+
     const editBlock = document.createElement("div");
     editBlock.className = "context-command-edit";
     const editLabel = document.createElement("label");
@@ -536,7 +622,7 @@
     const ta = document.createElement("textarea");
     ta.id = "agent-command-input";
     ta.rows = 3;
-    ta.placeholder = "e.g. nmap -sT --top-ports 100 8.8.8.8";
+    ta.placeholder = "e.g. <catalog-binary> …flags… <target>";
     ta.value = agentCommandSeed(agent);
     editBlock.appendChild(ta);
     body.appendChild(editBlock);
@@ -545,13 +631,14 @@
     actionBlock.className = "context-current";
     const actionLabel = document.createElement("div");
     actionLabel.className = "meta context-current-label";
-    actionLabel.textContent = "CURRENT ACTION";
+    actionLabel.textContent = "LIVE STATUS";
     actionBlock.appendChild(actionLabel);
     const actionText = document.createElement("pre");
     actionText.className = "context-action-text";
     const latest = (latestByJob && latestByJob[agent.id]) || "";
     actionText.textContent =
       latest ||
+      agent.last_command ||
       agent.objective_description ||
       agent.error ||
       "(waiting for stream…)";
@@ -822,12 +909,12 @@
   }
 
   function updateRoles(roles) {
-    const row = el("roles-used") || el("skills-used");
+    const row = el("roles-used") || el("roles-used");
     if (!row) return;
     row.replaceChildren();
     if (!roles || !roles.length) {
       const empty = document.createElement("span");
-      empty.className = "meta empty-skills";
+      empty.className = "meta empty-roles";
       empty.textContent = "None yet";
       row.appendChild(empty);
       return;
@@ -837,28 +924,28 @@
       const desc = typeof s === "string" ? "" : s.description || "";
       const tags = typeof s === "string" ? [] : s.tags || [];
       const chip = document.createElement("span");
-      chip.className = "skills-used-chip";
+      chip.className = "roles-used-chip";
       chip.tabIndex = 0;
       const n = document.createElement("span");
-      n.className = "skills-used-name";
+      n.className = "roles-used-name";
       n.textContent = name;
       chip.appendChild(n);
       const tip = document.createElement("span");
-      tip.className = "skills-used-tip";
+      tip.className = "roles-used-tip";
       tip.setAttribute("role", "tooltip");
       const tipName = document.createElement("strong");
-      tipName.className = "skills-used-tip-name";
+      tipName.className = "roles-used-tip-name";
       tipName.textContent = name;
       tip.appendChild(tipName);
       if (desc) {
         const d = document.createElement("span");
-        d.className = "skills-used-tip-desc";
+        d.className = "roles-used-tip-desc";
         d.textContent = desc;
         tip.appendChild(d);
       }
       if (tags.length) {
         const tg = document.createElement("span");
-        tg.className = "skills-used-tip-tags";
+        tg.className = "roles-used-tip-tags";
         tags.forEach(function (t) {
           const c = document.createElement("span");
           c.className = "chip";
@@ -1400,7 +1487,7 @@
             ) {
               flattenAgents(agentsCache).forEach(function (a) {
                 if (String(a.id) === String(m.job_id)) {
-                  var text = String(m.content || "").trim();
+                  var text = streamCommandText(m);
                   if (text) {
                     a.last_command = text;
                     a.commands = [text].concat(a.commands || []).slice(0, 4);
@@ -1437,10 +1524,11 @@
           });
           if (!res.ok) return;
           const data = await res.json();
+          if (data.command_hints) setCommandHints(data.command_hints);
           const project = data.project || {};
           const agents = data.agents || [];
           const objectives = data.objectives || [];
-          const roles = data.roles_used || data.skills_used || [];
+          const roles = data.roles_used || [];
           const status = project.status || "";
           if (lastProjectStatus && lastProjectStatus !== status) {
             if (

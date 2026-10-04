@@ -6,6 +6,7 @@ and any later backend stay in their own packages.
 
 from __future__ import annotations
 
+import shlex
 import threading
 from abc import ABC, abstractmethod
 from contextvars import ContextVar, Token
@@ -50,7 +51,8 @@ class RuntimeSpec:
     image: str = ""
     role: str = "project"  # project | shared | learn-lab
     workspace_host: str = ""
-    skills_host: str = ""
+    roles_host: str = ""
+    helpers_host: str = ""
     tools_host: str = ""
     socket_dir_host: str = ""
     socket_volume: str = ""
@@ -100,8 +102,6 @@ class RuntimeSession(ABC):
 
     def which(self, binary: str) -> bool:
         """True when ``command -v`` finds ``binary`` in the bound environment."""
-        import shlex
-
         if not binary:
             return False
         return self.exec(

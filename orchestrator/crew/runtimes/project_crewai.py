@@ -8,12 +8,13 @@ from typing import Any
 from orchestrator.agent.config import AgentRunConfig
 from orchestrator.agent.job import JobScope, bind_job
 from orchestrator.crew.flows.engagement import build_engagement_crew
-from orchestrator.crew.roles.hierarchy import manager_role
+from orchestrator.crew.roles.registry import manager_role
 from orchestrator.crew.runtime_base import (
     CrewRunRequest,
     CrewRunResult,
     CrewRuntimeBase,
 )
+from orchestrator.utils.stream_events import envelope
 
 
 class ProjectCrewRuntime(CrewRuntimeBase):
@@ -70,11 +71,10 @@ class ProjectCrewRuntime(CrewRuntimeBase):
         scope.bridge.emit(
             "status",
             f"project crew {action} flow={flow_id[:8]}",
-            metadata={
-                "event": "crew_project_start",
-                "flow_id": flow_id,
-                "action": action,
-            },
+            metadata=envelope(
+                "crew_project_start",
+                {"flow_id": flow_id, "action": action},
+            ),
         )
 
         with bind_job(scope, cfg):
@@ -93,7 +93,7 @@ class ProjectCrewRuntime(CrewRuntimeBase):
         scope.bridge.emit(
             "status",
             f"project crew done flow={flow_id[:8]}",
-            metadata={"event": "crew_project_done", "flow_id": flow_id},
+            metadata=envelope("crew_project_done", {"flow_id": flow_id}),
         )
         return CrewRunResult(
             ok=True,

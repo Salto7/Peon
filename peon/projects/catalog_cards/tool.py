@@ -30,7 +30,7 @@ class ToolCards(CatalogCardsBase):
         tier: str = "",
         binary: str = "",
         binaries: list | None = None,
-        skills: list | None = None,
+        roles: list | None = None,
         tags: list | None = None,
         install: list | None = None,
         desc_limit: int | None = None,
@@ -59,7 +59,7 @@ class ToolCards(CatalogCardsBase):
             "tier": cls.text(tier),
             "binary": cls.text(binary),
             "binaries": cls.labels(binaries),
-            "skills": cls.labels(skills),
+            "roles": cls.labels(roles),
             "install_types": [
                 str(s.get("type") or ("custom" if s.get("command") else "")).strip()
                 for s in steps
@@ -77,7 +77,7 @@ class ToolCards(CatalogCardsBase):
             tier=tool.tier or "",
             binary=tool.binary or "",
             binaries=list(tool.binaries or []),
-            skills=list(tool.skills or []),
+            roles=list(tool.roles or []),
             tags=list(tool.tags or []),
             install=list(tool.install or []),
         )

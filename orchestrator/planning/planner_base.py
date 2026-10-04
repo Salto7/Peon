@@ -9,7 +9,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from orchestrator.utils.strings import plain_text
-from orchestrator.utils.workspace import plans_dir, provision_job_workspace
+from orchestrator.utils.paths import plans_dir, provision_job_workspace
 
 
 class PlannerBase(ABC):

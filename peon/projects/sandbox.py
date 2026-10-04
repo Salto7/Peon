@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +16,32 @@ from django.conf import settings
 from agent_runtime.api import Runtime, RuntimeSpec, Session, SessionInfo
 from agent_runtime.registry import get as get_runtime
 from agent_runtime.registry import register_builtin
+from orchestrator.utils.job_env import JobEnv
 from orchestrator.utils.service import SharedServiceBase
-from peon.projects.models import SandboxRuntime
-from peon.projects.runtime_bind import bind_runtime_session, runtime_state_dir
+from peon.projects.models import Project, SandboxRuntime
 
 logger = logging.getLogger(__name__)
+
+
+def runtime_state_dir() -> Path:
+    """Shared Docker/OpenShell state dir (sibling of project workspaces)."""
+    root = Path(
+        getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data")
+    ).resolve()
+    return root.parent / "runtime"
+
+
+def bind_runtime_session(session: Any, *, default_workdir: str = "/workspace") -> None:
+    """Set workdir env, JobEnv lookup, and ``Session.bind``."""
+
+    work = (session.info.workdir or default_workdir).strip() or default_workdir
+    os.environ["ORCHESTRATOR_SANDBOX_WORKDIR"] = work
+    if JobEnv.current():
+        JobEnv.bind({**JobEnv.current(), "ORCHESTRATOR_SANDBOX_WORKDIR": work})
+    else:
+        JobEnv.bind({"ORCHESTRATOR_SANDBOX_WORKDIR": work})
+    session.set_env_lookup(JobEnv.get)
+    Session.bind(session)
 
 
 def runtime_id_for(project_id: str) -> str:
@@ -27,8 +49,6 @@ def runtime_id_for(project_id: str) -> str:
     if not pid:
         return SandboxRuntime.SANDBOX
     try:
-        from peon.projects.models import Project
-
         value = (
             Project.objects.filter(pk=pid)
             .values_list("sandbox_runtime", flat=True)
@@ -89,7 +109,8 @@ class ProjectSandbox(SharedServiceBase):
         project_id: str,
         *,
         workspace: Path | None = None,
-        skills_dir: Path | None = None,
+        roles_dir: Path | None = None,
+        helpers_dir: Path | None = None,
         tools_dir: Path | None = None,
     ) -> SessionInfo:
         self = cls.shared()
@@ -99,7 +120,8 @@ class ProjectSandbox(SharedServiceBase):
             pid,
             runtime_id=runtime.id,
             workspace=workspace,
-            skills_dir=skills_dir,
+            roles_dir=roles_dir,
+            helpers_dir=helpers_dir,
             tools_dir=tools_dir,
         )
         session = runtime.provision(spec)
@@ -168,12 +190,13 @@ class ProjectSandbox(SharedServiceBase):
         *,
         runtime_id: str,
         workspace: Path | None,
-        skills_dir: Path | None,
+        roles_dir: Path | None,
+        helpers_dir: Path | None,
         tools_dir: Path | None,
     ) -> RuntimeSpec:
         ws = Path(workspace or "/tmp").resolve()
         ws.mkdir(parents=True, exist_ok=True)
-        skills, tools = self._skills_tools(skills_dir, tools_dir)
+        roles, helpers, tools = self._mount_paths(roles_dir, helpers_dir, tools_dir)
         shared = self.uses_shared(project_id) and runtime_id == SandboxRuntime.SANDBOX
         if shared:
             root = Path(getattr(settings, "PROJECT_WORKSPACES_DIR", ws.parent)).resolve()
@@ -205,7 +228,8 @@ class ProjectSandbox(SharedServiceBase):
             image=self.image_for(runtime_id),
             role=role,
             workspace_host=str(mount),
-            skills_host=str(skills),
+            roles_host=str(roles),
+            helpers_host=str(helpers),
             tools_host=str(tools),
             socket_dir_host="" if volume else (str(Path(sock).parent) if sock else ""),
             socket_volume=volume,
@@ -214,11 +238,19 @@ class ProjectSandbox(SharedServiceBase):
             state_dir=str(runtime_state_dir()),
         )
 
-    def _skills_tools(
-        self, skills_dir: Path | None, tools_dir: Path | None
-    ) -> tuple[Path, Path]:
-        skills = Path(skills_dir or getattr(settings, "SKILLS_DIR", "skills")).resolve()
+    def _mount_paths(
+        self,
+        roles_dir: Path | None,
+        helpers_dir: Path | None,
+        tools_dir: Path | None,
+    ) -> tuple[Path, Path, Path]:
+        roles = Path(
+            roles_dir or getattr(settings, "ROLES_DIR", "roles")
+        ).resolve()
+        helpers = Path(
+            helpers_dir or getattr(settings, "HELPERS_DIR", "helpers")
+        ).resolve()
         tools = Path(
             tools_dir or getattr(settings, "TOOLS_CATALOG_DIR", "tools/catalog")
         ).resolve()
-        return skills, tools
+        return roles, helpers, tools

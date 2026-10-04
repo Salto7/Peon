@@ -10,5 +10,5 @@ install:
     packages: [sqlmap]
 verify:
   - command: "sqlmap --version"
-skills: []
+roles: []
 tags: [web, sqli]

@@ -26,7 +26,7 @@ class CustomInstallStep(InstallStepBase, step_type="custom"):
             command: dnsx.sh
 
     ``command`` is either an inline shell line, or a relative path to the single
-    allowed ``{tool_id}.sh`` beside ``{tool_id}.yaml`` (skill-style relative path).
+    allowed ``{tool_id}.sh`` beside ``{tool_id}.yaml`` (catalog-relative path).
     """
 
     def __init__(self, raw: dict[str, Any]) -> None:
@@ -39,6 +39,7 @@ class CustomInstallStep(InstallStepBase, step_type="custom"):
     def apply(self, *, binary: str = "", tool_id: str = "") -> tuple[bool, str]:
         del binary
         tid = (tool_id or "").strip()
+        # circular: catalog → install_steps.custom
         from orchestrator.tools.catalog.catalog import ToolCatalog
 
         catalog_dir = ToolCatalog.shared().catalog_dir()

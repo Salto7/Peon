@@ -1,4 +1,3 @@
 # project-manager assets
 
-Custom files for this role (templates, wordlists, helpers).
-Copy into `workspace/` when you need to edit for an engagement.
+Optional templates/helpers. Initial dispatch is control-plane (no LLM).

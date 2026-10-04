@@ -48,7 +48,7 @@ class JobEnv:
     @classmethod
     @contextmanager
     def overlay(cls, updates: dict[str, str]) -> Iterator[None]:
-        """Temporarily merge keys for the current context (skill name/command)."""
+        """Temporarily merge keys for the current context (role id/command)."""
         merged = dict(cls.current())
         for k, v in (updates or {}).items():
             if v is None or str(v) == "":

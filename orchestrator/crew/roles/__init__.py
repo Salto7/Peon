@@ -1,14 +1,16 @@
 """Role catalog: ROLE.yaml → RoleSpec → CrewAI Agent factory."""
 
-from orchestrator.crew.roles.factory import build_crew_agent
-from orchestrator.crew.roles.hierarchy import (
+from orchestrator.crew.roles.model import RoleSpec, build_crew_agent
+from orchestrator.crew.roles.registry import (
+    RoleRegistry,
     analyzer_role,
     engagement_bookends,
+    engagement_end_role,
+    engagement_start_role,
+    load_role_file,
     manager_role,
     specialists_for,
 )
-from orchestrator.crew.roles.model import RoleSpec
-from orchestrator.crew.roles.registry import RoleRegistry
 
 __all__ = [
     "RoleRegistry",
@@ -16,6 +18,9 @@ __all__ = [
     "analyzer_role",
     "build_crew_agent",
     "engagement_bookends",
+    "engagement_end_role",
+    "engagement_start_role",
+    "load_role_file",
     "manager_role",
     "specialists_for",
 ]

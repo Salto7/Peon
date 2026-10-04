@@ -1,4 +1,4 @@
-/* Learn page — Tool / Skill switch, edit, save, lab test */
+/* Learn page — Tool / Role switch, edit, save, lab test */
 (function () {
   var app = document.getElementById("learn-app");
   if (!app) return;
@@ -111,7 +111,7 @@
   }
 
   function applyMode(next) {
-    mode = next === "skill" ? "skill" : "tool";
+    mode = next === "role" ? "role" : "tool";
     app.querySelectorAll(".learn-mode-btn").forEach(function (btn) {
       var on = btn.getAttribute("data-mode") === mode;
       btn.classList.toggle("is-active", on);
@@ -128,13 +128,13 @@
       }
       el.hidden = false;
     });
-    app.querySelectorAll(".learn-skill-only").forEach(function (el) {
-      if (mode !== "skill") {
+    app.querySelectorAll(".learn-role-only").forEach(function (el) {
+      if (mode !== "role") {
         el.hidden = true;
         return;
       }
-      if (el.id === "skill-result") {
-        el.hidden = !((document.getElementById("skill-md") || {}).value || "").trim();
+      if (el.id === "role-result") {
+        el.hidden = !((document.getElementById("role-yaml") || {}).value || "").trim();
         return;
       }
       el.hidden = false;
@@ -143,11 +143,11 @@
     if (prompt) {
       prompt.placeholder =
         mode === "tool"
-          ? "e.g. Add ProjectDiscovery nuclei for authorized vulnerability scanning"
-          : "e.g. Skill that runs httpx against in-scope URLs and records findings";
+          ? "e.g. Add a catalog CLI for authorized scanning against in-scope targets"
+          : "e.g. Role that runs a catalog CLI against in-scope targets and records findings";
     }
     var gen = document.getElementById("learn-generate-btn");
-    if (gen) gen.textContent = mode === "tool" ? "Suggest tool" : "Draft skill";
+    if (gen) gen.textContent = mode === "tool" ? "Suggest tool" : "Draft role";
   }
 
   function updateLabUi(lab) {
@@ -217,9 +217,9 @@
     if (notes) notes.textContent = data.notes || "";
   }
 
-  function collectSkillFiles() {
+  function collectRoleFiles() {
     var files = {};
-    var root = document.getElementById("skill-files");
+    var root = document.getElementById("role-files");
     if (!root) return files;
     root.querySelectorAll("textarea[data-rel]").forEach(function (ta) {
       var rel = ta.getAttribute("data-rel");
@@ -228,15 +228,15 @@
     return files;
   }
 
-  function renderSkillFiles(map) {
-    var root = document.getElementById("skill-files");
+  function renderRoleFiles(map) {
+    var root = document.getElementById("role-files");
     if (!root) return;
     root.replaceChildren();
     Object.keys(map || {}).forEach(function (rel) {
       var label = document.createElement("label");
       label.className = "meta";
       label.textContent = rel;
-      label.setAttribute("for", "skill-file-" + rel.replace(/[^\w.-]+/g, "-"));
+      label.setAttribute("for", "role-file-" + rel.replace(/[^\w.-]+/g, "-"));
       var ta = document.createElement("textarea");
       ta.id = label.getAttribute("for");
       ta.className = "learn-edit";
@@ -249,16 +249,16 @@
     });
   }
 
-  function fillSkill(data) {
-    var box = document.getElementById("skill-result");
-    var name = document.getElementById("skill-name");
-    var lint = document.getElementById("skill-lint");
-    var md = document.getElementById("skill-md");
-    var notes = document.getElementById("skill-notes");
+  function fillRole(data) {
+    var box = document.getElementById("role-result");
+    var name = document.getElementById("role-name");
+    var lint = document.getElementById("role-lint");
+    var md = document.getElementById("role-yaml");
+    var notes = document.getElementById("role-notes");
     if (box) box.hidden = false;
     if (name) name.value = data.name || "";
-    if (md) md.value = data.skill_md || "";
-    renderSkillFiles(data.files || {});
+    if (md) md.value = data.role_yaml || data.role_yaml || "";
+    renderRoleFiles(data.files || {});
     if (notes) notes.textContent = data.notes || "";
     showLint(lint, data.lint || {});
   }
@@ -272,7 +272,7 @@
     if (L.compatible) {
       var warns = (L.warnings || [])
         .map(function (e) {
-          return e.message || e.code || JSON.stringify(e);
+          return typeof e === "string" ? e : (e.message || e.code || JSON.stringify(e));
         })
         .filter(Boolean);
       el.textContent =
@@ -282,7 +282,7 @@
         "Lint: incompatible — " +
         ((L.errors || [])
           .map(function (e) {
-            return e.message || e.code || JSON.stringify(e);
+            return typeof e === "string" ? e : (e.message || e.code || JSON.stringify(e));
           })
           .join("; ") || "errors");
     }
@@ -303,7 +303,7 @@
       ev.preventDefault();
       if (app.getAttribute("data-authoring-ready") !== "1") {
         toast(
-          "Enable LiteLLM proxy in Settings — required to create skills/tools with OpenCode.",
+          "Enable LiteLLM proxy in Settings — required to create tools/roles with OpenCode.",
           "error"
         );
         return;
@@ -330,19 +330,19 @@
             setBusy(btn, false);
           });
       } else {
-        postJson(app.getAttribute("data-suggest-skill"), {
+        postJson(app.getAttribute("data-suggest-role"), {
           prompt: prompt,
-          tools: selectedTools(document.getElementById("skill-tools")),
+          tools: selectedTools(document.getElementById("role-tools")),
         })
           .then(function (out) {
             if (!out.ok || !out.data || !out.data.ok) {
               toast((out.data && out.data.error) || "Draft failed", "error");
               return;
             }
-            fillSkill(out.data);
+            fillRole(out.data);
             var L = out.data.lint || {};
             toast(
-              L.compatible ? "Skill drafted (lint ok)" : "Skill drafted (lint issues)",
+              L.compatible ? "Role drafted (lint ok)" : "Role drafted (lint issues)",
               L.compatible ? "ok" : "error"
             );
           })
@@ -591,31 +591,31 @@
     }
   }
 
-  function bindSkillActions() {
-    var lintBtn = document.getElementById("skill-lint-btn");
-    var saveBtn = document.getElementById("skill-save-btn");
+  function bindRoleActions() {
+    var lintBtn = document.getElementById("role-lint-btn");
+    var saveBtn = document.getElementById("role-save-btn");
 
     function payload() {
       return {
-        name: (document.getElementById("skill-name") || {}).value || "",
-        skill_md: (document.getElementById("skill-md") || {}).value || "",
-        files: collectSkillFiles(),
+        name: (document.getElementById("role-name") || {}).value || "",
+        role_yaml: (document.getElementById("role-yaml") || {}).value || "",
+        files: collectRoleFiles(),
       };
     }
 
     if (lintBtn) {
       lintBtn.addEventListener("click", function () {
         setBusy(lintBtn, true);
-        postJson(app.getAttribute("data-lint-skill"), payload())
+        postJson(app.getAttribute("data-lint-role"), payload())
           .then(function (out) {
             if (!out.ok || !out.data || !out.data.ok) {
               toast((out.data && out.data.error) || "Lint failed", "error");
               if (out.data && out.data.lint) {
-                showLint(document.getElementById("skill-lint"), out.data.lint);
+                showLint(document.getElementById("role-lint"), out.data.lint);
               }
               return;
             }
-            showLint(document.getElementById("skill-lint"), out.data.lint || {});
+            showLint(document.getElementById("role-lint"), out.data.lint || {});
             toast(
               out.data.compatible ? "Lint ok" : "Lint found errors",
               out.data.compatible ? "ok" : "error"
@@ -633,17 +633,17 @@
     if (saveBtn) {
       saveBtn.addEventListener("click", function () {
         setBusy(saveBtn, true);
-        postJson(app.getAttribute("data-save-skill"), payload())
+        postJson(app.getAttribute("data-save-role"), payload())
           .then(function (out) {
             if (!out.ok || !out.data || !out.data.ok) {
               toast((out.data && out.data.error) || "Save failed", "error");
               if (out.data && out.data.lint) {
-                showLint(document.getElementById("skill-lint"), out.data.lint);
+                showLint(document.getElementById("role-lint"), out.data.lint);
               }
               return;
             }
-            showLint(document.getElementById("skill-lint"), out.data.lint || {});
-            toast("Saved " + (out.data.path || out.data.name || "skill"), "ok");
+            showLint(document.getElementById("role-lint"), out.data.lint || {});
+            toast("Saved " + (out.data.path || out.data.name || "role"), "ok");
           })
           .catch(function () {
             toast("Save failed", "error");
@@ -660,7 +660,7 @@
   bindGenerate();
   bindLabSwitch();
   bindToolActions();
-  bindSkillActions();
+  bindRoleActions();
 
   getJson(app.getAttribute("data-lab-status")).then(function (st) {
     if (st.ok && st.data && st.data.lab) updateLabUi(st.data.lab);

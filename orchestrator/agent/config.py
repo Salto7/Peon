@@ -27,26 +27,27 @@ class AgentRunConfig:
         )
 
 
+def _int(data: Mapping[str, object], key: str, default: int) -> int:
+    raw = data.get(key, default)
+    try:
+        return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _bool(data: Mapping[str, object], key: str, default: bool = False) -> bool:
+    raw = data.get(key, default)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def agent_run_config_from_mapping(data: Mapping[str, object]) -> AgentRunConfig:
     """Build config from a plain mapping (e.g. host settings attrs)."""
-
-    def _int(key: str, default: int) -> int:
-        raw = data.get(key, default)
-        try:
-            return int(raw)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return default
-
-    def _bool(key: str, default: bool = False) -> bool:
-        raw = data.get(key, default)
-        if isinstance(raw, bool):
-            return raw
-        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
     return AgentRunConfig(
-        max_failure_replans=_int("AGENT_MAX_FAILURE_REPLANS", 2),
-        max_iterations=_int("AGENT_MAX_ITERATIONS", 40),
-        max_subagents=_int("AGENT_MAX_SUBAGENTS", 4),
-        max_subagent_depth=_int("AGENT_MAX_SUBAGENT_DEPTH", 2),
-        runtime_enabled=_bool("AGENT_RUNTIME_ENABLED", True),
+        max_failure_replans=_int(data, "AGENT_MAX_FAILURE_REPLANS", 2),
+        max_iterations=_int(data, "AGENT_MAX_ITERATIONS", 40),
+        max_subagents=_int(data, "AGENT_MAX_SUBAGENTS", 4),
+        max_subagent_depth=_int(data, "AGENT_MAX_SUBAGENT_DEPTH", 2),
+        runtime_enabled=_bool(data, "AGENT_RUNTIME_ENABLED", True),
     )

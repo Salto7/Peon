@@ -6,8 +6,10 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-from orchestrator.crew.constants import engagement_end_role, engagement_start_role
+from orchestrator.crew.roles.registry import engagement_end_role, engagement_start_role
 from orchestrator.planning.planner_base import PlannerBase
+from orchestrator.utils.commands import normalize_objective_commands
+from orchestrator.utils.paths import format_roe_block
 from orchestrator.utils.strings import extract_json
 
 PROJECT_PLAN_SYSTEM = """You are the PROJECT planner for an authorized Peon engagement (CrewAI roles).
@@ -42,7 +44,10 @@ You produce the shared project plan (objectives + dependencies) for CrewAI roles
 - acceptance_criteria: observable done condition
 - mitre: technique ids when known; else []
 - role_id: REQUIRED catalog role id
-- commands: 1–4 dry-run tool hints (`assert_in_scope`, `provision_cli`, `run_cli`)
+- commands: 1–3 **plain shell CLIs** for the role (catalog binary first token),
+  e.g. `nmap -sT --top-ports 100 -oX workspace/scan.xml <host>`.
+  Do NOT wrap in `run_cli(...)` / `provision_cli(...)` / other tool-call syntax.
+  Scope checks and provisioning are role workflow, not command strings.
 
 ## Output
 Return ONLY a JSON object:
@@ -58,50 +63,11 @@ Return ONLY a JSON object:
       "mitre": ["T1046"],
       "depends_on": [1],
       "role_id": "<catalog role id — required>",
-      "commands": ["assert_in_scope(\"<target>\")", "run_cli(\"…\")"]
+      "commands": ["nmap -sT --top-ports 100 -oX workspace/scan.xml <host>"]
     }
   ]
 }
 """
-
-
-def _format_target_line(item) -> str:
-    if isinstance(item, dict):
-        typ = str(item.get("type") or "other").strip() or "other"
-        value = str(item.get("value") or "").strip()
-        if not value:
-            return ""
-        return value if typ == "other" else f"{typ}:{value}"
-    return str(item).strip()
-
-
-def format_roe_block(roe) -> str:
-    if roe is None:
-        return "RoE: (missing — do not invent targets; blueprint/passive only)"
-    in_scope = ", ".join(
-        line for x in (roe.in_scope or []) if (line := _format_target_line(x))
-    ) or "(empty)"
-    excl = ", ".join(
-        line for x in (roe.exclusions or []) if (line := _format_target_line(x))
-    ) or "(none)"
-    parts = [
-        f"In-scope (authorized values; type optional hint): {in_scope}",
-        f"Exclusions: {excl}",
-    ]
-    seed = getattr(roe, "seed", None) or []
-    if seed:
-        seed_line = ", ".join(
-            line for x in seed if (line := _format_target_line(x))
-        )
-        if seed_line:
-            parts.append(f"Seed / intent (not attack scope): {seed_line}")
-    if roe.authorization_note:
-        parts.append(f"Authorization: {roe.authorization_note.strip()}")
-    if roe.testing_window_notes:
-        parts.append(f"Window: {roe.testing_window_notes.strip()}")
-    if roe.abort_triggers:
-        parts.append(f"Abort: {roe.abort_triggers.strip()}")
-    return "RoE:\n- " + "\n- ".join(parts)
 
 
 def format_roles_block(role_ids: list[str] | None) -> str:
@@ -139,17 +105,14 @@ def parse_project_objectives(raw: str) -> dict[str, Any]:
         row = dict(o)
         if not row.get("profile_suggestion") and row.get("profile"):
             row["profile_suggestion"] = row.get("profile")
-        cmds = row.get("commands") or []
-        if isinstance(cmds, str):
-            cmds = [cmds]
-        row["commands"] = [str(c).strip() for c in cmds if str(c).strip()]
+        row["commands"] = normalize_objective_commands(row.get("commands"))
         normalized.append(row)
     data["objectives"] = bookend_project_objectives(normalized)
     return data
 
 
 def _is_bookend_objective(obj: dict[str, Any]) -> bool:
-    role = str(obj.get("role_id") or obj.get("skill_suggestion") or "").strip()
+    role = str(obj.get("role_id") or "").strip()
     phase = str(obj.get("phase") or "").strip().lower()
     start, end = engagement_start_role(), engagement_end_role()
     if role and role in {start, end}:
@@ -172,13 +135,13 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
             survivors.append((idx, obj))
 
     manager = {
-        "title": "Project manager — plan and hire",
+        "title": "Project manager — review and dispatch",
         "phase": "recon",
         "description": (
-            "Read RoE, hire specialist roles, assign tasks, recover from failures, "
-            "and hand off to analyzer when done."
+            "Read RoE, review the persisted specialist objective sequence, confirm "
+            "scope and dependencies, then release the next objective to the scheduler."
         ),
-        "acceptance_criteria": "Specialist work assigned and tracked under RoE",
+        "acceptance_criteria": "Specialist objective order and RoE constraints confirmed",
         "mitre": [],
         "depends_on": [],
         "role_id": start,
@@ -199,24 +162,26 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
                 deps.append(mapped)
         row = dict(obj)
         row["depends_on"] = deps
-        # Accept legacy planner key during transition.
-        role = str(row.get("role_id") or row.get("skill_suggestion") or "").strip()
+        role = str(row.get("role_id") or "").strip()
         if not role:
             continue
         row["role_id"] = role
-        row.pop("skill_suggestion", None)
         old_to_final[old_idx] = final_idx
         middle.append(row)
 
     last_middle = 1 + len(middle)
     analyzer = {
-        "title": "Project report",
+        "title": "Security findings report",
         "phase": "reporting",
         "description": (
-            "Synthesize a standalone findings/report.md from workspace evidence. "
-            "Do not collect new evidence or invent discoveries."
+            "Build findings/report.md covering security discoveries only "
+            "(open ports, services, vulnerabilities, assets). Cite evidence; "
+            "do not collect new evidence or invent discoveries. Do not report "
+            "objective/job status."
         ),
-        "acceptance_criteria": "findings/report.md written as the sole project report",
+        "acceptance_criteria": (
+            "findings/report.md summarizes security findings with evidence citations"
+        ),
         "mitre": [],
         "depends_on": [last_middle],
         "role_id": end,
@@ -265,7 +230,7 @@ def render_project_objectives(project_title: str, payload: dict[str, Any], objec
         )
         lines.append(f"   - Acceptance: {obj.acceptance_criteria or '—'}")
         lines.append(f"   - MITRE: {mitre}")
-        role = getattr(obj, "role_id", "") or getattr(obj, "skill_suggestion", "") or ""
+        role = getattr(obj, "role_id", "") or ""
         if role:
             lines.append(f"   - Role: `{role}`")
         profile = getattr(obj, "profile_suggestion", "") or ""
@@ -292,7 +257,7 @@ def _objectives_from_payload(payload: dict[str, Any]) -> list:
                 description=o.get("description") or "",
                 acceptance_criteria=o.get("acceptance_criteria") or "",
                 mitre_techniques=list(o.get("mitre") or []),
-                role_id=o.get("role_id") or o.get("skill_suggestion") or "",
+                role_id=o.get("role_id") or "",
                 profile_suggestion=o.get("profile_suggestion") or o.get("profile") or "",
                 commands=list(o.get("commands") or []),
             )

@@ -20,4 +20,5 @@ capabilities: [authoring, draft, learn, suggest, roles, catalog]
 requires_roe: false
 allow_delegation: false
 reasoning: true
+advanced_reasoning: false
 max_iter: 8

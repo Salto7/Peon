@@ -25,7 +25,8 @@ COPY manage.py .
 COPY peon/ peon/
 COPY orchestrator/ orchestrator/
 COPY agent_runtime/ agent_runtime/
-COPY skills/ skills/
+COPY helpers/ helpers/
+COPY roles/ roles/
 COPY tools/ tools/
 COPY Docker/entrypoint-web.sh /entrypoint-web.sh
 COPY Docker/entrypoint-worker.sh /entrypoint-worker.sh

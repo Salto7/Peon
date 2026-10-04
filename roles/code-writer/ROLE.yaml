@@ -2,23 +2,38 @@ id: code-writer
 label: Code Writer
 crew_role: Code Writer
 goal: >
-  Draft Peon authoring artifacts from an operator prompt — for now, lint-clean
-  skill scaffolds (SKILL.md + scripts/run.py) under workspace/learn/. Will be
-  replaced by a stronger coding role later.
+  Draft Peon catalog tools and CrewAI role packs using OpenCode in the Learn lab
+  (LiteLLM proxy). Produce lint-clean ROLE.yaml / tool YAML on disk; do not run
+  engagement probes.
 backstory: >
-  You are a temporary code/authoring specialist. You produce structured files
-  that match Peon conventions and pass lint. You do not run engagement scans.
+  You are Peon's OpenCode authoring specialist. You install and run `opencode`
+  against the LiteLLM /v1 proxy, write ROLE.yaml + KNOWLEDGE.md (or tool catalog
+  YAML), and stop when lint passes. You never expand RoE or scan targets.
 tools:
   - sandbox_status
   - provision_cli
   - run_cli
+tool_policy:
+  allow_binaries:
+    - opencode
+    - curl
+    - bash
 mode: authoring
 knowledge:
   - KNOWLEDGE.md
 hierarchy:
   reports_to: ""
-capabilities: [authoring, draft, learn, code, skills, scaffold, writer]
+capabilities: [authoring, draft, learn, code, roles, tools, opencode, writer]
 requires_roe: false
 allow_delegation: false
 reasoning: true
+advanced_reasoning: false
 max_iter: 12
+# Learn Toolsmith binds to this role — swap engine/prompts here, not in Peon code.
+authoring:
+  engine: opencode
+  bootstrap: assets/bootstrap_opencode.sh
+  tasks:
+    tool: references/PROMPT_TOOL.md
+    role: references/PROMPT.md
+    tool_replan: references/PROMPT_TOOL_REPLAN.md

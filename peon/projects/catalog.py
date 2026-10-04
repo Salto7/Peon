@@ -1,4 +1,4 @@
-"""Catalog HTTP + skill/tool card projections (SkillRegistry / ToolCatalog)."""
+"""Catalog HTTP + role/tool card projections (RoleRegistry / ToolCatalog)."""
 
 from __future__ import annotations
 
@@ -10,23 +10,21 @@ from django.shortcuts import redirect, render
 from django.urls import path, reverse
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from orchestrator.skills.registry import SkillRegistry
-from orchestrator.skills.router import SkillRouter
+from orchestrator.crew.router import RoleRouter
+from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.tools.catalog import ToolCatalog
-from peon.projects.catalog_cards import CatalogCardsBase, RoleCards, SkillCards, ToolCards
-from peon.projects.http_helpers import split_csv
+from peon.projects.catalog_cards import CatalogCardsBase, RoleCards, ToolCards
+from peon.projects.http_helpers import parse_json_body, split_csv
 
-# Stable re-exports for call sites that import from peon.projects.catalog
 __all__ = [
     "CatalogCardsBase",
     "RoleCards",
-    "SkillCards",
     "ToolCards",
     "catalog_page",
-    "api_skills",
-    "api_skills_reload",
+    "api_roles",
+    "api_roles_reload",
     "api_tools_reload",
-    "api_skill_detail",
+    "api_role_detail",
     "api_tools",
     "api_tool_detail",
     "api_resolve",
@@ -35,33 +33,25 @@ __all__ = [
 
 
 def _resolve_args(request: HttpRequest) -> tuple[str, str, bool, list[str], list[str]]:
-    """Parse description / lifecycle / project / skills / preferred_tags from GET or POST."""
-    if request.method == "POST":
-        try:
-            body = json.loads(request.body.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            raise ValueError("invalid JSON") from None
-        if not isinstance(body, dict):
-            raise ValueError("JSON object required")
-        description = str(body.get("description") or body.get("brief") or "").strip()
-        lifecycle = str(body.get("lifecycle") or "auto").strip() or "auto"
-        project = bool(body.get("project"))
-        explicit = body.get("skills") or body.get("explicit") or []
-        if isinstance(explicit, str):
-            explicit = split_csv(explicit)
-        tags = body.get("preferred_tags") or body.get("focus_tags") or []
-        if isinstance(tags, str):
-            tags = split_csv(tags)
-        return description, lifecycle, project, list(explicit), list(tags)
+    """Parse description / lifecycle / project / roles / preferred_tags from GET or POST."""
 
-    description = (request.GET.get("description") or request.GET.get("brief") or "").strip()
-    lifecycle = (request.GET.get("lifecycle") or "auto").strip() or "auto"
-    project = request.GET.get("project", "").lower() in {"1", "true", "yes"}
+    if request.method == "POST":
+        body = parse_json_body(request, strict=True)
+        explicit = body.get("roles") or body.get("explicit") or []
+        tags = body.get("preferred_tags") or body.get("focus_tags") or []
+        return (
+            str(body.get("description") or body.get("brief") or "").strip(),
+            str(body.get("lifecycle") or "auto").strip() or "auto",
+            bool(body.get("project")),
+            split_csv(explicit) if isinstance(explicit, str) else list(explicit),
+            split_csv(tags) if isinstance(tags, str) else list(tags),
+        )
+
     return (
-        description,
-        lifecycle,
-        project,
-        split_csv(request.GET.get("skills")),
+        (request.GET.get("description") or request.GET.get("brief") or "").strip(),
+        (request.GET.get("lifecycle") or "auto").strip() or "auto",
+        request.GET.get("project", "").lower() in {"1", "true", "yes"},
+        split_csv(request.GET.get("roles")),
         split_csv(request.GET.get("preferred_tags") or request.GET.get("focus_tags")),
     )
 
@@ -78,10 +68,10 @@ def catalog_page(request: HttpRequest) -> HttpResponse:
         request,
         "catalog/list.html",
         {
-            "skills": SkillCards.catalog(jobable_only=not show_all),
+            "roles": RoleCards.catalog(jobable_only=not show_all),
             "tools": ToolCards.catalog(),
             "show_all": show_all,
-            "skills_reload": _reload_ctx(SkillCards),
+            "roles_reload": _reload_ctx(RoleCards),
             "tools_reload": _reload_ctx(ToolCards),
             "nav": "catalog",
         },
@@ -89,12 +79,11 @@ def catalog_page(request: HttpRequest) -> HttpResponse:
 
 
 @require_GET
-def api_skills(request: HttpRequest) -> JsonResponse:
+def api_roles(request: HttpRequest) -> JsonResponse:
     show_all = request.GET.get("all", "").lower() in {"1", "true", "yes"}
     return JsonResponse(
         {
-            "skills": SkillCards.catalog(jobable_only=not show_all),
-            "aliases": SkillRegistry.shared().skill_aliases(),
+            "roles": RoleCards.catalog(jobable_only=not show_all),
         }
     )
 
@@ -115,9 +104,9 @@ def _catalog_reload(
 
 
 @require_POST
-def api_skills_reload(request: HttpRequest) -> HttpResponse:
-    """Force-rescan skills via ``SkillCards.reload``."""
-    return _catalog_reload(request, SkillCards, preserve_all=True)
+def api_roles_reload(request: HttpRequest) -> HttpResponse:
+    """Force-rescan roles via ``RoleCards.reload``."""
+    return _catalog_reload(request, RoleCards, preserve_all=True)
 
 
 @require_POST
@@ -127,14 +116,14 @@ def api_tools_reload(request: HttpRequest) -> HttpResponse:
 
 
 @require_GET
-def api_skill_detail(request: HttpRequest, name: str) -> JsonResponse | HttpResponseNotFound:
-    skill = SkillRegistry.shared().load_skill(name)
-    if skill is None:
+def api_role_detail(request: HttpRequest, name: str) -> JsonResponse | HttpResponseNotFound:
+    role = RoleRegistry.shared().get(name)
+    if role is None:
         return HttpResponseNotFound(
             json.dumps({"error": "not found", "name": name}),
             content_type="application/json",
         )
-    return JsonResponse({"skill": skill.to_catalog_dict()})
+    return JsonResponse({"role": RoleCards.from_role(role)})
 
 
 @require_GET
@@ -162,11 +151,9 @@ def api_resolve(request: HttpRequest) -> JsonResponse:
 
     names: list[str] = []
     if description or explicit:
-        names = SkillRouter.shared().resolve_default_skills(
+        names = RoleRouter.shared().resolve(
             description,
-            lifecycle=lifecycle,
             explicit=explicit or None,
-            preferred_tags=preferred_tags or None,
             project=project,
         )
     return JsonResponse(
@@ -181,9 +168,9 @@ def api_resolve(request: HttpRequest) -> JsonResponse:
 
 urlpatterns = [
     path("", catalog_page, name="catalog"),
-    path("api/skills/", api_skills, name="catalog_api_skills"),
-    path("api/skills/reload/", api_skills_reload, name="catalog_api_skills_reload"),
-    path("api/skills/<str:name>/", api_skill_detail, name="catalog_api_skill"),
+    path("api/roles/", api_roles, name="catalog_api_roles"),
+    path("api/roles/reload/", api_roles_reload, name="catalog_api_roles_reload"),
+    path("api/roles/<str:name>/", api_role_detail, name="catalog_api_role"),
     path("api/tools/", api_tools, name="catalog_api_tools"),
     path("api/tools/reload/", api_tools_reload, name="catalog_api_tools_reload"),
     path("api/tools/<str:tool_id>/", api_tool_detail, name="catalog_api_tool"),

@@ -2,42 +2,31 @@
 
 from __future__ import annotations
 
+import importlib
+
 from orchestrator.agent.runtime_base import AgentRuntimeBase
 from orchestrator.config import get_config
-from orchestrator.crew.runtime_base import CrewRuntimeBase
 
 # Job-level modules (one Job / role tool loop).
 _JOB_MODULES: dict[str, str] = {
     "crewai": "orchestrator.crew.runtimes.job_crewai:CrewAIJobRuntime",
 }
 
-# Project-level modules (hierarchical crew).
-_CREW_MODULES: dict[str, str] = {
-    "crewai": "orchestrator.crew.runtimes.project_crewai:ProjectCrewRuntime",
-    "noop": "orchestrator.crew.runtimes.noop:NoopCrewRuntime",
-}
-
 _job_cached: AgentRuntimeBase | None = None
 _job_cached_id: str | None = None
-_crew_cached: CrewRuntimeBase | None = None
-_crew_cached_id: str | None = None
 
 
 def reset_agent_modules() -> None:
     """Drop cached runtimes (call after ``configure()``)."""
-    global _job_cached, _job_cached_id, _crew_cached, _crew_cached_id
+    global _job_cached, _job_cached_id
     _job_cached = None
     _job_cached_id = None
-    _crew_cached = None
-    _crew_cached_id = None
 
 
 def _load_class(path: str) -> type:
     module_path, _, cls_name = path.partition(":")
     if not module_path or not cls_name:
         raise RuntimeError(f"invalid module path: {path!r}")
-    import importlib
-
     mod = importlib.import_module(module_path)
     cls = getattr(mod, cls_name, None)
     if cls is None:
@@ -66,16 +55,3 @@ def get_job_runtime() -> AgentRuntimeBase:
     _job_cached = _load_class(path)()
     _job_cached_id = module_id
     return _job_cached
-
-
-def get_crew_runtime() -> CrewRuntimeBase:
-    """Return the project-level crew runtime."""
-    global _crew_cached, _crew_cached_id
-    module_id = agent_module_id()
-    crew_id = module_id if module_id in _CREW_MODULES else "noop"
-    if _crew_cached is not None and _crew_cached_id == crew_id:
-        return _crew_cached
-    path = _CREW_MODULES[crew_id]
-    _crew_cached = _load_class(path)()
-    _crew_cached_id = crew_id
-    return _crew_cached

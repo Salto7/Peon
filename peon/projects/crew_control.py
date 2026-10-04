@@ -9,6 +9,7 @@ from typing import Any
 
 from django.conf import settings
 
+from orchestrator.crew.roles.registry import manager_role
 from peon.projects.lifecycle import ProjectLifecycle
 from peon.projects.models import Job, JobLifecycle, JobStatus, Project, ProjectStatus
 from peon.projects.tasks import enqueue_job
@@ -79,14 +80,33 @@ def reprompt_manager(
         raise ValueError("Reprompt message is required")
     ProjectLifecycle.project_allows_operator(project)
     job = _ensure_manager_job(project, resume=True, steer=text)
-    if job is not None:
-        ProjectLifecycle.enqueue_job_directive(job, text, kind=kind)
+    ProjectLifecycle.enqueue_job_directive(job, text, kind=kind)
     set_crew_status(project, "running")
     return {
         "mode": "crew_reprompt",
-        "job_ids": [str(job.id)] if job else [],
-        "primary_job_id": str(job.id) if job else "",
+        "job_ids": [str(job.id)],
+        "primary_job_id": str(job.id),
     }
+
+
+def instruct_project(
+    project: Project, message: str, *, job_id: str | None = None
+) -> dict[str, Any]:
+    """Steer live agents; keep crew_status in sync."""
+    text = (message or "").strip()
+    if not text:
+        raise ValueError("Instruction message is required")
+    result = ProjectLifecycle.route_operator_instruction(
+        project, text, job_id=job_id, record_stream=False
+    )
+    if agent_module() == "crewai" and project.status == ProjectStatus.ACTIVE:
+        set_crew_status(project, "running")
+    return result
+
+
+def stop_project(project: Project) -> Project:
+    """Pause project and mark crew paused (operator stop)."""
+    return pause_project(project)
 
 
 def _ensure_manager_job(
@@ -95,13 +115,14 @@ def _ensure_manager_job(
     resume: bool = False,
     replan: bool = False,
     steer: str = "",
-) -> Job | None:
+) -> Job:
     """Find or create the engagement-manager job and enqueue it."""
-    from orchestrator.crew.roles.hierarchy import manager_role
 
     mgr = manager_role()
     if mgr is None:
-        return None
+        raise RuntimeError(
+            "No CrewAI manager role is loaded; check ROLES_DIR in web and worker"
+        )
     job = None
     for candidate in project.jobs.exclude(status=JobStatus.CANCELLED).order_by(
         "-created_at"

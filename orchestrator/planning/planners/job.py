@@ -16,16 +16,16 @@ or long engagement roadmaps — stay tactical for the given job brief.
 ## Choose one primary approach
 - reply — answer from knowledge only (no tools, no files)
 - write — create artifacts by writing files in the job workspace
-- sandbox — install/run CLI tools or skill assets via bound capabilities
-- code — short python/bash via run_cli when no catalog skill fits (no separate
+- sandbox — install/run catalog CLIs via bound role capabilities
+- code — short python/bash via run_cli when no catalog role/tool fits (no separate
   run_code tool)
 - hybrid — different strategies across phases (only when one approach is not enough)
 
 Decision rules:
 - Prefer the lightest approach that meets the goal
-- Prefer existing skills / run_skill_script over inventing one-off toolchains
+- Prefer existing role tools / catalog CLIs over inventing one-off toolchains
 - Call provision_cli before missing CLIs ({INSTALL_CASCADE})
-- Use run_cli only for ad-hoc shell; never as a substitute for run_skill_script
+- Use run_cli for authorized probes and ad-hoc shell under RoE
 - If the operator asked for files/artifacts, never choose reply alone
 - Reuse procedural memory and prior results; avoid repeating known failures
 - Keep phases cheap to re-plan

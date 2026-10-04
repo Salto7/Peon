@@ -5,65 +5,49 @@
 <header class="page-header">
   <div>
     <h1>Catalog</h1>
-    <p class="lead">Skills from <code>SkillRegistry</code> and sandbox tools from <code>tools/catalog</code>.</p>
+    <p class="lead">Roles from <code>roles/</code> and sandbox tools from <code>tools/catalog</code>.</p>
   </div>
 </header>
 
 <nav class="catalog-jump bar" aria-label="Catalog sections">
-  <a class="btn secondary" href="#skills">Skills ({{ skills|length }})</a>
+  <a class="btn secondary" href="#roles">Roles ({{ roles|length }})</a>
   <a class="btn secondary" href="#tools">Tools ({{ tools|length }})</a>
 </nav>
 
-<section class="catalog-section" id="skills" aria-labelledby="skills-heading">
+<section class="catalog-section" id="roles" aria-labelledby="roles-heading">
   <div class="catalog-section-head">
-    <h2 id="skills-heading">Skills</h2>
+    <h2 id="roles-heading">Roles</h2>
     <div class="bar catalog-section-actions">
-      <span class="meta">{{ skills|length }} skill{{ skills|length|pluralize }}</span>
+      <span class="meta">{{ roles|length }} role{{ roles|length|pluralize }}</span>
       {% if show_all %}
-        <a class="btn secondary" href="{% url 'catalog' %}#skills">Jobable only</a>
+        <a class="btn secondary" href="{% url 'catalog' %}#roles">Jobable only</a>
       {% else %}
-        <a class="btn secondary" href="{% url 'catalog' %}?all=1#skills">Show all</a>
+        <a class="btn secondary" href="{% url 'catalog' %}?all=1#roles">Show all</a>
       {% endif %}
-      <form method="post" action="{{ skills_reload.url }}" class="catalog-reload-form">
+      <form method="post" action="{{ roles_reload.url }}" class="catalog-reload-form">
         {% csrf_token %}
         {% if show_all %}<input type="hidden" name="all" value="1">{% endif %}
-        <button type="submit" class="btn secondary" title="{{ skills_reload.title }}">{{ skills_reload.label }}</button>
+        <button type="submit" class="btn secondary" title="{{ roles_reload.title }}">{{ roles_reload.label }}</button>
       </form>
     </div>
   </div>
 
-  <div class="catalog-grid skill-card-grid">
-    {% for s in skills %}
-    <article class="skill-card catalog-card{% if not s.compatible %} catalog-card-incompatible{% endif %}" id="skill-{{ s.name }}">
-      <div class="skill-card-name">
-        <a href="{% url 'catalog_api_skill' s.name %}"><code>{{ s.name }}</code></a>
-        {% if not s.compatible %}
-        <span
-          class="skill-lint-warn"
-          title="{% for issue in s.lint_issues %}{{ issue }}{% if not forloop.last %} &#10;{% endif %}{% empty %}SKILL.md failed lint{% endfor %}"
-          aria-label="Lint issues: {% for issue in s.lint_issues %}{{ issue }}{% if not forloop.last %}; {% endif %}{% empty %}incompatible{% endfor %}"
-        >⚠</span>
-        {% endif %}
+  <div class="catalog-grid catalog-card-grid">
+    {% for s in roles %}
+    <article class="catalog-card{% if not s.compatible %} catalog-card-incompatible{% endif %}" id="role-{{ s.name }}">
+      <div class="catalog-card-name">
+        <a href="{% url 'catalog_api_role' s.name %}"><code>{{ s.name }}</code></a>
       </div>
-      {% if not s.compatible and s.lint_issues %}
-      <ul class="skill-lint-issues" aria-label="Missing or invalid">
-        {% for issue in s.lint_issues %}<li>{{ issue }}</li>{% endfor %}
-      </ul>
-      {% endif %}
-      {% if s.category %}<div class="skill-card-cat">{{ s.category }}</div>{% endif %}
-      {% if s.lifecycle %}<div class="meta skill-card-life">lifecycle {{ s.lifecycle }}</div>{% endif %}
-      <div class="skill-card-desc">{{ s.description|default:"(no description)" }}</div>
+      {% if s.category %}<div class="catalog-card-cat">{{ s.category }}</div>{% endif %}
+      <div class="catalog-card-desc">{{ s.description|default:"(no description)" }}</div>
       {% if s.tags %}
-      <div class="skill-card-tags" aria-label="Tags">
+      <div class="catalog-card-tags" aria-label="Tags">
         {% for t in s.tags %}<span class="chip">{{ t }}</span>{% endfor %}
       </div>
       {% endif %}
-      {% if s.aliases %}
-      <div class="meta skill-card-aliases">aliases: {{ s.aliases|join:", " }}</div>
-      {% endif %}
     </article>
     {% empty %}
-    <p class="meta">No skills found under SKILLS_DIR.</p>
+    <p class="meta">No roles found under ROLES_DIR.</p>
     {% endfor %}
   </div>
 </section>
@@ -80,22 +64,22 @@
     </div>
   </div>
 
-  <div class="catalog-grid skill-card-grid">
+  <div class="catalog-grid catalog-card-grid">
     {% for t in tools %}
-    <article class="skill-card catalog-card catalog-card-tool" id="tool-{{ t.id }}">
-      <div class="skill-card-name">
+    <article class="catalog-card catalog-card-tool" id="tool-{{ t.id }}">
+      <div class="catalog-card-name">
         <a href="{% url 'catalog_api_tool' t.id %}"><code>{{ t.id }}</code></a>
       </div>
-      {% if t.tier %}<div class="skill-card-cat">tier {{ t.tier }}</div>{% endif %}
-      {% if t.binary %}<div class="meta skill-card-life">binary <code>{{ t.binary }}</code></div>{% endif %}
-      <div class="skill-card-desc">{{ t.description|default:"(no description)" }}</div>
+      {% if t.tier %}<div class="catalog-card-cat">tier {{ t.tier }}</div>{% endif %}
+      {% if t.binary %}<div class="meta catalog-card-life">binary <code>{{ t.binary }}</code></div>{% endif %}
+      <div class="catalog-card-desc">{{ t.description|default:"(no description)" }}</div>
       {% if t.tags %}
-      <div class="skill-card-tags" aria-label="Tags">
+      <div class="catalog-card-tags" aria-label="Tags">
         {% for tag in t.tags %}<span class="chip">{{ tag }}</span>{% endfor %}
       </div>
       {% endif %}
-      {% if t.skills %}
-      <div class="meta skill-card-aliases">skills: {{ t.skills|join:", " }}</div>
+      {% if t.roles %}
+      <div class="meta catalog-card-aliases">roles: {{ t.roles|join:", " }}</div>
       {% endif %}
     </article>
     {% empty %}
@@ -105,6 +89,6 @@
 </section>
 
 <p class="meta catalog-foot">
-  Resolve skills for a Job: <code>GET/POST /catalog/api/resolve/?brief=…</code>
+  Resolve roles for a Job: <code>GET/POST /catalog/api/resolve/?brief=…</code>
 </p>
 {% endblock %}

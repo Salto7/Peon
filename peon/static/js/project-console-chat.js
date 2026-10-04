@@ -29,51 +29,50 @@
     return (v / (1024 * 1024)).toFixed(1) + " MiB";
   }
 
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  function escapeAttr(s) {
-    return escapeHtml(s).replace(/'/g, "&#39;");
-  }
-
   function renderProjectFilesList(inputs) {
     var list = el("project-files-list");
     if (!list) return;
     var rows = Array.isArray(inputs) ? inputs : [];
+    list.replaceChildren();
     if (!rows.length) {
-      list.innerHTML =
-        '<li class="meta project-files-empty" id="project-files-empty">' +
-        "No files uploaded yet — use + in Chat.</li>";
+      var empty = document.createElement("li");
+      empty.className = "meta project-files-empty";
+      empty.id = "project-files-empty";
+      empty.textContent = "No files uploaded yet — use + in Chat.";
+      list.appendChild(empty);
       return;
     }
-    list.innerHTML = rows
-      .map(function (f) {
-        var name = String(f.name || "");
-        var path = String(f.sandbox_path || "");
-        var size = formatBytes(f.size);
-        return (
-          '<li class="project-file-row" data-name="' +
-          escapeAttr(name) +
-          '"><div class="project-file-meta"><code class="project-file-name">' +
-          escapeHtml(name) +
-          '</code><span class="meta">' +
-          escapeHtml(size) +
-          " · <code>" +
-          escapeHtml(path) +
-          "</code></span></div>" +
-          '<button type="button" class="secondary project-file-remove" data-name="' +
-          escapeAttr(name) +
-          '" aria-label="Remove ' +
-          escapeAttr(name) +
-          '">Remove</button></li>'
-        );
-      })
-      .join("");
+    rows.forEach(function (f) {
+      var name = String(f.name || "");
+      var row = document.createElement("li");
+      row.className = "project-file-row";
+      row.dataset.name = name;
+
+      var details = document.createElement("div");
+      details.className = "project-file-meta";
+      var fileName = document.createElement("code");
+      fileName.className = "project-file-name";
+      fileName.textContent = name;
+      var meta = document.createElement("span");
+      meta.className = "meta";
+      meta.appendChild(document.createTextNode(formatBytes(f.size) + " · "));
+      var path = document.createElement("code");
+      path.textContent = String(f.sandbox_path || "");
+      meta.appendChild(path);
+      details.appendChild(fileName);
+      details.appendChild(meta);
+
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "secondary project-file-remove";
+      remove.dataset.name = name;
+      remove.setAttribute("aria-label", "Remove " + name);
+      remove.textContent = "Remove";
+
+      row.appendChild(details);
+      row.appendChild(remove);
+      list.appendChild(row);
+    });
   }
 
   function bindProjectFiles(projectPk) {
@@ -240,6 +239,20 @@
     form.querySelectorAll("[data-chat-mode]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         setMode(btn.getAttribute("data-chat-mode") || "chat");
+      });
+    });
+    document.querySelectorAll("[data-chat-open-mode]").forEach(function (btn) {
+      if (btn.dataset.boundChatOpen) return;
+      btn.dataset.boundChatOpen = "1";
+      btn.addEventListener("click", function () {
+        setMode(btn.getAttribute("data-chat-open-mode") || "chat");
+        if (window.PeonProjectOps && window.PeonProjectOps.showWorkspaceTab) {
+          window.PeonProjectOps.showWorkspaceTab("chat");
+        } else {
+          var card = el("war-chat");
+          if (card) card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          input.focus();
+        }
       });
     });
 

@@ -14,7 +14,6 @@ _REGISTERED = False
 
 class CapabilityGroup(str, Enum):
     SANDBOX = "sandbox"
-    SKILLS = "skills"
     ENGAGEMENT = "engagement"
     CORE = "core"
 
@@ -85,12 +84,10 @@ REGISTRY = CapabilityRegistry()
 
 _GROUP_ORDER = (
     CapabilityGroup.SANDBOX,
-    CapabilityGroup.SKILLS,
     CapabilityGroup.ENGAGEMENT,
 )
 _SKIP_AUTHORING_TAGS = frozenset({"watchdog", "periodic", "subagent"})
 # catalog_wrapper: sandbox status/setup + provision_cli only.
-# Exec still goes through run_skill_script, not free-form run_cli.
 _CATALOG_SANDBOX = frozenset({"sandbox_setup", "sandbox_status", "provision_cli"})
 
 
@@ -98,6 +95,7 @@ def ensure_registered() -> CapabilityRegistry:
     """Import capability tools once so ``@capability`` side-effects populate REGISTRY."""
     global _REGISTERED
     if not _REGISTERED:
+        # circular: capabilities.tools → CapabilityGroup / capability from this module
         import orchestrator.capabilities.tools  # noqa: F401
 
         _REGISTERED = True
@@ -105,10 +103,10 @@ def ensure_registered() -> CapabilityRegistry:
 
 
 def default_allowed_tools(*, mode: str = "catalog_wrapper") -> str:
-    """``allowed-tools`` string from the live registry for skill authoring.
+    """``allowed-tools`` string from the live registry for role authoring.
 
-    - ``catalog_wrapper``: sandbox trio (setup/status/provision) + skills +
-      engagement; skip watchdog/periodic/subagent tags.
+    - ``catalog_wrapper``: sandbox trio (setup/status/provision) + engagement;
+      skip watchdog/periodic/subagent tags.
     - ``capability``: same as catalog_wrapper plus ``run_cli`` (not run_code).
     """
     reg = ensure_registered()
@@ -135,35 +133,3 @@ def capability(group: CapabilityGroup, *, tags: Iterable[str] = ()):
         return REGISTRY.register(group, tool, tags=tags)
 
     return decorator
-
-
-def get_tools_for_names(names: set[str] | frozenset[str]) -> list[Any]:
-    ensure_registered()
-    tools = REGISTRY.tool_map()
-    return [tools[n] for n in names if n in tools]
-
-
-# Job agent binds these groups by default (catalog CLIs are not LangChain tools).
-_IMPLICIT_JOB_GROUPS = (
-    CapabilityGroup.SANDBOX,
-    CapabilityGroup.SKILLS,
-    CapabilityGroup.ENGAGEMENT,
-    CapabilityGroup.CORE,
-)
-_OPT_IN_JOB_TAGS = frozenset({"watchdog", "periodic"})
-
-
-def resolve_tool_names(skill_names: list[str] | None = None) -> set[str]:
-    """Implicit Peon capability set for a Job (skill_names reserved for future)."""
-    del skill_names
-    ensure_registered()
-    registered = set(REGISTRY.tool_map())
-    allowed: set[str] = set()
-    for name in REGISTRY.names(groups=_IMPLICIT_JOB_GROUPS):
-        if name not in registered:
-            continue
-        entry = REGISTRY.get(name)
-        if entry is None or entry.tags & _OPT_IN_JOB_TAGS:
-            continue
-        allowed.add(name)
-    return allowed

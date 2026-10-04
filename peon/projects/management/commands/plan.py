@@ -7,8 +7,8 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from peon.projects.http_helpers import split_csv
-from peon.projects.services import PlanningService
-from peon.projects.targets import parse_target_lines
+from peon.projects.planning_persist import PlanningService
+from peon.projects.target_shapes import parse_target_lines
 
 
 class Command(BaseCommand):
@@ -31,11 +31,6 @@ class Command(BaseCommand):
             default="",
             help="Comma-separated CrewAI role ids (roles/)",
         )
-        parser.add_argument(
-            "--skills",
-            default="",
-            help="Deprecated alias for --roles",
-        )
 
     def handle(self, *args, **options) -> None:
         description = (options.get("brief") or "").strip()
@@ -45,7 +40,7 @@ class Command(BaseCommand):
         if not description:
             raise CommandError("Provide a brief string or --brief-file")
 
-        roles = split_csv(options["roles"]) or split_csv(options["skills"])
+        roles = split_csv(options["roles"])
         try:
             result = PlanningService.run_llm_plan(
                 description=description,

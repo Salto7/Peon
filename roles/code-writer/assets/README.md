@@ -1,4 +1,5 @@
 # code-writer assets
 
-Custom files for this role (templates, wordlists, helpers).
-Copy into `workspace/` when you need to edit for an engagement.
+- `bootstrap_opencode.sh` — install OpenCode in the Learn lab if missing
+
+Declared in `ROLE.yaml` as `authoring.bootstrap: assets/bootstrap_opencode.sh`.

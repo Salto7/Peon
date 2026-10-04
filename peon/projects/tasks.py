@@ -26,16 +26,20 @@ import dramatiq
 from django.conf import settings
 from django.db import close_old_connections
 
-from peon.projects.models import TERMINAL_JOB_STATUSES, Job, JobStatus
+from peon.projects.models import Job, JobStatus
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.worker import _finish, mark_job_running, run_job
+from peon.projects.job_claim import job_slots_available, mark_job_running
+from peon.projects.learn_lab import LearnLab
 
 logger = logging.getLogger(__name__)
 
 
 @dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=6 * 60 * 60 * 1000)
 def process_job(job_id: str) -> None:
-    """Claim PENDING→RUNNING then run skills inside the project sandbox."""
+    """Claim PENDING→RUNNING then run the job agent inside the project sandbox."""
+    # circular: tasks ↔ job_run
+    from peon.projects.job_run import _finish, run_job
+
     close_old_connections()
 
     try:
@@ -44,27 +48,22 @@ def process_job(job_id: str) -> None:
         logger.warning("process_job: missing job %s", job_id)
         return
 
-    if job.status in TERMINAL_JOB_STATUSES:
-        logger.info("process_job: skip terminal job %s (%s)", job_id, job.status)
+    if job.status != JobStatus.PENDING:
+        logger.info("process_job: skip non-pending job %s (%s)", job_id, job.status)
         return
 
-    if job.status == JobStatus.PENDING:
-        from peon.projects.worker import job_slots_available
-
-        if not job_slots_available(job):
-            # Soft back-pressure: leave PENDING and retry shortly.
-            try:
-                process_job.send_with_options(args=(str(job_id),), delay=5_000)
-            except Exception:
-                logger.info(
-                    "process_job: slots full for %s; leave pending (no delay requeue)",
-                    job_id,
-                )
-            return
-        if mark_job_running(job) is None:
-            job.refresh_from_db()
-    elif job.status == JobStatus.PAUSED:
-        logger.info("process_job: skip paused job %s", job_id)
+    if not job_slots_available(job):
+        # Soft back-pressure: leave PENDING and retry shortly.
+        try:
+            process_job.send_with_options(args=(str(job_id),), delay=5_000)
+        except Exception:
+            logger.info(
+                "process_job: slots full for %s; leave pending (no delay requeue)",
+                job_id,
+            )
+        return
+    if mark_job_running(job) is None:
+        logger.info("process_job: claim lost for %s", job_id)
         return
 
     try:
@@ -122,8 +121,6 @@ def cleanup_learn_lab() -> None:
     """
     close_old_connections()
     try:
-        from peon.projects.learn_lab import LearnLab
-
         result = LearnLab.shared().delete()
         logger.info("cleanup_learn_lab → %s", result)
     except Exception:
@@ -134,8 +131,6 @@ def cleanup_learn_lab() -> None:
 
 def enqueue_learn_lab_cleanup() -> dict:
     """Queue Learn-lab removal on the worker, or run inline when Dramatiq is off."""
-    from peon.projects.learn_lab import LearnLab
-
     lab = LearnLab.shared()
     name = lab.container_name()
     if getattr(settings, "DRAMATIQ_ENABLED", True):

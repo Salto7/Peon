@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from django.db import transaction
+from django.db.models import Q
+from django.utils import timezone as dj_tz
+
 from orchestrator.agent.messaging_base import AgentMessage as MsgDTO
 from orchestrator.agent.messaging_base import AgentMessagingPortBase, MessageType
+from orchestrator.utils.stream_events import envelope
 from peon.projects.models import AgentMessage, Job, Objective
 from peon.projects.streaming import emit_job_stream
 
@@ -52,20 +57,20 @@ class DjangoAgentMessaging(AgentMessagingPortBase):
             from_job,
             "log",
             f"a2a {msg_type} → {tid or 'broadcast'}: {(body or '')[:200]}",
-            metadata={
-                "event": "agent_message",
-                "message_id": str(row.id),
-                "msg_type": msg_type,
-                "to_job_id": tid,
-            },
+            metadata=envelope(
+                "agent_message",
+                {
+                    "message_id": str(row.id),
+                    "msg_type": msg_type,
+                    "to_job_id": tid,
+                },
+            ),
         )
         return self._dto(row)
 
     def inbox(
         self, job_id: str, *, limit: int = 20, consume: bool = True
     ) -> list[MsgDTO]:
-        from django.db import transaction
-        from django.utils import timezone as dj_tz
 
         job = Job.objects.filter(pk=job_id).first()
         if job is None:
@@ -118,7 +123,6 @@ class DjangoAgentMessaging(AgentMessagingPortBase):
 
 
 def models_q_broadcast(job: Job):
-    from django.db.models import Q
 
     q = Q(to_job_id=job.id)
     if job.objective_id:

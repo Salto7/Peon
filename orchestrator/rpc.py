@@ -1,13 +1,12 @@
-"""Unix-socket RPC server so sandboxed skills can call host tools.
+"""Unix-socket RPC server so sandboxed role helpers can call host tools.
 
-Protocol matches ``skills/helpers/orchestrator_tools.py``:
+Protocol matches ``helpers/orchestrator_tools.py``:
 
 * Client connects per call (or keeps a persistent socket) and sends one JSON
   line: ``{"tool", "args", "token", "job_id", "task_id", "project_id"}``.
 * Server replies with one JSON line.
 
-Adapted from the pentest_AI / Peon host-bridge contract (Django-free). Peon
-itself only shipped the skill-side client; this module is the matching server.
+Adapted from the pentest_AI / Peon host-bridge contract (Django-free).
 """
 
 from __future__ import annotations
@@ -37,7 +36,6 @@ RpcHandler = Callable[..., Any]
 
 DEFAULT_RPC_TOOLS = frozenset(
     {
-        "skill_view",
         "mcp_ensure",
         "mcp_list_tools",
         "mcp_call",
@@ -56,25 +54,16 @@ def normalize_run_command_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _mcp_missing(*_a: Any, **_k: Any) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": "MCP RPC handlers not registered — pass handlers= to RpcServer.start",
+    }
+
+
 def default_rpc_handlers() -> dict[str, RpcHandler]:
     """Built-in handlers the library can serve without a host control plane."""
-
-    def skill_view(name: str = "", path: str = "") -> str:
-        from orchestrator.skills.registry import SkillRegistry
-
-        skill = SkillRegistry.shared().load_skill((name or "").strip())
-        if skill is None:
-            return f"Skill not found: {name!r}"
-        return skill.format_view(path=path)
-
-    def _mcp_missing(*_a: Any, **_k: Any) -> dict[str, Any]:
-        return {
-            "ok": False,
-            "error": "MCP RPC handlers not registered — pass handlers= to RpcServer.start",
-        }
-
     return {
-        "skill_view": skill_view,
         "mcp_ensure": _mcp_missing,
         "mcp_list_tools": _mcp_missing,
         "mcp_call": _mcp_missing,
@@ -321,8 +310,6 @@ class RpcServer:
             return normalize_run_command_result(
                 {"exit_code": -1, "stdout": "", "stderr": str(raw), "error": str(raw)}
             )
-        if tool_name == "skill_view":
-            return {"content": raw if isinstance(raw, str) else str(raw)}
         if isinstance(raw, dict):
             return raw
         return {"result": raw}

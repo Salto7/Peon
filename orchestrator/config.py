@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import orchestrator as _pkg
+
 from orchestrator.utils.strings import as_bool
 from orchestrator.prompts import FINDINGS_GUIDANCE, INSTALL_CASCADE
 
@@ -50,9 +52,8 @@ def _env_list(key: str) -> list[str]:
 class RuntimeConfig:
     """Paths, LLM, agent, and sandbox settings for one process."""
 
-    skills_dir: Path = field(default_factory=lambda: Path("skills").resolve())
-    skills_external_dirs: list[Path] = field(default_factory=list)
     tools_catalog_dir: Path = field(default_factory=lambda: Path("tools/catalog").resolve())
+    helpers_dir: Path = field(default_factory=lambda: Path("helpers").resolve())
     workspaces_dir: Path = field(default_factory=lambda: Path("workspaces").resolve())
 
     llm_provider: str = _DEFAULT_LLM_PROVIDER
@@ -83,15 +84,15 @@ class RuntimeConfig:
     system_preamble: str = _DEFAULT_SYSTEM_PREAMBLE
 
     def ensure_dirs(self) -> None:
-        self.skills_dir.mkdir(parents=True, exist_ok=True)
         self.roles_dir.mkdir(parents=True, exist_ok=True)
         self.tools_catalog_dir.mkdir(parents=True, exist_ok=True)
+        self.helpers_dir.mkdir(parents=True, exist_ok=True)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_env(self) -> None:
         """Export path hints used by catalog / docker exec helpers."""
-        os.environ["SKILLS_DIR"] = str(self.skills_dir)
         os.environ["ROLES_DIR"] = str(self.roles_dir)
+        os.environ["HELPERS_DIR"] = str(self.helpers_dir)
         os.environ["TOOLS_CATALOG_DIR"] = str(self.tools_catalog_dir)
         os.environ["PROJECT_WORKSPACES_DIR"] = str(self.workspaces_dir)
         os.environ["AGENT_MODULE"] = (self.agent_module or "crewai").strip().lower()
@@ -114,14 +115,9 @@ class RuntimeConfig:
         )
         max_tokens_raw = _env("LLM_MAX_TOKENS")
         max_tokens = int(max_tokens_raw) if max_tokens_raw.isdigit() else None
-        external = [
-            Path(os.path.expandvars(os.path.expanduser(p))).resolve()
-            for p in _env_list("SKILLS_EXTERNAL_DIRS")
-        ]
         return cls(
-            skills_dir=_env_path("SKILLS_DIR", base / "skills"),
-            skills_external_dirs=external,
             roles_dir=_env_path("ROLES_DIR", base / "roles"),
+            helpers_dir=_env_path("HELPERS_DIR", base / "helpers"),
             tools_catalog_dir=_env_path("TOOLS_CATALOG_DIR", base / "tools" / "catalog"),
             workspaces_dir=_env_path("PROJECT_WORKSPACES_DIR", base / "workspaces"),
             llm_provider=provider,
@@ -157,12 +153,10 @@ class RuntimeConfig:
 
 
 def discover_root(start: Path | str | None = None) -> Path:
-    """Find a project root that contains ``skills/`` and ``tools/catalog/``."""
+    """Find a project root that contains ``roles/`` and ``tools/catalog/``."""
     here = Path(start or Path.cwd()).resolve()
     candidates = [here, *here.parents]
     try:
-        import orchestrator as _pkg
-
         pkg = Path(_pkg.__file__).resolve()
         # In-tree: <repo>/orchestrator/__init__.py → parents[1]
         # src-layout: <repo>/src/orchestrator/__init__.py → parents[2]
@@ -170,7 +164,7 @@ def discover_root(start: Path | str | None = None) -> Path:
     except Exception:
         pass
     for path in candidates:
-        if (path / "skills").is_dir() and (path / "tools" / "catalog").is_dir():
+        if (path / "roles").is_dir() and (path / "tools" / "catalog").is_dir():
             return path
     return here
 
@@ -196,12 +190,13 @@ def configure(cfg: RuntimeConfig | None = None, **overrides: object) -> RuntimeC
     base.apply_env()
     _config = base
     try:
+        # circular: llm / ToolCatalog → get_config
+        from orchestrator.crew.roles.registry import RoleRegistry
         from orchestrator.llm import reset_llm_provider
-        from orchestrator.skills.registry import SkillRegistry
         from orchestrator.tools.catalog.catalog import ToolCatalog
 
         reset_llm_provider()
-        SkillRegistry.reset_shared()
+        RoleRegistry.reset_shared()
         ToolCatalog.reset_shared()
     except Exception:
         pass

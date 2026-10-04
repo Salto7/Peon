@@ -3,97 +3,164 @@
 Importing this module registers tools via ``@capability`` decorators.
 Call ``orchestrator.capabilities.ensure_registered()`` so registration runs
 even when this module was not imported yet.
+
+Shared bodies (``sandbox_status_text``, ``provision_cli_body``, ``run_cli_body``,
+stream helpers) are plain functions so CrewAI adapters can call the same code
+without a third wrapper module.
 """
 
 from __future__ import annotations
 
-import os
+from typing import Any, Mapping
 
 from langchain_core.tools import tool
 
+from agent_runtime.api import Session
 from orchestrator.agent.job import get_agent_config, get_job
 from orchestrator.capabilities.registry import CapabilityGroup, capability
+from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.sandbox.shell import ShellRunner
-from agent_runtime.api import Session
-from orchestrator.skills.execute import SkillExecutionDispatcher, SkillRunRequest
-from orchestrator.skills.catalog import filter_skills
-from orchestrator.skills.registry import SkillRegistry
+from orchestrator.tools.install import InstallResolver
+from orchestrator.utils.stream_events import (
+    EVENT_PROVISION_CLI,
+    EVENT_RUN_CLI,
+    EVENT_RUN_PERIODIC,
+    EVENT_SPAWN_AGENT,
+    cli_payload,
+    envelope,
+)
 
 
-def _emit(kind: str, content: str, **metadata: object) -> None:
-    get_job().bridge.emit(kind, content, **metadata)
+# --- shared bodies (also used by orchestrator.crew.tools.adapters) -------------
 
 
-def _bound() -> str | None:
-    """Return an error string if the sandbox is unbound, else None."""
+def emit(kind: str, content: str, **metadata: object) -> None:
+    get_job().bridge.emit(kind, content, metadata=dict(metadata) if metadata else None)
+
+
+def emit_event(
+    kind: str,
+    content: str,
+    event: str,
+    payload: Mapping[str, Any] | None = None,
+    **meta: object,
+) -> None:
+    emit(kind, content, **envelope(event, payload, **meta))
+
+
+def require_bound() -> str | None:
     return Session.require_bound()
 
 
-def _sandbox_line() -> str:
+def sandbox_status_text(*, extra_binaries: bool = False) -> str:
+    err = require_bound()
+    if err:
+        return err
     info = Session.current().info
-    return f"name={info.name} mode={info.mode} session_id={info.project_id or '-'}"
+    lines = [
+        f"name={info.name} mode={info.mode} session_id={info.project_id or '-'}"
+    ]
+    if extra_binaries:
+        try:
+            which = Session.current().which
+            for binary in ("python3", "bash", "curl", "apt-get"):
+                lines.append(f"{binary}={'yes' if which(binary) else 'no'}")
+        except Exception:
+            pass
+    return "\n".join(lines)
+
+
+def provision_cli_body(
+    binary: str,
+    package: str = "",
+    *,
+    enforce_role_allowlist: bool = False,
+) -> str:
+    err = require_bound()
+    if err:
+        return err
+    name = (binary or "").strip()
+    if not name:
+        return "Error: provide a binary name."
+
+    if enforce_role_allowlist:
+        role_id = str(get_job().extras.get("role_id") or "").strip()
+        if role_id:
+            role = RoleRegistry.shared().get(role_id)
+            if role and role.allow_binaries and name not in role.allow_binaries:
+                return (
+                    f"Error: binary {name!r} not allowlisted for role {role_id}. "
+                    f"Allowed: {', '.join(role.allow_binaries)}"
+                )
+
+    ok, msg = InstallResolver.shared().resolve(name, package=package)
+    if ok:
+        text = msg or f"provisioned {name}"
+        emit_event(
+            "log",
+            text,
+            EVENT_PROVISION_CLI,
+            {"binary": name, "package": package or ""},
+        )
+        return text
+    return f"Error: {msg}"
+
+
+def run_cli_body(command: str) -> str:
+    """Run a sandbox shell command with RoE gating via the job bridge."""
+    err = require_bound()
+    if err:
+        return err
+    cmd = (command or "").strip()
+    if not cmd:
+        return "Error: empty command."
+    bridge = get_job().bridge
+    gate = bridge.assert_command_allowed(cmd)
+    if gate:
+        return f"Error: RoE blocked — {gate}"
+    dup = ""
+    checker = getattr(bridge, "duplicate_scan_reason", None)
+    if callable(checker):
+        dup = checker(cmd) or ""
+    if dup:
+        return f"Skipped: {dup}"
+    payload = cli_payload(cmd)
+    emit_event("tool", f"run_cli: {cmd[:200]}", EVENT_RUN_CLI, payload)
+    return f"exit={ShellRunner.shared().run_shell(cmd)}"
+
+
+# --- LangChain registrations --------------------------------------------------
 
 
 @capability(CapabilityGroup.SANDBOX)
 @tool
 def sandbox_setup() -> str:
     """Confirm the Docker sandbox is bound (host provisions before the agent)."""
-    return _bound() or ("Sandbox ready — " + _sandbox_line())
+    err = require_bound()
+    if err:
+        return err
+    return "Sandbox ready — " + sandbox_status_text()
 
 
 @capability(CapabilityGroup.SANDBOX)
 @tool
 def sandbox_status() -> str:
     """Show bound sandbox mode and name."""
-    err = _bound()
-    if err:
-        return err
-    lines = [_sandbox_line()]
-    try:
-        which = Session.current().which
-        for binary in ("python3", "bash", "curl", "apt-get"):
-            lines.append(f"{binary}={'yes' if which(binary) else 'no'}")
-    except Exception:
-        pass
-    return "\n".join(lines)
+    return sandbox_status_text(extra_binaries=True)
 
 
 @capability(CapabilityGroup.SANDBOX)
 @tool
-def provision_cli(binary: str, package: str = "", skill_name: str = "") -> str:
-    """Install/verify a CLI on PATH (tools/catalog → skill INSTALL.md → LLM). Prefer over apt/curl via run_cli."""
-    err = _bound()
-    if err:
-        return err
-    name = (binary or "").strip()
-    if not name:
-        return "Error: provide a binary name."
-    from orchestrator.tools.install import InstallResolver
-
-    skill = (skill_name or "").strip() or (
-        os.environ.get("ORCHESTRATOR_SKILL_NAME") or ""
-    ).strip()
-    ok, msg = InstallResolver.shared().resolve(
-        name, package=package, skill_name=skill
-    )
-    if ok:
-        _emit("log", msg or f"provisioned {name}")
-        return msg or f"provisioned {name}"
-    return f"Error: {msg}"
+def provision_cli(binary: str, package: str = "") -> str:
+    """Install/verify a CLI on PATH (tools/catalog → LLM). Prefer over apt/curl via run_cli."""
+    return provision_cli_body(binary, package=package)
 
 
 @capability(CapabilityGroup.SANDBOX)
 @tool
 def run_cli(command: str) -> str:
-    """Ad-hoc shell when no skill script applies (RoE applies). Not for installs."""
-    err = _bound()
-    if err:
-        return err
-    cmd = (command or "").strip()
-    if not cmd:
-        return "Error: empty command."
-    _emit("tool", f"run_cli: {cmd[:200]}")
-    return f"exit={ShellRunner.shared().run_shell(cmd)}"
+    """Ad-hoc sandbox shell (RoE applies). Not for installs — use provision_cli."""
+    return run_cli_body(command)
 
 
 @capability(CapabilityGroup.SANDBOX, tags={"watchdog", "periodic"})
@@ -105,15 +172,22 @@ def run_periodic(
     package: str = "",
 ) -> str:
     """Watchdog ticks only — repeat a sandbox shell command on an interval."""
-    err = _bound()
+    err = require_bound()
     if err:
         return err
     cmd = (command or "").strip()
     if not cmd:
         return "Error: empty command."
-    _emit(
+    emit_event(
         "tool",
         f"run_periodic({interval_seconds}s/{duration_seconds}s): {cmd[:160]}",
+        EVENT_RUN_PERIODIC,
+        cli_payload(
+            cmd,
+            interval_seconds=int(interval_seconds),
+            duration_seconds=int(duration_seconds),
+            package=package or "",
+        ),
     )
     code = ShellRunner.shared().run_periodic(
         cmd,
@@ -122,59 +196,6 @@ def run_periodic(
         package=package or "",
     )
     return f"exit={code}"
-
-
-@capability(CapabilityGroup.SKILLS)
-@tool
-def run_skill_script(
-    skill_name: str, script: str = "scripts/run.py", command: str = ""
-) -> str:
-    """Run a catalog skill script. Prefer this over rewriting the skill with run_cli."""
-    err = _bound()
-    if err:
-        return err
-    skill = (skill_name or "").strip()
-    path = (script or "scripts/run.py").strip() or "scripts/run.py"
-    if not skill:
-        return "Error: skill_name required."
-    _emit(
-        "tool",
-        f"run_skill_script({skill}, {path}"
-        + (f", command={command[:120]!r}" if command else "")
-        + ")",
-    )
-    result = SkillExecutionDispatcher.shared().run(
-        SkillRunRequest(skill_name=skill, script=path, command=command or "")
-    )
-    out = (result.output or "").strip()
-    if len(out) > 12000:
-        out = out[:12000] + "\n…(truncated)"
-    return f"ok={result.ok} exit={result.exit_code}\n{out}"
-
-
-@capability(CapabilityGroup.SKILLS)
-@tool
-def skills_list() -> str:
-    """List jobable skills from the filesystem catalog."""
-    skills = filter_skills(
-        SkillRegistry.shared().get_registry().values(), jobable_only=True
-    )
-    if not skills:
-        return "No jobable skills."
-    lines = []
-    for s in sorted(skills, key=lambda x: x.name):
-        lines.append(f"{s.name} [{s.category or '-'}] — {(s.description or '')[:120]}")
-    return "\n".join(lines)
-
-
-@capability(CapabilityGroup.SKILLS)
-@tool
-def skill_view(name: str, path: str = "") -> str:
-    """Show a skill's instructions (or a reference file under the skill dir)."""
-    skill = SkillRegistry.shared().load_skill((name or "").strip())
-    if skill is None:
-        return f"Skill not found: {name!r}"
-    return skill.format_view(path=path)
 
 
 @capability(CapabilityGroup.ENGAGEMENT)
@@ -204,12 +225,7 @@ def record_finding(
     evidence_path: str = "",
     remediation: str = "",
 ) -> str:
-    """Record one engagement finding about a subject — not run/objective status.
-
-    Use for discoveries about any asset class (hosts, files, malware, source,
-    packages, identities, cloud, …) with evidence. kind/asset_type are free-form.
-    Do NOT use for job/objective/agent progress — use update_objective_status.
-    """
+    """Record one engagement finding about a subject — not run/objective status."""
     return get_job().bridge.record_finding(
         title=title,
         severity=severity,
@@ -234,7 +250,7 @@ def record_findings(findings_json: str) -> str:
 @tool
 def list_findings(kind: str = "") -> str:
     """List engagement findings already recorded (optional kind slug filter)."""
-    return get_job().bridge.list_findings(kind)
+    return get_job().bridge.list_findings(kind=kind)
 
 
 @capability(CapabilityGroup.ENGAGEMENT, tags={"multiagent"})
@@ -242,14 +258,14 @@ def list_findings(kind: str = "") -> str:
 def spawn_agent(
     title: str,
     description: str,
-    skill_name: str = "",
+    role_id: str = "",
     link: str = "peer",
 ) -> str:
     """Spawn another Job agent.
 
     link=peer (default): same objective, focused brief — preferred multi-agent path.
     link=child: subordinate of this job (depth-limited).
-    skill_name: optional primary skill id (defaults to this job's skill on the host).
+    role_id: optional primary role id (defaults to this job's role on the host).
     """
     cfg = get_agent_config()
     ctx = get_job()
@@ -258,20 +274,21 @@ def spawn_agent(
         return "Error: link must be 'peer' or 'child'"
     if kind == "child" and ctx.depth >= cfg.max_subagent_depth:
         return f"Error: child depth limit ({cfg.max_subagent_depth})"
-    names = [skill_name.strip()] if (skill_name or "").strip() else None
+    names = [role_id.strip()] if (role_id or "").strip() else None
     try:
         job_id = ctx.bridge.spawn_agent(
             title=title,
             description=description,
-            skill_names=names,
+            role_ids=names,
             link=kind,  # type: ignore[arg-type]
         )
     except Exception as exc:
         return f"Error spawning agent: {exc}"
-    _emit(
+    emit_event(
         "log",
         f"spawned {kind} agent {job_id}: {title}",
-        metadata={"event": "spawn_agent", "link": kind, "job_id": job_id},
+        EVENT_SPAWN_AGENT,
+        {"link": kind, "job_id": job_id, "title": title},
     )
     return job_id if job_id.startswith("Error") else f"spawned {kind} job {job_id}"
 
@@ -304,11 +321,7 @@ def send_agent_message(
     type: str = "inform",
     artifact_refs: str = "",
 ) -> str:
-    """Send a message to another Job on this objective (broadcast if to_job_id empty).
-
-    type: request | inform | handoff | challenge.
-    artifact_refs: optional comma-separated refs.
-    """
+    """Send a message to another Job on this objective (broadcast if to_job_id empty)."""
     refs = [p.strip() for p in (artifact_refs or "").split(",") if p.strip()]
     return get_job().bridge.send_message(
         to_job_id=to_job_id or "",
@@ -321,11 +334,7 @@ def send_agent_message(
 @capability(CapabilityGroup.ENGAGEMENT, tags={"multiagent"})
 @tool
 def propose_agents(context_notes: str = "", max_agents: int = 4) -> str:
-    """Deduce and spawn peer agents from objective context (LLM; no fixed technique list).
-
-    Call when the objective likely needs multiple specialists. Pass extra evidence
-    in context_notes. Returns spawned job ids or an empty proposal.
-    """
+    """Deduce and spawn peer agents from objective context (LLM)."""
     return get_job().bridge.propose_agents(
         context_notes=context_notes or "", max_agents=int(max_agents or 4)
     )

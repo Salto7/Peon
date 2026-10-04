@@ -1,7 +1,7 @@
 id: dnsutils
 name: dnsutils
 description: >
-  dig and nslookup for DNS queries. Linked skill: domain-enum. Install via apt below.
+  dig and nslookup for DNS queries. Linked role: domain-enum. Install via apt below.
 tier: catalog
 binary: dig
 binaries: [dig, nslookup]
@@ -10,5 +10,5 @@ install:
     packages: [dnsutils]
 verify:
   - command: "dig -v 2>/dev/null || which dig"
-skills: [domain-enum]
+roles: [domain-enum]
 tags: [recon]

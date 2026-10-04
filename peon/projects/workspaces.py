@@ -10,7 +10,11 @@ from pathlib import Path
 
 from django.conf import settings
 
-from orchestrator.utils.workspace import safe_workspace_key
+from orchestrator.utils.paths import (
+    ensure_workspace_layout,
+    safe_join,
+    safe_workspace_key,
+)
 
 
 def workspaces_root() -> Path:
@@ -28,8 +32,7 @@ def project_workspace_dir(project_id: str, *, create: bool = True) -> Path:
     path = (root / key).resolve()
     path.relative_to(root)  # raises if escaped
     if create:
-        for sub in ("plans", "inputs", "findings", "workspace"):
-            (path / sub).mkdir(parents=True, exist_ok=True)
+        ensure_workspace_layout(path)
     return path
 
 
@@ -101,21 +104,15 @@ class ReportEntry:
 
 def resolve_report_path(project_id: str, relative_path: str) -> Path | None:
     """Resolve ``relative_path`` under the project workspace (no path escape)."""
-    rel = (relative_path or "").lstrip("/").replace("\\", "/")
-    if not rel or ".." in Path(rel).parts:
-        return None
+
     try:
         root = project_workspace_dir(str(project_id), create=False).resolve()
     except ValueError:
         return None
     if not root.is_dir():
         return None
-    target = (root / rel).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return None
-    return target if target.is_file() else None
+    target = safe_join(root, relative_path)
+    return target if target is not None and target.is_file() else None
 
 
 def list_reports(project_id: str) -> list[ReportEntry]:
@@ -213,19 +210,15 @@ def sanitize_upload_name(name: str) -> str:
 
 def resolve_input_path(project_id: str, name: str) -> Path | None:
     """Resolve a file under this project's inputs/ only (no path escape)."""
+
     try:
         root = inputs_dir(project_id, create=False).resolve()
     except (ValueError, OSError):
         return None
     if not root.is_dir():
         return None
-    safe = sanitize_upload_name(Path(name or "").name)
-    target = (root / safe).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return None
-    return target if target.is_file() else None
+    target = safe_join(root, sanitize_upload_name(Path(name or "").name))
+    return target if target is not None and target.is_file() else None
 
 
 def list_project_inputs(project_id: str) -> list[dict]:
@@ -305,4 +298,57 @@ def delete_project_input(project_id: str, name: str) -> bool:
         return False
     path.unlink(missing_ok=True)
     return True
+
+
+# --- Prior-agent evidence discovery (tool-agnostic) ---
+
+_ARTIFACT_SKIP_NAMES = frozenset({"findings_queue.jsonl", "analysis_context.json"})
+_ARTIFACT_SKIP_SUFFIXES = (".ingested", ".pyc")
+
+
+def iter_workspace_artifacts(
+    workspace: Path, *, limit: int = 80
+) -> list[tuple[str, int]]:
+    """Relative paths + sizes for evidence files under ``workspace/`` and ``findings/``.
+
+    Tool-agnostic: any prior agent output lands here; callers decide how to parse.
+    """
+    root = Path(workspace).resolve()
+    out: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for sub in ("workspace", "findings"):
+        base = root / sub
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.name.startswith(".") or path.name in _ARTIFACT_SKIP_NAMES:
+                continue
+            if path.name.endswith(_ARTIFACT_SKIP_SUFFIXES):
+                continue
+            if path.name.lower() == "report.md" and sub == "findings":
+                # Final report is an output, not an input artifact.
+                continue
+            try:
+                rel = path.resolve().relative_to(root).as_posix()
+                size = int(path.stat().st_size)
+            except (ValueError, OSError):
+                continue
+            if rel in seen:
+                continue
+            seen.add(rel)
+            out.append((rel, size))
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def format_workspace_artifact_index(workspace: Path, *, limit: int = 80) -> str:
+    """Markdown bullet list of evidence files for job briefs / tools."""
+    rows = iter_workspace_artifacts(workspace, limit=limit)
+    if not rows:
+        return ""
+    lines = [f"- `{rel}` ({size} bytes)" for rel, size in rows]
+    return "\n".join(lines)
 

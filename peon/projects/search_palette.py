@@ -7,19 +7,19 @@ from django.http import HttpRequest, JsonResponse
 from django.urls import reverse
 from django.views.decorators.http import require_GET
 
-from peon.projects.catalog import SkillCards, ToolCards
+from peon.projects.catalog_cards import RoleCards, ToolCards
 from peon.projects.models import Finding, Job, JobStatus, Project
 from peon.projects.runtime_settings import PeonSettings
 
 PALETTE_PROJECT_LIMIT = 40
 PALETTE_FINDING_LIMIT = 40
-PALETTE_SKILL_LIMIT = 40
+PALETTE_ROLE_LIMIT = 40
 PALETTE_TOOL_LIMIT = 40
 
 
 @require_GET
 def search_json(request: HttpRequest) -> JsonResponse:
-    """Operator Search (⇧S): projects, findings, skills, tools, settings, jumps."""
+    """Operator Search (⇧S): projects, findings, roles, tools, settings, jumps."""
     q = (request.GET.get("q") or "").strip()
     q_lower = q.lower()
     items: list[dict] = [
@@ -49,21 +49,21 @@ def search_json(request: HttpRequest) -> JsonResponse:
             "label": "Shared catalog",
             "group": "Navigate",
             "href": reverse("catalog"),
-            "keywords": "skills tools",
+            "keywords": "roles tools",
         },
         {
             "id": "nav-learn",
             "label": "Toolsmith",
             "group": "Navigate",
             "href": reverse("learn"),
-            "keywords": "learn lab author skill tool yaml suggest writer forge",
+            "keywords": "learn lab author role tool yaml suggest writer forge",
         },
         {
-            "id": "nav-catalog-skills",
-            "label": "Skills catalog",
+            "id": "nav-catalog-roles",
+            "label": "Roles catalog",
             "group": "Navigate",
-            "href": reverse("catalog") + "#skills",
-            "keywords": "skill registry",
+            "href": reverse("catalog") + "#roles",
+            "keywords": "role registry",
         },
         {
             "id": "nav-catalog-tools",
@@ -149,33 +149,32 @@ def search_json(request: HttpRequest) -> JsonResponse:
         )
 
     catalog_base = reverse("catalog") + "?all=1"
-    skill_hits = 0
-    for skill in SkillCards.catalog(jobable_only=False):
+    role_hits = 0
+    for role in RoleCards.catalog():
         hay = " ".join(
             [
-                skill.get("name") or "",
-                skill.get("category") or "",
-                skill.get("description") or "",
-                " ".join(skill.get("tags") or []),
-                " ".join(skill.get("aliases") or []),
-                "skill",
+                role.get("name") or "",
+                role.get("category") or "",
+                role.get("description") or "",
+                " ".join(role.get("tags") or []),
+                "role",
             ]
         ).lower()
         if q_lower and q_lower not in hay:
             continue
-        name = skill["name"]
+        name = role["name"]
         items.append(
             {
-                "id": f"skill-{name}",
+                "id": f"role-{name}",
                 "label": name,
-                "group": "Skills",
-                "href": f"{catalog_base}#skill-{name}",
+                "group": "Roles",
+                "href": f"{catalog_base}#role-{name}",
                 "keywords": hay,
-                "meta": skill.get("category") or ("required" if skill.get("required") else ""),
+                "meta": role.get("category") or ("required" if role.get("required") else ""),
             }
         )
-        skill_hits += 1
-        if skill_hits >= PALETTE_SKILL_LIMIT:
+        role_hits += 1
+        if role_hits >= PALETTE_ROLE_LIMIT:
             break
 
     tool_hits = 0
@@ -189,7 +188,7 @@ def search_json(request: HttpRequest) -> JsonResponse:
                 tool.get("tier") or "",
                 " ".join(tool.get("tags") or []),
                 " ".join(tool.get("binaries") or []),
-                " ".join(tool.get("skills") or []),
+                " ".join(tool.get("roles") or []),
                 "tool cli",
             ]
         ).lower()

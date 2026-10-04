@@ -1,15 +1,14 @@
 """URL config — operator UI, catalog, admin, health."""
 
+from django.conf import settings
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
 
+from peon.projects.llm_proxy import LlmProxy
+
 
 def health(_request):
-    from django.conf import settings
-
-    from peon.projects.llm_proxy import LlmProxy
-
     proxy = LlmProxy.shared()
     proxy_on = LlmProxy.intent_enabled()
     proxy_st = proxy.status()

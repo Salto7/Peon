@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from agent_runtime.api import Runtime
+from agent_runtime.docker.runtime import DockerRuntime
+from agent_runtime.openshell.runtime import OpenShellRuntime
 
 _RUNTIMES: dict[str, Runtime] = {}
 _BUILTIN_DONE = False
@@ -32,9 +34,6 @@ def register_builtin() -> None:
     global _BUILTIN_DONE
     if _BUILTIN_DONE:
         return
-    from agent_runtime.docker.runtime import DockerRuntime
-    from agent_runtime.openshell.runtime import OpenShellRuntime
-
     register(DockerRuntime())
     register(OpenShellRuntime())
     _BUILTIN_DONE = True

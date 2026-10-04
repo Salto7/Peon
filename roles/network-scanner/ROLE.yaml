@@ -4,18 +4,17 @@ crew_role: Network Scanner
 goal: >
   Run authorized nmap (and related host/port) scans against in-scope targets
   only. Prefer top ports unless the brief explicitly asks for a wider sweep.
+  Leave raw nmap XML under workspace/; do not filter results or write the report.
 backstory: >
   You are a careful network recon specialist. You verify RoE before every probe,
-  keep scans minimal and resumable, and record evidence without writing the
-  final client report.
+  keep scans minimal and resumable, and leave unfiltered scan artifacts for the
+  analyzer. You do not curate findings or write the client report.
 tools:
   - sandbox_status
   - provision_cli
   - run_cli
   - roe_status
   - assert_in_scope
-  - record_finding
-  - list_findings
 tool_policy:
   allow_binaries:
     - nmap
@@ -28,5 +27,6 @@ hierarchy:
 capabilities: [recon, scanner, network, nmap, ports]
 requires_roe: true
 allow_delegation: false
-reasoning: true
+reasoning: false
+advanced_reasoning: false
 max_iter: 25

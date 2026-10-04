@@ -8,13 +8,17 @@ from typing import Any
 
 from django.conf import settings
 
+import yaml
+
 from agent_runtime.api import RuntimeSpec, Session, SessionInfo
+from agent_runtime.docker.cli import DockerCli
 from agent_runtime.registry import get as get_runtime
 from agent_runtime.registry import register_builtin
 from orchestrator.tools.catalog import ToolCatalog
 from orchestrator.tools.catalog.catalog import CatalogProvisioner
 from orchestrator.utils.service import SharedServiceBase
-from peon.projects.runtime_bind import bind_runtime_session, runtime_state_dir
+from peon.projects.llm_proxy import LlmProxy
+from peon.projects.sandbox import bind_runtime_session, runtime_state_dir
 
 LEARN_LAB_FILTER = "label=peon.learn_lab=1"
 
@@ -48,8 +52,6 @@ class LearnLab(SharedServiceBase):
 
     def _compose_network(self) -> str:
         """Attach lab to the Peon Compose network so it can reach litellm."""
-        from agent_runtime.docker.cli import DockerCli
-        from peon.projects.llm_proxy import LlmProxy
 
         return LlmProxy.shared()._compose_network(DockerCli.shared())
 
@@ -185,7 +187,6 @@ class LearnLab(SharedServiceBase):
         self, *, yaml_text: str, install_script: str = ""
     ) -> dict[str, Any]:
         """Run catalog provision for one recipe inside the Learn lab."""
-        import yaml
 
         text = (yaml_text or "").strip()
         if not text:

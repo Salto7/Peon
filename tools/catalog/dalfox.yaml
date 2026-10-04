@@ -18,5 +18,5 @@ install:
       - https://codeload.github.com
 verify:
   - command: "dalfox version"
-skills: []
+roles: []
 tags: [web, xss]

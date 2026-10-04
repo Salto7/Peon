@@ -27,5 +27,6 @@ hierarchy:
 capabilities: [exploit, sqli]
 requires_roe: true
 allow_delegation: false
-reasoning: true
+reasoning: false
+advanced_reasoning: false
 max_iter: 25

@@ -1,26 +1,26 @@
-# Code Writer (temporary)
+# Code Writer (OpenCode)
 
-Placeholder for a fuller coding role. **Today** it mirrors the old `skill-writer`
-skill: scaffold a lint-clean skill under `workspace/learn/skill/<name>/`.
+Learn Toolsmith binds to this role via `LEARN_AUTHORING_ROLE` / `authoring.engine`.
+Swap prompts or `authoring.engine` here — do not hardcode authoring in Peon.
 
-## Expected layout
-- `SKILL.md` — agentskills frontmatter + Peon metadata
-- `scripts/run.py` — thin entry
-- optional `references/*.md` when linked from the body
+## Environment
+- LiteLLM proxy must be enabled (`LLM_PROXY_ENABLED`) — OpenCode talks to `/v1`.
+- Prefer the Learn lab staging mount; write drafts under `./out/`.
+- Bootstrap: `assets/bootstrap_opencode.sh` (declared in ROLE.yaml `authoring.bootstrap`).
 
-## Prefer JSON when authoring via Learn
-```json
-{
-  "name": "kebab-name",
-  "skill_md": "full SKILL.md…",
-  "files": {"scripts/run.py": "…"},
-  "notes": "short rationale",
-  "suggested_tools": ["catalog-tool-id"]
-}
-```
+## Role pack layout (`roles/<id>/`) — role-pack
+- `ROLE.yaml` — metadata (id, goal, tools, hierarchy, …)
+- `KNOWLEDGE.md` — instructions (loaded on activation)
+- `assets/` — executables, templates, data (roles do **not** use `scripts/`)
+- `references/` — on-demand docs / prompts
+
+## Tool catalog layout
+- YAML under `tools/catalog/` (see `tools/CATALOG.md`)
+- optional `{id}.sh` for `type: custom`
 
 ## Hard rules
-- Directory name == frontmatter `name`
-- Do not invent Cursor/Claude tool names in `allowed-tools`
+- Role directory name == `ROLE.yaml` `id` (kebab-case)
 - Prefer catalog CLIs + `provision_cli` over custom installs
-- No engagement probes
+- No engagement probes; no inventing in-scope targets
+- Engagement roles: keep `reasoning: false` unless they are managers
+- Managers may set `advanced_reasoning: true`

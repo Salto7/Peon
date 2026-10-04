@@ -20,5 +20,5 @@ install:
       - https://codeload.github.com
 verify:
   - command: "mfasweep --help"
-skills: []
+roles: []
 tags: [osint, entra, mfa]

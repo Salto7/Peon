@@ -2,7 +2,7 @@ id: nmap
 name: nmap
 description: >
   Network scanner for authorized in-scope host discovery and port enumeration.
-  Linked skill: network-scanner. Install via apt below.
+  Linked role: network-scanner. Install via apt below.
 tier: catalog
 binary: nmap
 install:
@@ -10,5 +10,5 @@ install:
     packages: [nmap]
 verify:
   - command: "nmap --version"
-skills: [network-scanner]
+roles: [network-scanner]
 tags: [recon]

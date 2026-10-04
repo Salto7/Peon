@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
+from django.db import transaction
 from django.utils import timezone as dj_tz
 
 from orchestrator.agent import (
@@ -12,6 +14,25 @@ from orchestrator.agent import (
     AgentRunConfig,
     agent_run_config_from_mapping,
 )
+from orchestrator.agent.propose import propose_agents, specs_as_dicts
+from orchestrator.crew.roles.registry import RoleRegistry
+from orchestrator.utils.paths import format_roe_block
+from peon.projects.agent_messaging import DjangoAgentMessaging
+from peon.projects.console_chat import create_operator_prompt
+from peon.projects.findings import FindingStore
+from orchestrator.utils.commands import catalog_cli_in_command
+from orchestrator.utils.stream_events import (
+    EVENT_RUN_CLI,
+    envelope,
+    event_of,
+    hosts_in_command,
+    is_event,
+    legacy_run_cli_command,
+    payload_cli,
+    payload_command,
+    payload_hosts,
+)
+from orchestrator.utils.paths import safe_join
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
     Finding,
@@ -22,14 +43,19 @@ from peon.projects.models import (
     JobStatus,
     Objective,
     ObjectiveStatus,
+    StreamMessage,
+    StreamMessageType,
 )
+from peon.projects.objectives import ObjectiveScheduler
+from peon.projects.runtime_settings import PeonSettings
 from peon.projects.streaming import emit_job_stream
+from peon.projects.target_shapes import coerce_targets
+from peon.projects.tasks import enqueue_job
+from peon.projects.workspaces import resolve_job_workspace
 
 
 def agent_run_config() -> AgentRunConfig:
     """Load agent governors from Peon Settings (DB) with .env defaults."""
-    from peon.projects.runtime_settings import PeonSettings
-
     return agent_run_config_from_mapping(
         {
             "AGENT_MAX_FAILURE_REPLANS": PeonSettings.get_int(
@@ -86,7 +112,6 @@ class JobAgentBridge(AgentBridgeBase):
         ).count()
         if active >= cfg.max_subagents:
             raise RuntimeError(f"Too many active child agents (max {cfg.max_subagents})")
-        from peon.projects.tasks import enqueue_job
 
         roles = list(role_ids or []) or list(self._job.role_ids or [])
         child = Job.objects.create(
@@ -125,7 +150,6 @@ class JobAgentBridge(AgentBridgeBase):
                 f"Error: too many active agents on this objective "
                 f"(max {cfg.max_subagents + 1})"
             )
-        from peon.projects.objectives import ObjectiveScheduler
 
         roles = list(role_ids or []) or list(self._job.role_ids or [])
         role = roles[0] if roles else ""
@@ -203,22 +227,50 @@ class JobAgentBridge(AgentBridgeBase):
         valid = {c.value for c in ObjectiveStatus}
         if status not in valid:
             return f"Invalid status {status!r}; want one of {sorted(valid)}"
-        obj.status = status
-        if note:
-            obj.blocked_reason = note[:2000]
-        if status == ObjectiveStatus.COMPLETED:
-            obj.completed_at = dj_tz.now()
-        obj.save()
-        if status == ObjectiveStatus.BLOCKED and self._job.project_id:
-            try:
-                from peon.projects.console_chat import create_operator_prompt
 
-                reason = (note or obj.blocked_reason or "Objective blocked").strip()
+
+        sched = ObjectiveScheduler()
+        project = self._job.project
+        reason = (note or "").strip()
+
+        # "Release to scheduler" must create a Job — status alone stalls the plan.
+        if status == ObjectiveStatus.IN_PROGRESS:
+            if obj.id == getattr(self._job, "objective_id", None):
+                sched.mark(obj, ObjectiveStatus.IN_PROGRESS, reason=reason)
+                return f"OBJ-{obj.seq} → {obj.status}"
+            job = sched.create_run(
+                project,
+                obj,
+                plan_text=self._job.plan_text or "",
+                workspace_id=str(project.id),
+            )
+            if job is None:
+                obj.refresh_from_db()
+                return (
+                    f"OBJ-{obj.seq} → {obj.status}"
+                    + (f" ({obj.blocked_reason})" if obj.blocked_reason else "")
+                    + " — no job queued"
+                )
+            return f"OBJ-{obj.seq} → {obj.status}; queued job {job.id}"
+
+        sched.mark(obj, status, reason=reason)
+        if status == ObjectiveStatus.BLOCKED:
+            try:
                 create_operator_prompt(
-                    self._job.project,
-                    f"OBJ-{obj.seq} {obj.title}: {reason}",
+                    project,
+                    f"OBJ-{obj.seq} {obj.title}: {reason or obj.blocked_reason or 'Objective blocked'}",
                     job=self._job,
                 )
+            except Exception:
+                pass
+        elif status == ObjectiveStatus.COMPLETED and obj.id != getattr(
+            self._job, "objective_id", None
+        ):
+            # Completing a peer objective should advance the plan.
+            try:
+                nxt = sched.enqueue_next(project)
+                if nxt is not None:
+                    return f"OBJ-{obj.seq} → {obj.status}; queued job {nxt.id}"
             except Exception:
                 pass
         return f"OBJ-{obj.seq} → {obj.status}"
@@ -229,29 +281,24 @@ class JobAgentBridge(AgentBridgeBase):
         title = str(fields.get("title") or "").strip()
         if not title:
             return "Error: title required."
-        from peon.projects.findings import FindingStore, is_status_noise
 
-        kind = str(fields.get("kind") or "observation")
-        if is_status_noise(title, kind):
-            return (
-                "Rejected: that looks like run/objective status, not an engagement "
-                "finding. Use update_objective_status for objectives; record_finding "
-                "only for discoveries about subjects (any asset class) with evidence."
-            )
+        description = str(fields.get("description") or fields.get("summary") or "")
         row = FindingStore().record(
             self._job.project,
             {
                 "title": title,
                 "severity": str(fields.get("severity") or "info"),
-                "kind": kind,
+                "kind": str(fields.get("kind") or "observation"),
                 "evidence": str(fields.get("evidence") or ""),
                 "host": str(fields.get("host") or ""),
-                "description": str(fields.get("description") or ""),
+                "description": description,
                 "asset_type": str(fields.get("asset_type") or ""),
                 "evidence_path": str(fields.get("evidence_path") or ""),
                 "remediation": str(fields.get("remediation") or ""),
                 "service": str(fields.get("service") or ""),
                 "port": fields.get("port"),
+                "cve_id": str(fields.get("cve_id") or ""),
+                "cwe_id": str(fields.get("cwe_id") or ""),
                 "metadata": fields.get("metadata")
                 if isinstance(fields.get("metadata"), dict)
                 else {},
@@ -260,7 +307,7 @@ class JobAgentBridge(AgentBridgeBase):
             objective=self._job.objective,
         )
         if row is None:
-            return "Finding not recorded (deduped, invalid, or status noise)."
+            return "Finding not recorded (deduped or invalid)."
         return f"Recorded FIND-{row.seq}: {row.title[:80]}"
 
     def record_findings(self, findings_json: str) -> str:
@@ -288,12 +335,79 @@ class JobAgentBridge(AgentBridgeBase):
         if not rows:
             return "No findings."
         return "\n".join(
-            f"FIND-{f.seq} [{f.severity}/{f.kind}] {f.title}" for f in rows
+            f"FIND-{f.seq} [{f.severity}/{f.kind}] {f.title}"
+            + (f" host={f.host}" if f.host else "")
+            + (f" port={f.port}" if f.port is not None else "")
+            for f in rows
         )
+
+    def list_workspace_artifacts(self) -> str:
+        """List evidence files prior agents left under the job workspace."""
+        from peon.projects.workspaces import format_workspace_artifact_index
+
+        ws = resolve_job_workspace(self._job)
+        text = format_workspace_artifact_index(ws)
+        return text or "(no workspace artifacts yet)"
+
+    def read_workspace_artifact(self, path: str, max_chars: int = 100_000) -> str:
+        """Read one evidence file under ``workspace/`` or ``findings/`` (host FS)."""
+        rel = (path or "").strip().lstrip("/")
+        if not rel or ".." in Path(rel).parts:
+            return "Error: provide a relative path under workspace/ or findings/."
+        root = resolve_job_workspace(self._job).resolve()
+        target = safe_join(root, rel)
+        if target is None or not target.is_file():
+            return f"Error: artifact not found: {rel}"
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return "Error: path escapes workspace."
+        # Only evidence trees — not arbitrary project files.
+        top = target.relative_to(root).parts[0] if target.relative_to(root).parts else ""
+        if top not in {"workspace", "findings"}:
+            return "Error: only workspace/ and findings/ artifacts are readable."
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return f"Error reading {rel}: {exc}"
+        limit = max(1_000, min(int(max_chars or 100_000), 200_000))
+        if len(text) > limit:
+            return text[:limit].rstrip() + f"\n\n…(truncated at {limit} chars; file={rel})"
+        return text
+
+    def write_report_note(self, section: str, body: str) -> str:
+        """Append report markdown under findings/report.md — never a Finding row."""
+
+        heading = (section or "note").strip()[:120] or "note"
+        text = (body or "").strip()
+        if not text:
+            return "Error: report note body required."
+        ws = resolve_job_workspace(self._job)
+        report_dir = ws / "findings"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        path = report_dir / "report.md"
+        block = f"\n## {heading}\n\n{text}\n"
+        try:
+            existing = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+            if not existing.strip():
+                title = (
+                    self._job.project.title
+                    if self._job.project_id and self._job.project
+                    else self._job.title
+                )
+                existing = f"# Security report — {title}\n"
+            path.write_text(existing.rstrip() + "\n" + block, encoding="utf-8")
+        except OSError as exc:
+            return f"Failed to write report note: {exc}"
+        self.emit(
+            "status",
+            f"Report note appended: {heading}",
+            metadata=envelope("report_note", {"section": heading}),
+        )
+        return f"Appended report section '{heading}' to findings/report.md"
 
     def drain_operator_guidance(self) -> list[str]:
         """Consume pending JobDirective rows into agent-facing guidance strings."""
-        from django.db import transaction
 
         with transaction.atomic():
             pending = list(
@@ -327,7 +441,6 @@ class JobAgentBridge(AgentBridgeBase):
         return out
 
     def drain_peer_messages(self) -> list[str]:
-        from peon.projects.agent_messaging import DjangoAgentMessaging
 
         rows = DjangoAgentMessaging().inbox(str(self._job.id), limit=20, consume=True)
         out: list[str] = []
@@ -350,7 +463,6 @@ class JobAgentBridge(AgentBridgeBase):
     ) -> str:
         if not self._job.objective_id:
             return "Error: messaging requires a job linked to an objective."
-        from peon.projects.agent_messaging import DjangoAgentMessaging
 
         try:
             msg = DjangoAgentMessaging().send(
@@ -368,7 +480,6 @@ class JobAgentBridge(AgentBridgeBase):
     def list_agents(self) -> str:
         if not self._job.objective_id:
             return "No objective on this job."
-        from peon.projects.agent_messaging import DjangoAgentMessaging
 
         peers = DjangoAgentMessaging().list_peers(
             str(self._job.objective_id), exclude_job_id=str(self._job.id)
@@ -376,16 +487,13 @@ class JobAgentBridge(AgentBridgeBase):
         if not peers:
             return "No other jobs on this objective."
         return "\n".join(
-            f"{p['job_id']} [{p['status']}] {p['title']} roles={','.join(p.get('roles') or p.get('skills') or []) or '-'}"
+            f"{p['job_id']} [{p['status']}] {p['title']} roles={','.join(p.get('roles') or []) or '-'}"
             for p in peers
         )
 
     def propose_agents(self, *, context_notes: str = "", max_agents: int = 4) -> str:
         if not self._job.project_id or not self._job.objective_id:
             return "Error: propose_agents requires project + objective."
-        from orchestrator.agent.propose import propose_agents, specs_as_dicts
-        from orchestrator.crew.roles.registry import RoleRegistry
-        from peon.projects.objectives import ObjectiveScheduler
 
         obj = self._job.objective
         primary = (obj.role_id or "").strip().split(",")[0].strip()
@@ -394,7 +502,7 @@ class JobAgentBridge(AgentBridgeBase):
         allowed = [
             r.id
             for r in RoleRegistry.shared().list_roles()
-            if r.id not in {"project-manager", "analyzer"}
+            if not r.is_manager and not r.is_analyzer and not r.is_authoring
         ]
         notes = (context_notes or "").strip()
         if not notes:
@@ -429,26 +537,14 @@ class JobAgentBridge(AgentBridgeBase):
         return getattr(self._job.project, "roe", None)
 
     def roe_summary(self) -> str:
-        from peon.projects.targets import format_targets
 
         roe = self._roe()
         if roe is None:
             return "No Rules of Engagement on this project."
-        scope = format_targets(roe.in_scope) or ["(empty)"]
-        excl = format_targets(roe.exclusions) or ["(none)"]
-        lines = [
-            "Rules of Engagement:",
-            f"- in_scope: {', '.join(scope)}",
-            f"- exclusions: {', '.join(excl)}",
-        ]
-        note = (roe.authorization_note or "").strip()
-        if note:
-            lines.append(f"- authorization: {note[:500]}")
-        return "\n".join(lines)
+        return format_roe_block(roe)
 
     def assert_in_scope(self, target: str) -> str:
         """Empty string = allowed; otherwise denial reason."""
-        from peon.projects.targets import coerce_targets
 
         value = (target or "").strip()
         if not value:
@@ -475,32 +571,67 @@ class JobAgentBridge(AgentBridgeBase):
             return ""
         return f"{value!r} is not in authorized RoE scope"
 
-    def assert_command_allowed(self, command: str) -> str:
-        """Block active probe commands when RoE scope is empty or target denied."""
-        import re
+    def duplicate_scan_reason(self, command: str) -> str:
+        """Non-empty when this job already ran the same catalog CLI against the host."""
+        cmd = (command or "").strip()
+        cli = catalog_cli_in_command(cmd)
+        if not cli:
+            return ""
+        hosts = set(hosts_in_command(cmd))
+        if not hosts:
+            return ""
+        prior = (
+            StreamMessage.objects.filter(
+                job_id=self._job.id,
+                message_type=StreamMessageType.TOOL,
+            )
+            .order_by("-id")
+            .values("metadata", "content")[:40]
+        )
+        for row in prior:
+            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if event_of(meta) and not is_event(meta, EVENT_RUN_CLI):
+                continue
+            prev_cmd = (
+                payload_command(meta)
+                or legacy_run_cli_command(str(row.get("content") or ""))
+            )
+            if not prev_cmd:
+                continue
+            prev_cli = payload_cli(meta) or catalog_cli_in_command(prev_cmd)
+            if prev_cli != cli:
+                continue
+            prev_hosts = set(payload_hosts(meta) or hosts_in_command(prev_cmd))
+            if hosts & prev_hosts:
+                return (
+                    f"similar {cli} already ran this job for "
+                    f"{', '.join(sorted(hosts))}. Reuse the existing workspace "
+                    "scan XML (-oX) — do not re-run the scan."
+                )
+        return ""
 
+    def assert_command_allowed(self, command: str) -> str:
+        """Block active probe commands when RoE scope is empty or target denied.
+
+        Local inspection (``ls``/``cat``/``python3`` reading workspace files) is
+        not a probe — even when filenames contain host-like tokens. Host checks
+        apply only when a catalog/role CLI is invoked.
+        """
         cmd = (command or "").strip()
         if not cmd:
             return "empty command"
+        if not catalog_cli_in_command(cmd):
+            return ""
         roe = self._roe()
         if roe is None:
             return "no RoE on project"
-        from peon.projects.targets import coerce_targets
 
         scope_vals = [
             (t.get("value") or "").strip()
             for t in coerce_targets(roe.in_scope)
             if t.get("value")
         ]
-        # Passive targets from the command; if none, allow (local tools / listing).
-        found = set(
-            re.findall(
-                r"(?:https?://[^\s\"']+|\b(?:\d{1,3}\.){3}\d{1,3}\b|"
-                r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9-]{1,63})+\b)",
-                cmd,
-                flags=re.I,
-            )
-        )
+        found = set(hosts_in_command(cmd))
         if not found:
             return ""
         if not scope_vals:

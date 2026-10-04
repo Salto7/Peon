@@ -9,6 +9,8 @@ from django.contrib import messages
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect
 
+from orchestrator.utils.strings import as_str_list
+
 
 def wants_json(request: HttpRequest) -> bool:
     """True when the client asked for JSON (Accept or XHR)."""
@@ -74,8 +76,9 @@ def request_values(
 
 
 def split_csv(raw: str | None) -> list[str]:
-    """Split a comma-separated string into non-empty stripped parts."""
-    return [p.strip() for p in (raw or "").split(",") if p.strip()]
+    """Split a comma/semicolon-separated string into non-empty parts."""
+
+    return as_str_list(raw)
 
 
 def json_or_redirect(

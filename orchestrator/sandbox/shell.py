@@ -9,6 +9,7 @@ import time
 
 from orchestrator.prompts import INSTALL_MISSING_HINT
 from agent_runtime.api import Session
+from orchestrator.tools.install import InstallResolver, cli_on_path
 from orchestrator.utils.service import SharedServiceBase
 from orchestrator.utils.stream import StreamEmitter
 
@@ -64,7 +65,7 @@ _SHELL_BUILTINS = frozenset(
 
 
 class ProvisionService(SharedServiceBase):
-    """Resolve and install binaries for skill/runtime shell runs."""
+    """Resolve and install binaries for sandbox shell runs."""
 
     @staticmethod
     def command_binary(command: str) -> str:
@@ -97,17 +98,12 @@ class ProvisionService(SharedServiceBase):
             return True, ""
         if binary in _SHELL_BUILTINS:
             return True, ""
-        from orchestrator.tools.install import InstallResolver, cli_on_path
-
         if cli_on_path(binary):
             return True, f"{binary} already installed"
         if binary in Session.current().base_commands() and not package:
             return False, f"image base binary {binary!r} missing from PATH"
 
-        skill = (os.environ.get("ORCHESTRATOR_SKILL_NAME") or "").strip()
-        ok, msg = InstallResolver.shared().resolve(
-            binary, package=package, skill_name=skill
-        )
+        ok, msg = InstallResolver.shared().resolve(binary, package=package)
         if not ok and INSTALL_MISSING_HINT not in msg:
             msg = f"{msg}. {INSTALL_MISSING_HINT}"
         return ok, msg

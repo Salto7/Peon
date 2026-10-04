@@ -1,7 +1,7 @@
 id: subfinder
 name: subfinder
 description: >
-  Fast passive subdomain enumeration (ProjectDiscovery). Linked skill: domain-enum.
+  Fast passive subdomain enumeration (ProjectDiscovery). Linked role: domain-enum.
   Install recipe and RoE-trusted source_urls are defined in this file.
 tier: catalog
 binary: subfinder
@@ -17,5 +17,5 @@ install:
       - https://codeload.github.com
 verify:
   - command: "subfinder -version"
-skills: [domain-enum]
+roles: [domain-enum]
 tags: [recon, osint]
