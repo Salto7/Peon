@@ -1,7 +1,5 @@
 """Build a hierarchical engagement Crew from ROLE.yaml hierarchy."""
 
-from __future__ import annotations
-
 from typing import Any, Tuple
 
 from orchestrator.crew.roles.factory import build_crew_agent
