@@ -1,6 +1,6 @@
 """Build a hierarchical engagement Crew from ROLE.yaml hierarchy."""
 
-from typing import Any, Tuple
+from typing import Any
 
 from orchestrator.crew.roles.factory import build_crew_agent
 from orchestrator.crew.roles.hierarchy import (
@@ -11,13 +11,11 @@ from orchestrator.crew.roles.hierarchy import (
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtime_support import crew_step_callback, crew_task_callback
 
-
-def require_meaningful_output(output: Any) -> Tuple[bool, Any]:
-    """Generic task guardrail that rejects empty agent output."""
-    raw = str(getattr(output, "raw", None) or output or "").strip()
-    if raw:
-        return True, output
-    return False, "Task produced no usable output; revise the plan and try again."
+MEANINGFUL_OUTPUT_GUARDRAIL = (
+    "The output must be non-empty, address the assigned task, identify blockers, "
+    "and distinguish observed evidence from assumptions. Reject vague status-only "
+    "answers and request a revised result."
+)
 
 
 def build_engagement_crew(
@@ -88,7 +86,7 @@ def build_engagement_crew(
             "report notes."
         ),
         agent=manager,
-        guardrail=require_meaningful_output,
+        guardrail=MEANINGFUL_OUTPUT_GUARDRAIL,
         guardrail_max_retries=max(1, int(max_replans)),
     )
     analyze_task = Task(
@@ -102,7 +100,7 @@ def build_engagement_crew(
         ),
         agent=analyzer,
         context=[engagement_task],
-        guardrail=require_meaningful_output,
+        guardrail=MEANINGFUL_OUTPUT_GUARDRAIL,
         guardrail_max_retries=max(1, int(max_replans)),
     )
 

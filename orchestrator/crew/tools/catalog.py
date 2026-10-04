@@ -7,6 +7,7 @@ from typing import Any, Callable
 ToolFactory = Callable[[], Any]
 
 _FACTORIES: dict[str, ToolFactory] = {}
+_HANDLERS: dict[str, Callable[..., Any]] = {}
 
 
 def register_tool(name: str, factory: ToolFactory) -> ToolFactory:
@@ -15,6 +16,21 @@ def register_tool(name: str, factory: ToolFactory) -> ToolFactory:
         raise ValueError("tool name required")
     _FACTORIES[key] = factory
     return factory
+
+
+def register_handler(name: str, handler: Callable[..., Any]) -> None:
+    key = (name or "").strip()
+    if not key:
+        raise ValueError("tool handler name required")
+    _HANDLERS[key] = handler
+
+
+def handler_for(name: str) -> Callable[..., Any]:
+    _ensure()
+    handler = _HANDLERS.get((name or "").strip())
+    if handler is None:
+        raise KeyError(f"unknown role tool handler {name!r}")
+    return handler
 
 
 def known_tool_names() -> list[str]:

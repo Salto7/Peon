@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from functools import wraps
 from typing import Any, Callable
 
-from orchestrator.crew.tools.catalog import register_tool
+from orchestrator.crew.tools.catalog import register_handler, register_tool
 
 
 def crew_tool(name: str, description: str) -> Callable[[Callable[..., str]], Callable[..., str]]:
@@ -24,21 +23,18 @@ def crew_tool(name: str, description: str) -> Callable[[Callable[..., str]], Cal
                     "(pip install 'crewai>=1.0.0')"
                 ) from exc
 
-            @wraps(fn)
-            def runtime_aware(*args: Any, **kwargs: Any) -> str:
-                from orchestrator.crew.runtime_support import augment_tool_result
+            from orchestrator.crew.tools.registered import RegisteredCrewTool
 
-                return augment_tool_result(fn(*args, **kwargs))
-
-            wrapped = crewai_tool(name)(runtime_aware)
-            if description and hasattr(wrapped, "description"):
-                try:
-                    wrapped.description = description
-                except Exception:
-                    pass
-            return wrapped
+            schema = crewai_tool(name)(fn).args_schema
+            return RegisteredCrewTool(
+                name=name,
+                description=description or (fn.__doc__ or name),
+                args_schema=schema,
+                handler_name=name,
+            )
 
         register_tool(name, factory)
+        register_handler(name, fn)
         return fn
 
     return deco
