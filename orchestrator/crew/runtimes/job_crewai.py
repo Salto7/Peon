@@ -83,7 +83,11 @@ class CrewAIJobRuntime(AgentRuntimeBase):
                     error=f"role {role_id} requires non-empty RoE in_scope",
                 )
 
-        brief = (request.steer or scope.brief or role.goal).strip()
+        brief = (scope.brief or role.goal).strip()
+        if request.steer:
+            brief = (
+                f"{brief}\n\nOPERATOR INSTRUCTION:\n{request.steer.strip()}"
+            ).strip()
         inbox = drain_agent_inbox(scope)
         if inbox:
             brief = f"{brief}\n\nAGENT INBOX:\n{inbox}".strip()
