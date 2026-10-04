@@ -123,7 +123,7 @@ class ProjectCrewRuntime(CrewRuntimeBase):
 
                     crew = Crew.from_checkpoint(restore)
                     crew.memory = memory
-                    crew._memory = memory
+                    crew.create_crew_memory()
                     crew.checkpoint = checkpoint
                     crew.output_log_file = output_log_path(scope)
                     restored_agents = [*crew.agents]
