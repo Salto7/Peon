@@ -14,6 +14,9 @@ class AgentRunConfig:
     max_iterations: int = 40
     max_subagents: int = 4
     max_subagent_depth: int = 2
+    max_execution_seconds: int = 1800
+    memory_enabled: bool = True
+    checkpoint_enabled: bool = True
     runtime_enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -24,6 +27,9 @@ class AgentRunConfig:
         object.__setattr__(self, "max_subagents", max(0, int(self.max_subagents)))
         object.__setattr__(
             self, "max_subagent_depth", max(1, int(self.max_subagent_depth))
+        )
+        object.__setattr__(
+            self, "max_execution_seconds", max(0, int(self.max_execution_seconds))
         )
 
 
@@ -48,5 +54,8 @@ def agent_run_config_from_mapping(data: Mapping[str, object]) -> AgentRunConfig:
         max_iterations=_int("AGENT_MAX_ITERATIONS", 40),
         max_subagents=_int("AGENT_MAX_SUBAGENTS", 4),
         max_subagent_depth=_int("AGENT_MAX_SUBAGENT_DEPTH", 2),
+        max_execution_seconds=_int("AGENT_MAX_EXECUTION_SECONDS", 1800),
+        memory_enabled=_bool("AGENT_MEMORY_ENABLED", True),
+        checkpoint_enabled=_bool("AGENT_CHECKPOINT_ENABLED", True),
         runtime_enabled=_bool("AGENT_RUNTIME_ENABLED", True),
     )

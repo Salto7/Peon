@@ -21,6 +21,10 @@ def build_crew_agent(
     *,
     tools: list[Any] | None = None,
     max_iterations: int | None = None,
+    max_replans: int = 2,
+    memory: Any | None = None,
+    checkpoint: Any | None = None,
+    max_execution_time: int | None = None,
 ) -> Any:
     """Instantiate a CrewAI ``Agent`` for ``role`` (lazy crewai import)."""
     try:
@@ -56,12 +60,18 @@ def build_crew_agent(
             max(1, int(max_iterations)) if max_iterations is not None else int(role.max_iter),
         ),
         "llm": llm_id_for_crew(),
+        "memory": memory,
+        "checkpoint": checkpoint,
+        "max_execution_time": max_execution_time,
+        "max_retry_limit": max(1, int(max_replans)),
     }
-    # reasoning is optional across crewai versions
     if role.reasoning:
-        kwargs["reasoning"] = True
-    try:
-        return Agent(**kwargs)
-    except TypeError:
-        kwargs.pop("reasoning", None)
-        return Agent(**kwargs)
+        from crewai import PlanningConfig
+
+        kwargs["planning_config"] = PlanningConfig(
+            reasoning_effort="medium",
+            max_replans=max(0, int(max_replans)),
+            max_steps=kwargs["max_iter"],
+            max_step_iterations=min(kwargs["max_iter"], 10),
+        )
+    return Agent(**kwargs)

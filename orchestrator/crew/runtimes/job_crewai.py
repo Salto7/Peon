@@ -8,9 +8,8 @@ from orchestrator.agent.runtime_base import (
     AgentRunResult,
     AgentRuntimeBase,
 )
-from orchestrator.crew.checkpoint import resume_context, save_checkpoint
+from orchestrator.crew.checkpoint import build_memory, checkpoint_config
 from orchestrator.crew.roles.factory import build_crew_agent
-from orchestrator.crew.roles.hierarchy import manager_role
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtimes.project_crewai import run_project_crew_from_scope
 from orchestrator.crew.runtime_support import drain_agent_inbox
@@ -53,11 +52,11 @@ class CrewAIJobRuntime(AgentRuntimeBase):
         except KeyError as exc:
             return AgentRunResult(ok=False, error=str(exc))
 
-        mgr = manager_role()
-        if (mgr and role_id == mgr.id) or scope.extras.get("crew_mode") == "project":
+        if scope.extras.get("crew_mode") == "project":
             crew_result = run_project_crew_from_scope(
                 scope,
                 request.config,
+                role_ids=tuple(scope.extras.get("project_role_ids") or ()),
                 resume=request.resume,
                 replan=bool(scope.extras.get("replan")),
                 steer=request.steer,
@@ -92,12 +91,9 @@ class CrewAIJobRuntime(AgentRuntimeBase):
         if inbox:
             brief = f"{brief}\n\nAGENT INBOX:\n{inbox}".strip()
         if request.resume:
-            prior = resume_context(scope)
             brief = (
-                "Continue from the durable checkpoint under Rules of Engagement. "
-                "Do not repeat completed work.\n\n"
-                + (f"{prior}\n\n" if prior else "")
-                + brief
+                "Continue from the native CrewAI checkpoint under Rules of "
+                "Engagement. Do not repeat completed work.\n\n" + brief
             ).strip()
             scope.bridge.emit(
                 "status",
@@ -109,13 +105,22 @@ class CrewAIJobRuntime(AgentRuntimeBase):
         scope.extras["role_id"] = role.id
 
         try:
+            memory = build_memory(scope) if request.config.memory_enabled else None
+            checkpoint = (
+                checkpoint_config(scope, resume=False)
+                if request.config.checkpoint_enabled
+                else None
+            )
             agent = build_crew_agent(
                 role,
                 max_iterations=request.config.max_iterations,
+                max_replans=request.config.max_failure_replans,
+                memory=memory,
+                checkpoint=checkpoint,
+                max_execution_time=request.config.max_execution_seconds or None,
             )
         except Exception as exc:
             scope.bridge.emit("error", f"crew agent build failed: {exc}")
-            save_checkpoint(scope, status="failed", error=str(exc), brief=brief)
             return AgentRunResult(ok=False, error=str(exc))
 
         scope.bridge.emit(
@@ -124,13 +129,16 @@ class CrewAIJobRuntime(AgentRuntimeBase):
             metadata={"event": "crewai_role_start", "role_id": role.id},
         )
 
-        save_checkpoint(scope, status="running", error="", brief=brief)
         with bind_job(scope, request.config):
             try:
-                result = agent.kickoff(brief[:8000])
+                restore = (
+                    checkpoint_config(scope, resume=True)
+                    if request.resume and request.config.checkpoint_enabled
+                    else None
+                )
+                result = agent.kickoff(brief[:8000], from_checkpoint=restore)
             except Exception as exc:
                 scope.bridge.emit("error", f"crewai role failed: {exc}")
-                save_checkpoint(scope, status="failed", error=str(exc))
                 return AgentRunResult(ok=False, error=str(exc))
 
         raw = getattr(result, "raw", None)
@@ -140,5 +148,5 @@ class CrewAIJobRuntime(AgentRuntimeBase):
             f"crewai role={role.id} finished",
             metadata={"event": "crewai_role_done", "role_id": role.id},
         )
-        save_checkpoint(scope, status="done", output=output, error="")
-        return AgentRunResult(ok=True, output=output, iterations=1)
+        replans = int(getattr(result, "replan_count", 0) or 0)
+        return AgentRunResult(ok=True, output=output, iterations=max(1, replans + 1))

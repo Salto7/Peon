@@ -1,99 +1,98 @@
-"""Durable, framework-neutral checkpoints for CrewAI job runs."""
+"""Native CrewAI persistence and memory configuration for one job."""
 
 from __future__ import annotations
 
-import json
 import os
 import re
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from orchestrator.agent.job import JobScope
 
-_MAX_EVENTS = 50
+_CHECKPOINT_EVENTS = [
+    "task_completed",
+    "agent_execution_completed",
+    "agent_execution_error",
+    "crew_kickoff_failed",
+    "step_observation_completed",
+    "tool_usage_error",
+    "plan_replan_triggered",
+]
 
 
-def _checkpoint_path(scope: JobScope) -> Path | None:
+def runtime_state_dir(scope: JobScope) -> Path | None:
+    """Return an isolated persistent state directory for this job."""
     root = str(scope.workspace or "").strip()
     if not root:
         return None
     job_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(scope.job_id or "job"))
-    return Path(root) / ".peon" / "crew-checkpoints" / f"{job_id}.json"
+    return Path(root) / ".peon" / "crewai" / "jobs" / job_id
 
 
-def load_checkpoint(scope: JobScope) -> dict[str, Any]:
-    """Load this job's last valid checkpoint, if one exists."""
-    path = _checkpoint_path(scope)
-    if path is None or not path.is_file():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
+def latest_checkpoint(scope: JobScope) -> Path | None:
+    """Return the newest native CrewAI checkpoint for this job."""
+    root = runtime_state_dir(scope)
+    if root is None:
+        return None
+    files = list((root / "checkpoints" / "main").glob("*.json"))
+    return max(files, key=lambda path: path.stat().st_mtime_ns) if files else None
 
 
-def save_checkpoint(scope: JobScope, **updates: Any) -> None:
-    """Atomically merge fields into this job's checkpoint."""
-    path = _checkpoint_path(scope)
-    if path is None:
-        return
-    current = load_checkpoint(scope)
-    current.update(updates)
-    current.update(
-        {
-            "job_id": str(scope.job_id),
-            "project_id": str(scope.project_id or ""),
-            "role_id": str((scope.extras or {}).get("role_id") or ""),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+def checkpoint_config(scope: JobScope, *, resume: bool = False):
+    """Build a native CrewAI checkpoint config, optionally restoring the latest."""
+    root = runtime_state_dir(scope)
+    if root is None:
+        return None
+    from crewai.state.checkpoint_config import CheckpointConfig
+
+    location = root / "checkpoints"
+    location.mkdir(parents=True, exist_ok=True)
+    restore_from = latest_checkpoint(scope) if resume else None
+    return CheckpointConfig(
+        location=str(location),
+        on_events=list(_CHECKPOINT_EVENTS),
+        max_checkpoints=20,
+        restore_from=str(restore_from) if restore_from else None,
     )
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(f"{path.suffix}.tmp")
-        tmp.write_text(json.dumps(current, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        # Checkpointing must not turn an otherwise valid engagement into a failure.
-        return
 
 
-def record_checkpoint_event(scope: JobScope, kind: str, content: str) -> None:
-    """Append a bounded event useful for reconstructing context on resume."""
-    current = load_checkpoint(scope)
-    events = current.get("events")
-    if not isinstance(events, list):
-        events = []
-    events.append(
-        {
-            "kind": str(kind or "event")[:64],
-            "content": str(content or "")[:4000],
-            "at": datetime.now(timezone.utc).isoformat(),
-        }
+def build_memory(scope: JobScope):
+    """Build project-scoped CrewAI memory with persistent local vector storage."""
+    root = runtime_state_dir(scope)
+    if root is None:
+        return None
+    from crewai.memory import Memory
+
+    from orchestrator.config import get_config
+    from orchestrator.crew.roles.factory import llm_id_for_crew
+
+    cfg = get_config()
+    provider = (
+        os.environ.get("CREWAI_MEMORY_EMBEDDER_PROVIDER")
+        or cfg.llm_provider
+        or "openrouter"
+    ).strip()
+    embedder: dict = {"provider": provider, "config": {}}
+    model = os.environ.get("CREWAI_MEMORY_EMBEDDER_MODEL", "").strip()
+    if model:
+        embedder["config"]["model"] = model
+    scope_id = re.sub(
+        r"[^a-zA-Z0-9_.-]+",
+        "_",
+        str(scope.project_id or scope.job_id or "default"),
     )
-    save_checkpoint(scope, events=events[-_MAX_EVENTS:])
+    memory_root = Path(scope.workspace) / ".peon" / "crewai" / "memory"
+    memory_root.mkdir(parents=True, exist_ok=True)
+    return Memory(
+        llm=llm_id_for_crew(),
+        storage=str(memory_root),
+        embedder=embedder,
+        root_scope=f"/peon/{scope_id}",
+    )
 
 
-def resume_context(scope: JobScope) -> str:
-    """Render bounded prior state for a resumed CrewAI run."""
-    state = load_checkpoint(scope)
-    if not state:
-        return ""
-    chunks: list[str] = []
-    output = str(state.get("output") or "").strip()
-    if output:
-        chunks.append("Previous run output:\n" + output[-6000:])
-    events = state.get("events")
-    if isinstance(events, list):
-        lines: list[str] = []
-        for event in events[-12:]:
-            if not isinstance(event, dict):
-                continue
-            kind = str(event.get("kind") or "event")
-            content = str(event.get("content") or "").strip()
-            if content:
-                lines.append(f"- [{kind}] {content[:800]}")
-        if lines:
-            chunks.append("Recent checkpoint events:\n" + "\n".join(lines))
-    return "\n\n".join(chunks)
+def output_log_path(scope: JobScope) -> str | None:
+    root = runtime_state_dir(scope)
+    if root is None:
+        return None
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root / "execution.json")

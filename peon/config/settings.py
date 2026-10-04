@@ -230,6 +230,11 @@ AGENT_MAX_FAILURE_REPLANS = max(0, int(_env("AGENT_MAX_FAILURE_REPLANS", "2") or
 AGENT_MAX_ITERATIONS = max(1, int(_env("AGENT_MAX_ITERATIONS", "40") or 40))
 AGENT_MAX_SUBAGENTS = max(0, int(_env("AGENT_MAX_SUBAGENTS", "4") or 4))
 AGENT_MAX_SUBAGENT_DEPTH = max(1, int(_env("AGENT_MAX_SUBAGENT_DEPTH", "2") or 2))
+AGENT_MAX_EXECUTION_SECONDS = max(
+    0, int(_env("AGENT_MAX_EXECUTION_SECONDS", "1800") or 1800)
+)
+AGENT_MEMORY_ENABLED = _env_bool("AGENT_MEMORY_ENABLED", True)
+AGENT_CHECKPOINT_ENABLED = _env_bool("AGENT_CHECKPOINT_ENABLED", True)
 # Emergency kill switch (default on). Jobs use orchestrator.agent; false fails closed.
 AGENT_RUNTIME_ENABLED = _env_bool("AGENT_RUNTIME_ENABLED", True)
 # Orchestration module (crewai only on Peon-crewAI).

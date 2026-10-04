@@ -446,8 +446,24 @@ def run_job_via_agent(
         project = job.project
         if getattr(project, "crew_flow_id", ""):
             extras["crew_flow_id"] = str(project.crew_flow_id)
-        if extras.get("role_id") == "project-manager":
+        from orchestrator.crew.roles.hierarchy import manager_role
+
+        manager = manager_role()
+        if (
+            manager is not None
+            and extras.get("role_id") == manager.id
+            and not job.objective_id
+        ):
             extras["crew_mode"] = "project"
+            extras["project_role_ids"] = list(
+                dict.fromkeys(
+                    str(role_id).strip()
+                    for role_id in project.objectives.order_by("seq").values_list(
+                        "role_id", flat=True
+                    )
+                    if str(role_id or "").strip()
+                )
+            )
 
     bridge = JobAgentBridge(job)
     from orchestrator.crew.runtime_support import drain_agent_inbox

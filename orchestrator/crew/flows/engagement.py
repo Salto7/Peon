@@ -11,14 +11,26 @@ from orchestrator.crew.roles.hierarchy import (
     specialists_for,
 )
 from orchestrator.crew.roles.registry import RoleRegistry
+from orchestrator.crew.runtime_support import crew_step_callback, crew_task_callback
+
+
+def require_meaningful_output(output: Any) -> tuple[bool, Any]:
+    """Generic task guardrail that rejects empty agent output."""
+    raw = str(getattr(output, "raw", None) or output or "").strip()
+    if raw:
+        return True, output
+    return False, "Task produced no usable output; revise the plan and try again."
 
 
 def build_engagement_crew(
     *,
-    brief: str,
     role_ids: tuple[str, ...] | list[str] | None = None,
-    replan_note: str = "",
     max_iterations: int | None = None,
+    max_replans: int = 2,
+    max_execution_time: int | None = None,
+    memory: Any | None = None,
+    checkpoint: Any | None = None,
+    output_log_file: str | None = None,
 ) -> Any:
     """Return a CrewAI ``Crew`` (hierarchical + planning). Lazy-imports crewai."""
     try:
@@ -42,36 +54,35 @@ def build_engagement_crew(
         )
 
     specialist_specs = specialists_for(role_ids, reg=reg)
-    manager = build_crew_agent(manager_spec, max_iterations=max_iterations)
+    agent_options = {
+        "max_iterations": max_iterations,
+        "max_replans": max_replans,
+        "max_execution_time": max_execution_time,
+    }
+    manager = build_crew_agent(manager_spec, **agent_options)
     specialists = [
-        build_crew_agent(s, max_iterations=max_iterations) for s in specialist_specs
+        build_crew_agent(s, **agent_options) for s in specialist_specs
     ]
-    analyzer = build_crew_agent(analyzer_spec, max_iterations=max_iterations)
+    analyzer = build_crew_agent(analyzer_spec, **agent_options)
 
     specialist_lines = ", ".join(s.id for s in specialist_specs) or "(none preselected)"
-    plan_extra = ""
-    if (replan_note or "").strip():
-        plan_extra = (
-            "\n\nOPERATOR REPLAN / STEER:\n"
-            f"{replan_note.strip()[:4000]}\n"
-            "Revise the remaining plan accordingly under RoE.\n"
-        )
 
     engagement_task = Task(
         description=(
             "Authorized Peon engagement.\n\n"
-            f"BRIEF:\n{(brief or '').strip()[:6000]}\n"
-            f"{plan_extra}\n"
+            "BRIEF:\n{brief}\n\n"
+            "CURRENT OPERATOR CONTEXT:\n{operator_context}\n\n"
             f"Available specialists (reports_to={manager_spec.id}): {specialist_lines}\n"
             "As engagement manager:\n"
-            "1. Call check_inbox, then roe_status; do not expand scope. "
-            "Check the inbox again between major actions.\n"
+            "1. Review current operator guidance and Rules of Engagement using "
+            "your available tools; do not expand scope.\n"
             "2. Decide which specialist roles to use from those available "
             "(match brief to their goals/tags).\n"
-            "3. Delegate to specialists; on failure, replan and retry once.\n"
-            f"4. When probing is done (or blocked), hand off to {analyzer_spec.id} "
-            "for findings/report synthesis.\n"
-            "Specialists must assert_in_scope before networked probes.\n"
+            "3. Delegate to specialists. Observe execution failures and revise "
+            "the remaining plan within the configured replan budget.\n"
+            f"4. When work is done or blocked, hand off to {analyzer_spec.label} "
+            "for synthesis.\n"
+            "Specialists must verify authorization scope before networked probes.\n"
         ),
         expected_output=(
             "A short engagement summary: what was attempted, key findings "
@@ -79,6 +90,8 @@ def build_engagement_crew(
             "report notes."
         ),
         agent=manager,
+        guardrail=require_meaningful_output,
+        guardrail_max_retries=max(1, int(max_replans)),
     )
     analyze_task = Task(
         description=(
@@ -91,6 +104,8 @@ def build_engagement_crew(
         ),
         agent=analyzer,
         context=[engagement_task],
+        guardrail=require_meaningful_output,
+        guardrail_max_retries=max(1, int(max_replans)),
     )
 
     # Hierarchical crews: manager_agent is separate from agents list.
@@ -101,15 +116,10 @@ def build_engagement_crew(
         "manager_agent": manager,
         "verbose": False,
         "planning": True,
+        "memory": memory,
+        "checkpoint": checkpoint,
+        "output_log_file": output_log_file,
+        "step_callback": crew_step_callback,
+        "task_callback": crew_task_callback,
     }
-    try:
-        return Crew(**kwargs)
-    except TypeError:
-        kwargs.pop("planning", None)
-        try:
-            return Crew(**kwargs)
-        except TypeError:
-            # Older crewai: manager must live in agents without manager_agent=
-            kwargs.pop("manager_agent", None)
-            kwargs["agents"] = [manager, *specialists, analyzer]
-            return Crew(**kwargs)
+    return Crew(**kwargs)

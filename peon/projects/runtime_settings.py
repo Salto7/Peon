@@ -22,6 +22,15 @@ _SPECS: dict[str, tuple[str, str, int, int, int]] = {
     "AGENT_MAX_ITERATIONS": ("AGENT_MAX_ITERATIONS", "int", 1, 500, 40),
     "AGENT_MAX_SUBAGENTS": ("AGENT_MAX_SUBAGENTS", "int", 0, 32, 4),
     "AGENT_MAX_SUBAGENT_DEPTH": ("AGENT_MAX_SUBAGENT_DEPTH", "int", 1, 8, 2),
+    "AGENT_MAX_EXECUTION_SECONDS": (
+        "AGENT_MAX_EXECUTION_SECONDS",
+        "int",
+        0,
+        86400,
+        1800,
+    ),
+    "AGENT_MEMORY_ENABLED": ("AGENT_MEMORY_ENABLED", "bool", 0, 1, 1),
+    "AGENT_CHECKPOINT_ENABLED": ("AGENT_CHECKPOINT_ENABLED", "bool", 0, 1, 1),
     "AGENT_RUNTIME_ENABLED": ("AGENT_RUNTIME_ENABLED", "bool", 0, 1, 1),
     "LLM_PROXY_ENABLED": ("LLM_PROXY_ENABLED", "bool", 0, 1, 0),
 }
@@ -172,6 +181,21 @@ class PeonSettings:
             "AGENT_MAX_SUBAGENT_DEPTH": (
                 "Agent max subagent depth",
                 "Max Job parent→child depth (2 = root + one level).",
+                False,
+            ),
+            "AGENT_MAX_EXECUTION_SECONDS": (
+                "Agent execution timeout",
+                "Maximum wall-clock seconds for one CrewAI agent run; 0 disables.",
+                False,
+            ),
+            "AGENT_MEMORY_ENABLED": (
+                "CrewAI memory enabled",
+                "Persist project-scoped CrewAI memory across jobs and replans.",
+                False,
+            ),
+            "AGENT_CHECKPOINT_ENABLED": (
+                "CrewAI checkpoints enabled",
+                "Persist native CrewAI execution checkpoints for pause/resume and recovery.",
                 False,
             ),
             "AGENT_RUNTIME_ENABLED": (

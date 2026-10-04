@@ -42,7 +42,7 @@ You produce the shared project plan (objectives + dependencies) for CrewAI roles
 - acceptance_criteria: observable done condition
 - mitre: technique ids when known; else []
 - role_id: REQUIRED catalog role id
-- commands: 1–4 dry-run tool hints (`assert_in_scope`, `provision_cli`, `run_cli`)
+- commands: 0–4 dry-run capability hints using only tools exposed by the chosen role
 
 ## Output
 Return ONLY a JSON object:
@@ -172,17 +172,17 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
             survivors.append((idx, obj))
 
     manager = {
-        "title": "Project manager — plan and hire",
+        "title": "Validate engagement plan",
         "phase": "recon",
         "description": (
-            "Read RoE, hire specialist roles, assign tasks, recover from failures, "
-            "and hand off to analyzer when done."
+            "Validate RoE, objective dependencies, and role assignments before "
+            "execution. Record blockers and establish the authorized handoff order."
         ),
-        "acceptance_criteria": "Specialist work assigned and tracked under RoE",
+        "acceptance_criteria": "Plan validated with executable role handoffs under RoE",
         "mitre": [],
         "depends_on": [],
         "role_id": start,
-        "commands": ["roe_status()"],
+        "commands": [],
     }
     middle: list[dict[str, Any]] = []
     old_to_final: dict[int, int] = {}
@@ -220,7 +220,7 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
         "mitre": [],
         "depends_on": [last_middle],
         "role_id": end,
-        "commands": ["list_findings()", "write_report_note(\"summary\", \"…\")"],
+        "commands": [],
     }
     return [manager, *middle, analyzer]
 

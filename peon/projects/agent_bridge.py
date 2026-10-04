@@ -40,6 +40,15 @@ def agent_run_config() -> AgentRunConfig:
             "AGENT_MAX_SUBAGENT_DEPTH": PeonSettings.get_int(
                 "AGENT_MAX_SUBAGENT_DEPTH", 2
             ),
+            "AGENT_MAX_EXECUTION_SECONDS": PeonSettings.get_int(
+                "AGENT_MAX_EXECUTION_SECONDS", 1800
+            ),
+            "AGENT_MEMORY_ENABLED": PeonSettings.get_bool(
+                "AGENT_MEMORY_ENABLED", True
+            ),
+            "AGENT_CHECKPOINT_ENABLED": PeonSettings.get_bool(
+                "AGENT_CHECKPOINT_ENABLED", True
+            ),
             "AGENT_RUNTIME_ENABLED": PeonSettings.get_bool(
                 "AGENT_RUNTIME_ENABLED", True
             ),
