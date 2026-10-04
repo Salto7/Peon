@@ -2,20 +2,16 @@
 
 from typing import Any
 
-from orchestrator.crew.roles.factory import build_crew_agent
+from orchestrator.crew.roles.factory import (
+    MEANINGFUL_OUTPUT_GUARDRAIL,
+    build_crew_agent,
+)
 from orchestrator.crew.roles.hierarchy import (
     analyzer_role,
     manager_role,
     specialists_for,
 )
 from orchestrator.crew.roles.registry import RoleRegistry
-
-MEANINGFUL_OUTPUT_GUARDRAIL = (
-    "The output must be non-empty, address the assigned task, identify blockers, "
-    "and distinguish observed evidence from assumptions. Reject vague status-only "
-    "answers and request a revised result."
-)
-
 
 def build_engagement_crew(
     *,

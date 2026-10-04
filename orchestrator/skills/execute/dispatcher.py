@@ -29,6 +29,8 @@ class SkillExecutionDispatcher(SharedServiceBase):
         )
 
     def register(self, executor: SkillExecutorBase) -> None:
+        if any(type(item) is type(executor) for item in self._executors):
+            return
         self._executors.insert(0, executor)
 
     def resolve_script(self, skill_name: str, script: str) -> tuple[object | None, Path]:

@@ -11,6 +11,7 @@ from orchestrator.crew.checkpoint import (
     build_memory,
     checkpoint_config,
     output_log_path,
+    should_restore_checkpoint,
 )
 from orchestrator.crew.flows.engagement import build_engagement_crew
 from orchestrator.crew.roles.factory import restore_agent_runtime_policy
@@ -65,7 +66,12 @@ class ProjectCrewRuntime(CrewRuntimeBase):
                 else inbox.text
             )
         replan_requested = request.replan or "replan" in inbox.directive_kinds
-        if request.resume:
+        restore_requested = should_restore_checkpoint(
+            resume=request.resume,
+            checkpoint_enabled=cfg.checkpoint_enabled,
+            replan=replan_requested,
+        )
+        if restore_requested:
             scope.bridge.emit(
                 "status",
                 "resuming project crew from native CrewAI checkpoint",
@@ -116,12 +122,14 @@ class ProjectCrewRuntime(CrewRuntimeBase):
             try:
                 restore = (
                     checkpoint_config(scope, resume=True)
-                    if request.resume and cfg.checkpoint_enabled
+                    if restore_requested
                     else None
                 )
                 if restore is not None and restore.restore_from is not None:
                     from crewai import Crew
 
+                    # Explicit restore is required: kickoff(from_checkpoint=...)
+                    # executes immediately, before current role policy can be applied.
                     crew = Crew.from_checkpoint(restore)
                     crew.memory = memory
                     crew.create_crew_memory()

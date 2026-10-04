@@ -10,8 +10,8 @@ from django.shortcuts import redirect, render
 from django.urls import path, reverse
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
+from orchestrator.crew.router import RoleRouter
 from orchestrator.skills.registry import SkillRegistry
-from orchestrator.skills.router import SkillRouter
 from orchestrator.tools.catalog import ToolCatalog
 from peon.projects.catalog_cards import CatalogCardsBase, RoleCards, SkillCards, ToolCards
 from peon.projects.http_helpers import split_csv
@@ -46,7 +46,13 @@ def _resolve_args(request: HttpRequest) -> tuple[str, str, bool, list[str], list
         description = str(body.get("description") or body.get("brief") or "").strip()
         lifecycle = str(body.get("lifecycle") or "auto").strip() or "auto"
         project = bool(body.get("project"))
-        explicit = body.get("skills") or body.get("explicit") or []
+        explicit = (
+            body.get("role_ids")
+            or body.get("roles")
+            or body.get("skills")
+            or body.get("explicit")
+            or []
+        )
         if isinstance(explicit, str):
             explicit = split_csv(explicit)
         tags = body.get("preferred_tags") or body.get("focus_tags") or []
@@ -61,7 +67,11 @@ def _resolve_args(request: HttpRequest) -> tuple[str, str, bool, list[str], list
         description,
         lifecycle,
         project,
-        split_csv(request.GET.get("skills")),
+        split_csv(
+            request.GET.get("role_ids")
+            or request.GET.get("roles")
+            or request.GET.get("skills")
+        ),
         split_csv(request.GET.get("preferred_tags") or request.GET.get("focus_tags")),
     )
 
@@ -162,9 +172,8 @@ def api_resolve(request: HttpRequest) -> JsonResponse:
 
     names: list[str] = []
     if description or explicit:
-        names = SkillRouter.shared().resolve_default_skills(
+        names = RoleRouter.shared().resolve(
             description,
-            lifecycle=lifecycle,
             explicit=explicit or None,
             preferred_tags=preferred_tags or None,
             project=project,

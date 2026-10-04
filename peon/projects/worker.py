@@ -11,6 +11,7 @@ from django.utils import timezone as dj_tz
 
 from orchestrator.utils.job_env import JobEnv
 from agent_runtime.api import Session
+from orchestrator.skills.execute import LocalSkillExecutor, SkillExecutionDispatcher
 from orchestrator.tools.catalog import CatalogProvisioner
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
@@ -412,6 +413,9 @@ def run_job(job: Job) -> Job:
         except Exception as exc:
             _emit(job, "error", f"sandbox/provision error: {exc}")
 
+        # Skill scripts execute only through the already-bound project sandbox.
+        SkillExecutionDispatcher.shared().register(LocalSkillExecutor.shared())
+
         stopped = _steer_stop(job, [])
         if stopped is not None:
             return stopped
@@ -509,8 +513,8 @@ def run_job_via_agent(
             from peon.projects.crew_control import set_crew_status
 
             set_crew_status(job.project, "running")
-        except Exception:
-            pass
+        except Exception as exc:
+            _emit(job, "error", f"crew status update failed: {exc}")
     result = run_agent(scope, cfg, resume=resume)
     if job.project_id and extras.get("crew_mode") == "project":
         try:
@@ -521,8 +525,8 @@ def run_job_via_agent(
                 "done" if result.ok else "stopped",
                 flow_id=str(scope.extras.get("crew_flow_id") or ""),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _emit(job, "error", f"crew status update failed: {exc}")
     try:
         from peon.projects.findings import ingest_workspace_findings
 

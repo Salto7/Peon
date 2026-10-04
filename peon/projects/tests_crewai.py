@@ -14,7 +14,11 @@ from django.test import SimpleTestCase, TestCase
 from orchestrator.agent.bridges.null import NullAgentBridge
 from orchestrator.agent.config import agent_run_config_from_mapping
 from orchestrator.agent.job import JobScope
-from orchestrator.crew.checkpoint import checkpoint_config, latest_checkpoint
+from orchestrator.crew.checkpoint import (
+    checkpoint_config,
+    latest_checkpoint,
+    should_restore_checkpoint,
+)
 from orchestrator.crew.flows.engagement import build_engagement_crew
 from orchestrator.crew.roles.factory import (
     build_crew_agent,
@@ -51,10 +55,25 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
             newer.write_text("{}", encoding="utf-8")
             os.utime(older, (1, 1))
             os.utime(newer, (2, 2))
+            corrupt = branch / "corrupt.json"
+            corrupt.write_text("{", encoding="utf-8")
+            os.utime(corrupt, (3, 3))
 
             self.assertEqual(latest_checkpoint(scope), newer)
             restored = checkpoint_config(scope, resume=True)
             self.assertEqual(Path(restored.restore_from), newer)
+
+    def test_replan_starts_fresh_instead_of_restoring_stale_state(self):
+        self.assertTrue(
+            should_restore_checkpoint(
+                resume=True, checkpoint_enabled=True, replan=False
+            )
+        )
+        self.assertFalse(
+            should_restore_checkpoint(
+                resume=True, checkpoint_enabled=True, replan=True
+            )
+        )
 
     def test_validated_crewai_stable_release_is_installed(self):
         self.assertEqual(version("crewai"), "1.15.23")
@@ -97,6 +116,7 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
         self.assertTrue(agent.cache)
         self.assertTrue(agent.respect_context_window)
         self.assertEqual(agent.tool_failure_policy.value, "warn")
+        self.assertIsInstance(agent.guardrail, str)
 
     @patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"})
     def test_project_crew_uses_generic_native_features(self):
@@ -108,6 +128,7 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
         self.assertEqual(crew.manager_agent.planning_config.max_replans, 2)
         self.assertTrue(crew.cache)
         self.assertEqual(crew.tool_failure_policy.value, "warn")
+        self.assertIsInstance(crew.manager_agent.guardrail, str)
         self.assertIsNotNone(crew.tasks[0].guardrail)
         self.assertIn("{brief}", crew.tasks[0].description)
 
@@ -131,6 +152,7 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
             restored = Crew.from_checkpoint(
                 config.model_copy(update={"restore_from": saved})
             )
+            restored.manager_agent.tools = []
             restore_agent_runtime_policy(
                 restored.manager_agent,
                 max_iterations=7,
@@ -141,8 +163,36 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
             )
 
         self.assertEqual(restored.manager_agent.planning_config.max_replans, 2)
-        self.assertTrue(restored.agents[0].tools)
+        self.assertTrue(restored.manager_agent.tools)
+        self.assertIsInstance(restored.manager_agent.guardrail, str)
         self.assertIsInstance(restored.tasks[0].guardrail, str)
+
+    def test_role_tool_catalog_restores_dev_skill_capabilities(self):
+        from orchestrator.crew.tools import known_tool_names
+
+        names = set(known_tool_names())
+        self.assertTrue(
+            {
+                "sandbox_setup",
+                "run_periodic",
+                "skills_list",
+                "skill_view",
+                "run_skill_script",
+            }.issubset(names)
+        )
+
+    def test_skill_executor_registration_is_idempotent(self):
+        from orchestrator.skills.execute import (
+            LocalSkillExecutor,
+            SkillExecutionDispatcher,
+        )
+
+        dispatcher = SkillExecutionDispatcher(executors=[])
+        executor = LocalSkillExecutor.shared()
+        dispatcher.register(executor)
+        dispatcher.register(executor)
+
+        self.assertEqual(dispatcher._executors, [executor])
 
 
 class CrewReplanControlTests(SimpleTestCase):
@@ -199,6 +249,21 @@ class CrewGenericRoleTests(SimpleTestCase):
         self.assertIn("Execute the objective", brief)
         self.assertIn("CURRENT PLAN:", brief)
         self.assertLessEqual(len(brief), 7800)
+
+    def test_catalog_resolver_returns_real_role_ids(self):
+        import json
+
+        from django.test import RequestFactory
+
+        from peon.projects.catalog import api_resolve
+
+        request = RequestFactory().get(
+            "/catalog/api/resolve/",
+            {"roles": "network-scanner", "project": "false"},
+        )
+        payload = json.loads(api_resolve(request).content)
+
+        self.assertEqual(payload["role_ids"], ["network-scanner"])
 
 
 class CrewDirectiveTests(TestCase):

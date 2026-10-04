@@ -11,6 +11,8 @@ backstory: >
 tools:
   - check_inbox
   - sandbox_status
+  - skills_list
+  - skill_view
   - roe_status
   - assert_in_scope
   - list_objectives

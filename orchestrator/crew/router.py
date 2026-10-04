@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from orchestrator.crew.roles.hierarchy import engagement_bookends, manager_role
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.utils.llm import chat_text, llm_configured
 from orchestrator.utils.service import SharedServiceBase
 from orchestrator.utils.strings import extract_json
+
+logger = logging.getLogger(__name__)
 
 
 class RoleRouter(SharedServiceBase):
@@ -70,6 +73,10 @@ Reply ONLY JSON: {"roles":["id",...],"reason":"short"}"""
                     if rid in catalog and rid not in out:
                         out.append(rid)
             except Exception:
+                logger.warning(
+                    "CrewAI role selection failed; using offline routing",
+                    exc_info=True,
+                )
                 out = []
 
         if out:

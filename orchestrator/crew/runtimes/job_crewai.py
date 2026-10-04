@@ -8,7 +8,11 @@ from orchestrator.agent.runtime_base import (
     AgentRunResult,
     AgentRuntimeBase,
 )
-from orchestrator.crew.checkpoint import build_memory, checkpoint_config
+from orchestrator.crew.checkpoint import (
+    build_memory,
+    checkpoint_config,
+    should_restore_checkpoint,
+)
 from orchestrator.crew.roles.factory import (
     build_crew_agent,
     restore_agent_runtime_policy,
@@ -93,7 +97,13 @@ class CrewAIJobRuntime(AgentRuntimeBase):
         inbox = drain_agent_inbox_context(scope)
         if inbox.text:
             brief = f"{brief}\n\nAGENT INBOX:\n{inbox.text}".strip()
-        if request.resume:
+        replan_requested = "replan" in inbox.directive_kinds
+        restore_requested = should_restore_checkpoint(
+            resume=request.resume,
+            checkpoint_enabled=request.config.checkpoint_enabled,
+            replan=replan_requested,
+        )
+        if restore_requested:
             brief = (
                 "Continue from the native CrewAI checkpoint under Rules of "
                 "Engagement. Do not repeat completed work.\n\n" + brief
@@ -136,12 +146,14 @@ class CrewAIJobRuntime(AgentRuntimeBase):
             try:
                 restore = (
                     checkpoint_config(scope, resume=True)
-                    if request.resume and request.config.checkpoint_enabled
+                    if restore_requested
                     else None
                 )
                 if restore is not None and restore.restore_from is not None:
                     from crewai import Agent
 
+                    # Explicit restore is required: kickoff(from_checkpoint=...)
+                    # executes immediately, before current role policy can be applied.
                     agent = Agent.from_checkpoint(restore)
                     restore_agent_runtime_policy(
                         agent,

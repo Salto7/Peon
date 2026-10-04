@@ -17,6 +17,18 @@ def _emit(kind: str, content: str, **metadata: object) -> None:
     get_job().bridge.emit(kind, content, metadata=dict(metadata) if metadata else None)
 
 
+@crew_tool("sandbox_setup", "Confirm the project sandbox is bound and ready.")
+def sandbox_setup() -> str:
+    err = _bound()
+    if err:
+        return err
+    info = Session.current().info
+    return (
+        f"Sandbox ready — name={info.name} mode={info.mode} "
+        f"session_id={info.project_id or '-'}"
+    )
+
+
 @crew_tool("sandbox_status", "Show bound sandbox mode and name.")
 def sandbox_status() -> str:
     err = _bound()
@@ -75,3 +87,37 @@ def run_cli(command: str) -> str:
         return f"Error: RoE blocked — {gate}"
     _emit("tool", f"run_cli: {cmd[:200]}")
     return f"exit={ShellRunner.shared().run_shell(cmd)}"
+
+
+@crew_tool(
+    "run_periodic",
+    "Repeat a sandbox command at a bounded interval for watchdog-style checks.",
+)
+def run_periodic(
+    command: str,
+    interval_seconds: int = 30,
+    duration_seconds: int = 120,
+    package: str = "",
+) -> str:
+    err = _bound()
+    if err:
+        return err
+    cmd = (command or "").strip()
+    if not cmd:
+        return "Error: empty command."
+    from orchestrator.agent.job import get_job
+
+    blocked = get_job().bridge.assert_command_allowed(cmd)
+    if blocked:
+        return f"Error: RoE blocked — {blocked}"
+    _emit(
+        "tool",
+        f"run_periodic({interval_seconds}s/{duration_seconds}s): {cmd[:160]}",
+    )
+    code = ShellRunner.shared().run_periodic(
+        cmd,
+        interval_seconds=int(interval_seconds),
+        duration_seconds=int(duration_seconds),
+        package=package or "",
+    )
+    return f"exit={code}"

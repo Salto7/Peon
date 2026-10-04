@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -29,12 +30,30 @@ def runtime_state_dir(scope: JobScope) -> Path | None:
 
 
 def latest_checkpoint(scope: JobScope) -> Path | None:
-    """Return the newest native CrewAI checkpoint for this job."""
+    """Return the newest readable native CrewAI checkpoint for this job."""
     root = runtime_state_dir(scope)
     if root is None:
         return None
-    files = list((root / "checkpoints" / "main").glob("*.json"))
-    return max(files, key=lambda path: path.stat().st_mtime_ns) if files else None
+    files = sorted(
+        (root / "checkpoints" / "main").glob("*.json"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for path in files:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            return path
+    return None
+
+
+def should_restore_checkpoint(
+    *, resume: bool, checkpoint_enabled: bool, replan: bool = False
+) -> bool:
+    """Resume prior execution unless the operator requested a fresh plan."""
+    return bool(resume and checkpoint_enabled and not replan)
 
 
 def checkpoint_config(scope: JobScope, *, resume: bool = False):

@@ -228,8 +228,12 @@ class JobAgentBridge(AgentBridgeBase):
                     f"OBJ-{obj.seq} {obj.title}: {reason}",
                     job=self._job,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self.emit(
+                    "error",
+                    f"operator prompt creation failed: {exc}",
+                    metadata={"event": "operator_prompt_error"},
+                )
         return f"OBJ-{obj.seq} → {obj.status}"
 
     def record_finding(self, **fields: Any) -> str:

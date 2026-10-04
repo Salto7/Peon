@@ -8,6 +8,12 @@ from orchestrator.config import get_config
 from orchestrator.crew.roles.model import RoleSpec
 from orchestrator.crew.tools import build_tools
 
+MEANINGFUL_OUTPUT_GUARDRAIL = (
+    "The output must be non-empty, address the assigned task, identify blockers, "
+    "and distinguish observed evidence from assumptions. Reject vague status-only "
+    "answers and request a revised result."
+)
+
 
 def llm_id_for_crew() -> str:
     """Map Peon LiteLLM model id into a CrewAI-friendly llm string."""
@@ -59,6 +65,8 @@ def build_crew_agent(
         "cache": True,
         "respect_context_window": True,
         "tool_failure_policy": ToolFailurePolicy.WARN,
+        "guardrail": MEANINGFUL_OUTPUT_GUARDRAIL,
+        "guardrail_max_retries": max(1, int(max_replans)),
         "max_iter": min(
             int(role.max_iter),
             max(1, int(max_iterations)) if max_iterations is not None else int(role.max_iter),
@@ -96,21 +104,26 @@ def restore_agent_runtime_policy(
     from orchestrator.crew.roles.registry import RoleRegistry
 
     identity = str(getattr(agent, "role", "") or "").strip()
-    role = next(
-        (
-            item
-            for item in RoleRegistry.shared().list_roles()
-            if identity in {item.id, item.label, item.crew_role}
-        ),
-        None,
-    )
-    if role is None:
+    roles = RoleRegistry.shared().list_roles()
+    matches = [item for item in roles if identity == item.crew_role]
+    if not matches:
+        matches = [item for item in roles if identity == item.id]
+    if not matches:
         raise RuntimeError(f"restored CrewAI agent has no matching role pack: {identity!r}")
+    if len(matches) > 1:
+        ids = ", ".join(sorted(item.id for item in matches))
+        raise RuntimeError(
+            f"restored CrewAI agent role is ambiguous: {identity!r} ({ids})"
+        )
+    role = matches[0]
 
     limit = min(int(role.max_iter), max(1, int(max_iterations)))
+    agent.tools = build_tools(role.tools)
     agent.max_iter = limit
     agent.max_retry_limit = max(1, int(max_replans))
     agent.max_execution_time = max_execution_time
+    agent.guardrail = MEANINGFUL_OUTPUT_GUARDRAIL
+    agent.guardrail_max_retries = max(1, int(max_replans))
     agent.memory = memory
     agent.checkpoint = checkpoint
     agent.planning_config = (

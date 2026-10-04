@@ -62,3 +62,4 @@ def _ensure() -> None:
     from orchestrator.crew.tools import findings as _findings  # noqa: F401
     from orchestrator.crew.tools import roe as _roe  # noqa: F401
     from orchestrator.crew.tools import sandbox as _sandbox  # noqa: F401
+    from orchestrator.crew.tools import skills as _skills  # noqa: F401

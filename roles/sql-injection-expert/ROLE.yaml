@@ -10,8 +10,12 @@ backstory: >
 tools:
   - check_inbox
   - sandbox_status
+  - skills_list
+  - skill_view
+  - run_skill_script
   - provision_cli
   - run_cli
+  - run_periodic
   - roe_status
   - assert_in_scope
   - record_finding
