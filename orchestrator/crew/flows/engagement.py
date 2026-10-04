@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Tuple
 
 from orchestrator.crew.roles.factory import build_crew_agent
 from orchestrator.crew.roles.hierarchy import (
@@ -14,7 +14,7 @@ from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtime_support import crew_step_callback, crew_task_callback
 
 
-def require_meaningful_output(output: Any) -> tuple[bool, Any]:
+def require_meaningful_output(output: Any) -> Tuple[bool, Any]:
     """Generic task guardrail that rejects empty agent output."""
     raw = str(getattr(output, "raw", None) or output or "").strip()
     if raw:

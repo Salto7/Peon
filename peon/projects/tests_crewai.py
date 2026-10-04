@@ -14,6 +14,7 @@ from orchestrator.agent.bridges.null import NullAgentBridge
 from orchestrator.agent.config import agent_run_config_from_mapping
 from orchestrator.agent.job import JobScope
 from orchestrator.crew.checkpoint import checkpoint_config, latest_checkpoint
+from orchestrator.crew.flows.engagement import build_engagement_crew
 from orchestrator.crew.roles.factory import build_crew_agent
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtime_support import augment_tool_result
@@ -83,6 +84,17 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
         self.assertEqual(agent.max_execution_time, 60)
         self.assertEqual(agent.planning_config.max_replans, 2)
         self.assertEqual(agent.planning_config.reasoning_effort, "medium")
+
+    @patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"})
+    def test_project_crew_uses_generic_native_features(self):
+        crew = build_engagement_crew(
+            role_ids=["network-scanner"],
+            max_iterations=7,
+            max_replans=2,
+        )
+        self.assertEqual(crew.manager_agent.planning_config.max_replans, 2)
+        self.assertIsNotNone(crew.tasks[0].guardrail)
+        self.assertIn("{brief}", crew.tasks[0].description)
 
 
 class CrewReplanControlTests(SimpleTestCase):
