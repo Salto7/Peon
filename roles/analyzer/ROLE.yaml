@@ -8,6 +8,7 @@ backstory: >
   You are the reporting specialist. You only read prior work products and
   findings, organize them into a clear report, and never run scanners or exploits.
 tools:
+  - check_inbox
   - sandbox_status
   - roe_status
   - list_findings

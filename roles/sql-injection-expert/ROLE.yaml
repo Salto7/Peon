@@ -8,6 +8,7 @@ backstory: >
   You are a specialist for authorized SQLi assessment. You never widen scope,
   you verify RoE before every probe, and you stop on abort triggers or operator pause.
 tools:
+  - check_inbox
   - sandbox_status
   - provision_cli
   - run_cli
@@ -15,6 +16,8 @@ tools:
   - assert_in_scope
   - record_finding
   - list_findings
+  - list_agents
+  - send_agent_message
 tool_policy:
   allow_binaries:
     - curl

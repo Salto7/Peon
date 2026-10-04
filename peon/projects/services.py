@@ -261,6 +261,7 @@ class PlanningService:
             text,
             explicit=explicit or None,
             project=mode_norm == "project",
+            preferred_tags=tags or None,
         )
         prompt = text
         if resolved:

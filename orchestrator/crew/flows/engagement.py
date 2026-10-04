@@ -18,6 +18,7 @@ def build_engagement_crew(
     brief: str,
     role_ids: tuple[str, ...] | list[str] | None = None,
     replan_note: str = "",
+    max_iterations: int | None = None,
 ) -> Any:
     """Return a CrewAI ``Crew`` (hierarchical + planning). Lazy-imports crewai."""
     try:
@@ -41,9 +42,11 @@ def build_engagement_crew(
         )
 
     specialist_specs = specialists_for(role_ids, reg=reg)
-    manager = build_crew_agent(manager_spec)
-    specialists = [build_crew_agent(s) for s in specialist_specs]
-    analyzer = build_crew_agent(analyzer_spec)
+    manager = build_crew_agent(manager_spec, max_iterations=max_iterations)
+    specialists = [
+        build_crew_agent(s, max_iterations=max_iterations) for s in specialist_specs
+    ]
+    analyzer = build_crew_agent(analyzer_spec, max_iterations=max_iterations)
 
     specialist_lines = ", ".join(s.id for s in specialist_specs) or "(none preselected)"
     plan_extra = ""
@@ -61,7 +64,8 @@ def build_engagement_crew(
             f"{plan_extra}\n"
             f"Available specialists (reports_to={manager_spec.id}): {specialist_lines}\n"
             "As engagement manager:\n"
-            "1. Call roe_status; do not expand scope.\n"
+            "1. Call check_inbox, then roe_status; do not expand scope. "
+            "Check the inbox again between major actions.\n"
             "2. Decide which specialist roles to use from those available "
             "(match brief to their goals/tags).\n"
             "3. Delegate to specialists; on failure, replan and retry once.\n"

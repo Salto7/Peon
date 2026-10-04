@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import wraps
 from typing import Any, Callable
 
 from orchestrator.crew.tools.catalog import register_tool
@@ -23,7 +24,13 @@ def crew_tool(name: str, description: str) -> Callable[[Callable[..., str]], Cal
                     "(pip install 'crewai>=1.0.0')"
                 ) from exc
 
-            wrapped = crewai_tool(name)(fn)
+            @wraps(fn)
+            def runtime_aware(*args: Any, **kwargs: Any) -> str:
+                from orchestrator.crew.runtime_support import augment_tool_result
+
+                return augment_tool_result(fn(*args, **kwargs))
+
+            wrapped = crewai_tool(name)(runtime_aware)
             if description and hasattr(wrapped, "description"):
                 try:
                     wrapped.description = description

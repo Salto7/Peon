@@ -46,7 +46,7 @@ def resume_project(project: Project, *, steer: str = "") -> Project:
 
 
 def replan_project(project: Project, message: str) -> dict[str, Any]:
-    """Crew-aware replan: queue project-manager with replan steer."""
+    """Rewrite the objective DAG, then run its CrewAI manager objective."""
     text = (message or "").strip()
     if not text:
         raise ValueError("Replan message is required")
@@ -56,18 +56,11 @@ def replan_project(project: Project, message: str) -> dict[str, Any]:
         project.status = ProjectStatus.ACTIVE
         project.save(update_fields=["status", "updated_at"])
 
-    if agent_module() != "crewai":
-        return ProjectLifecycle.replan_from_prompt(project, text)
-
-    job = _ensure_manager_job(project, resume=True, replan=True, steer=text)
-    set_crew_status(project, "running")
-    return {
-        "mode": "crew_replan",
-        "job_ids": [str(job.id)] if job else [],
-        "primary_job_id": str(job.id) if job else "",
-        "objectives": 0,
-        "plan_preview": text[:240],
-    }
+    result = ProjectLifecycle.replan_from_prompt(project, text)
+    if agent_module() == "crewai":
+        result["mode"] = "crew_replan"
+        set_crew_status(project, "running")
+    return result
 
 
 def reprompt_manager(

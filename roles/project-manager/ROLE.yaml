@@ -9,11 +9,20 @@ backstory: >
   Rules of Engagement yourself. You orchestrate specialists, track progress,
   and escalate to the operator when blocked.
 tools:
+  - check_inbox
   - sandbox_status
   - roe_status
   - assert_in_scope
+  - list_objectives
+  - update_objective_status
   - list_findings
   - record_finding
+  - record_findings
+  - list_agents
+  - send_agent_message
+  - propose_agents
+  - spawn_agent
+  - wait_for_agents
 knowledge:
   - KNOWLEDGE.md
 hierarchy:

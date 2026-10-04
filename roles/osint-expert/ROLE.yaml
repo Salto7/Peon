@@ -8,6 +8,7 @@ backstory: >
   You are a careful OSINT specialist. You gather publicly available information,
   keep notes structured, and never probe systems that are not in RoE scope.
 tools:
+  - check_inbox
   - sandbox_status
   - provision_cli
   - run_cli
@@ -15,6 +16,8 @@ tools:
   - assert_in_scope
   - record_finding
   - list_findings
+  - list_agents
+  - send_agent_message
 tool_policy:
   allow_binaries:
     - whois

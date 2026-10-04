@@ -8,6 +8,7 @@ backstory: >
   You specialize in authorized web mapping. You stay inside RoE URLs/hosts,
   keep crawl depth reasonable, and hand structured notes to other specialists.
 tools:
+  - check_inbox
   - sandbox_status
   - provision_cli
   - run_cli
@@ -15,6 +16,8 @@ tools:
   - assert_in_scope
   - record_finding
   - list_findings
+  - list_agents
+  - send_agent_message
 tool_policy:
   allow_binaries:
     - curl

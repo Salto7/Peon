@@ -16,7 +16,12 @@ def llm_id_for_crew() -> str:
     return model or "openrouter/openai/gpt-4o-mini"
 
 
-def build_crew_agent(role: RoleSpec, *, tools: list[Any] | None = None) -> Any:
+def build_crew_agent(
+    role: RoleSpec,
+    *,
+    tools: list[Any] | None = None,
+    max_iterations: int | None = None,
+) -> Any:
     """Instantiate a CrewAI ``Agent`` for ``role`` (lazy crewai import)."""
     try:
         from crewai import Agent
@@ -46,7 +51,10 @@ def build_crew_agent(role: RoleSpec, *, tools: list[Any] | None = None) -> Any:
         "tools": agent_tools,
         "allow_delegation": bool(role.allow_delegation),
         "verbose": False,
-        "max_iter": int(role.max_iter),
+        "max_iter": min(
+            int(role.max_iter),
+            max(1, int(max_iterations)) if max_iterations is not None else int(role.max_iter),
+        ),
         "llm": llm_id_for_crew(),
     }
     # reasoning is optional across crewai versions

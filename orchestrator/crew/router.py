@@ -33,6 +33,7 @@ Reply ONLY JSON: {"roles":["id",...],"reason":"short"}"""
         *,
         explicit: list[str] | None = None,
         project: bool = True,
+        preferred_tags: list[str] | None = None,
     ) -> list[str]:
         catalog = {r.id for r in RoleRegistry.shared().list_roles()}
         out: list[str] = []
@@ -45,6 +46,11 @@ Reply ONLY JSON: {"roles":["id",...],"reason":"short"}"""
 
         text = (description or "").strip()
         mgr_id, ana_id = engagement_bookends()
+        tags = {
+            str(tag or "").strip().lower()
+            for tag in (preferred_tags or [])
+            if str(tag or "").strip()
+        }
 
         if not text:
             return [mgr_id] if project and mgr_id else []
@@ -54,6 +60,7 @@ Reply ONLY JSON: {"roles":["id",...],"reason":"short"}"""
                 raw = chat_text(
                     self.SYSTEM,
                     f"Brief:\n{text[:3000]}\n\nproject={project}\n\n"
+                    f"Preferred capability tags: {', '.join(sorted(tags)) or '(none)'}\n\n"
                     f"Roles:\n{self._catalog_prompt_lines()}",
                 )
                 data = json.loads(extract_json(raw))
@@ -67,6 +74,22 @@ Reply ONLY JSON: {"roles":["id",...],"reason":"short"}"""
 
         if out:
             return out
+
+        # Preserve operator focus even when role-selection AI is unavailable.
+        if tags:
+            matched = [
+                role.id
+                for role in RoleRegistry.shared().list_roles()
+                if tags & {cap.lower() for cap in role.capabilities}
+                and (not project or not role.is_authoring)
+            ]
+            if project:
+                return list(
+                    dict.fromkeys(
+                        [role_id for role_id in (mgr_id, *matched, ana_id) if role_id]
+                    )
+                )
+            return matched
 
         # Offline / LLM failure: manager only for projects; empty for jobs.
         if project and mgr_id:

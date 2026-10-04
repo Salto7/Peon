@@ -7,6 +7,7 @@ from typing import Any
 
 from orchestrator.agent.config import AgentRunConfig
 from orchestrator.agent.job import JobScope, bind_job
+from orchestrator.crew.checkpoint import resume_context, save_checkpoint
 from orchestrator.crew.flows.engagement import build_engagement_crew
 from orchestrator.crew.roles.hierarchy import manager_role
 from orchestrator.crew.runtime_base import (
@@ -14,6 +15,7 @@ from orchestrator.crew.runtime_base import (
     CrewRunResult,
     CrewRuntimeBase,
 )
+from orchestrator.crew.runtime_support import drain_agent_inbox
 
 
 class ProjectCrewRuntime(CrewRuntimeBase):
@@ -51,14 +53,43 @@ class ProjectCrewRuntime(CrewRuntimeBase):
         scope.extras["crew_flow_id"] = flow_id
         scope.extras["crew_mode"] = "project"
 
+        inbox = drain_agent_inbox(scope)
+        if inbox:
+            brief = f"{brief}\n\nAGENT INBOX:\n{inbox}".strip()
+        if request.resume:
+            prior = resume_context(scope)
+            brief = (
+                "Continue from the durable checkpoint under Rules of Engagement. "
+                "Do not repeat completed work.\n\n"
+                + (f"{prior}\n\n" if prior else "")
+                + brief
+            ).strip()
+            scope.bridge.emit(
+                "status",
+                "resuming project crew from durable checkpoint",
+                metadata={
+                    "event": "agent_resume",
+                    "thread_id": str(scope.job_id),
+                    "flow_id": flow_id,
+                },
+            )
+
         try:
             crew = build_engagement_crew(
                 brief=brief,
                 role_ids=request.role_ids,
                 replan_note=request.steer if request.replan else "",
+                max_iterations=cfg.max_iterations,
             )
         except Exception as exc:
             scope.bridge.emit("error", f"crew build failed: {exc}")
+            save_checkpoint(
+                scope,
+                status="failed",
+                error=str(exc),
+                brief=brief,
+                flow_id=flow_id,
+            )
             return CrewRunResult(
                 ok=False,
                 error=str(exc),
@@ -77,11 +108,24 @@ class ProjectCrewRuntime(CrewRuntimeBase):
             },
         )
 
+        save_checkpoint(
+            scope,
+            status="running",
+            error="",
+            brief=brief,
+            flow_id=flow_id,
+        )
         with bind_job(scope, cfg):
             try:
                 result = crew.kickoff()
             except Exception as exc:
                 scope.bridge.emit("error", f"project crew failed: {exc}")
+                save_checkpoint(
+                    scope,
+                    status="failed",
+                    error=str(exc),
+                    flow_id=flow_id,
+                )
                 return CrewRunResult(
                     ok=False,
                     error=str(exc),
@@ -94,6 +138,13 @@ class ProjectCrewRuntime(CrewRuntimeBase):
             "status",
             f"project crew done flow={flow_id[:8]}",
             metadata={"event": "crew_project_done", "flow_id": flow_id},
+        )
+        save_checkpoint(
+            scope,
+            status="done",
+            output=output,
+            error="",
+            flow_id=flow_id,
         )
         return CrewRunResult(
             ok=True,

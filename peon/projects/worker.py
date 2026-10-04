@@ -450,8 +450,22 @@ def run_job_via_agent(
             extras["crew_mode"] = "project"
 
     bridge = JobAgentBridge(job)
-    steer_bits = bridge.drain_operator_guidance()
-    steer = "\n\n".join(steer_bits).strip()
+    from orchestrator.crew.runtime_support import drain_agent_inbox
+
+    steer = drain_agent_inbox(
+        JobScope(
+            job_id=str(job.id),
+            project_id=str(job.project_id or ""),
+            parent_job_id=str(job.parent_id or ""),
+            workspace=workspace,
+            role_ids=names,
+            brief=(job.description or job.title or "").strip(),
+            depth=depth,
+            bridge=bridge,
+            extras=extras,
+        )
+    )
+    steer_bits = [steer] if steer else []
     if any(b.startswith("OPERATOR") and "REPLAN" in b.upper() for b in steer_bits):
         extras["replan"] = True
     # Directives that literally start with REPLAN: mark crew replan.

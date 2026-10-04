@@ -242,14 +242,14 @@ def list_findings(kind: str = "") -> str:
 def spawn_agent(
     title: str,
     description: str,
-    skill_name: str = "",
+    role_id: str = "",
     link: str = "peer",
 ) -> str:
     """Spawn another Job agent.
 
     link=peer (default): same objective, focused brief — preferred multi-agent path.
     link=child: subordinate of this job (depth-limited).
-    skill_name: optional primary skill id (defaults to this job's skill on the host).
+    role_id: optional primary CrewAI role id (defaults to this job's role).
     """
     cfg = get_agent_config()
     ctx = get_job()
@@ -258,12 +258,12 @@ def spawn_agent(
         return "Error: link must be 'peer' or 'child'"
     if kind == "child" and ctx.depth >= cfg.max_subagent_depth:
         return f"Error: child depth limit ({cfg.max_subagent_depth})"
-    names = [skill_name.strip()] if (skill_name or "").strip() else None
+    names = [role_id.strip()] if (role_id or "").strip() else None
     try:
         job_id = ctx.bridge.spawn_agent(
             title=title,
             description=description,
-            skill_names=names,
+            role_ids=names,
             link=kind,  # type: ignore[arg-type]
         )
     except Exception as exc:
