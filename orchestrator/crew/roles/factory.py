@@ -29,10 +29,11 @@ def build_crew_agent(
     """Instantiate a CrewAI ``Agent`` for ``role`` (lazy crewai import)."""
     try:
         from crewai import Agent
+        from crewai.tools.tool_failure import ToolFailurePolicy
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "crewai is required for AGENT_MODULE=crewai "
-            "(pip install 'crewai>=1.0.0')"
+            "(pip install 'crewai==1.15.23')"
         ) from exc
 
     knowledge = role.knowledge_text()
@@ -55,6 +56,9 @@ def build_crew_agent(
         "tools": agent_tools,
         "allow_delegation": bool(role.allow_delegation),
         "verbose": False,
+        "cache": True,
+        "respect_context_window": True,
+        "tool_failure_policy": ToolFailurePolicy.WARN,
         "max_iter": min(
             int(role.max_iter),
             max(1, int(max_iterations)) if max_iterations is not None else int(role.max_iter),

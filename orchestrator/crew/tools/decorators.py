@@ -20,7 +20,7 @@ def crew_tool(name: str, description: str) -> Callable[[Callable[..., str]], Cal
             except ImportError as exc:  # pragma: no cover
                 raise RuntimeError(
                     "crewai is required for AGENT_MODULE=crewai "
-                    "(pip install 'crewai>=1.0.0')"
+                    "(pip install 'crewai==1.15.23')"
                 ) from exc
 
             from orchestrator.crew.tools.registered import RegisteredCrewTool

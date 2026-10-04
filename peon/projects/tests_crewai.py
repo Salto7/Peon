@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from importlib.metadata import version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -55,6 +56,9 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
             restored = checkpoint_config(scope, resume=True)
             self.assertEqual(Path(restored.restore_from), newer)
 
+    def test_validated_crewai_stable_release_is_installed(self):
+        self.assertEqual(version("crewai"), "1.15.23")
+
     def test_runtime_config_enables_native_stability_features(self):
         config = agent_run_config_from_mapping(
             {
@@ -90,6 +94,9 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
         self.assertEqual(agent.max_execution_time, 60)
         self.assertEqual(agent.planning_config.max_replans, 2)
         self.assertEqual(agent.planning_config.reasoning_effort, "medium")
+        self.assertTrue(agent.cache)
+        self.assertTrue(agent.respect_context_window)
+        self.assertEqual(agent.tool_failure_policy.value, "warn")
 
     @patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"})
     def test_project_crew_uses_generic_native_features(self):
@@ -99,6 +106,8 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
             max_replans=2,
         )
         self.assertEqual(crew.manager_agent.planning_config.max_replans, 2)
+        self.assertTrue(crew.cache)
+        self.assertEqual(crew.tool_failure_policy.value, "warn")
         self.assertIsNotNone(crew.tasks[0].guardrail)
         self.assertIn("{brief}", crew.tasks[0].description)
 

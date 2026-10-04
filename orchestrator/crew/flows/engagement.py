@@ -30,10 +30,11 @@ def build_engagement_crew(
     """Return a CrewAI ``Crew`` (hierarchical + planning). Lazy-imports crewai."""
     try:
         from crewai import Crew, Process, Task
+        from crewai.tools.tool_failure import ToolFailurePolicy
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "crewai is required for AGENT_MODULE=crewai "
-            "(pip install 'crewai>=1.0.0')"
+            "(pip install 'crewai==1.15.23')"
         ) from exc
 
     reg = RoleRegistry.shared()
@@ -110,6 +111,8 @@ def build_engagement_crew(
         "process": Process.hierarchical,
         "manager_agent": manager,
         "verbose": False,
+        "cache": True,
+        "tool_failure_policy": ToolFailurePolicy.WARN,
         "planning": True,
         "memory": memory,
         "checkpoint": checkpoint,
