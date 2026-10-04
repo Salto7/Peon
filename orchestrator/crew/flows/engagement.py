@@ -9,7 +9,6 @@ from orchestrator.crew.roles.hierarchy import (
     specialists_for,
 )
 from orchestrator.crew.roles.registry import RoleRegistry
-from orchestrator.crew.runtime_support import crew_step_callback, crew_task_callback
 
 MEANINGFUL_OUTPUT_GUARDRAIL = (
     "The output must be non-empty, address the assigned task, identify blockers, "
@@ -115,7 +114,5 @@ def build_engagement_crew(
         "memory": memory,
         "checkpoint": checkpoint,
         "output_log_file": output_log_file,
-        "step_callback": crew_step_callback,
-        "task_callback": crew_task_callback,
     }
     return Crew(**kwargs)

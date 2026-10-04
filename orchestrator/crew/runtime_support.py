@@ -46,25 +46,3 @@ def augment_tool_result(result: Any, *, scope: JobScope | None = None) -> Any:
     return f"{result if result is not None else ''}\n\n{note}".strip()
 
 
-def crew_step_callback(step: Any) -> None:
-    """Generic CrewAI step telemetry; serializable for native checkpoints."""
-    scope = get_job()
-    label = type(step).__name__
-    content = str(getattr(step, "log", None) or getattr(step, "text", None) or step)
-    scope.bridge.emit(
-        "log",
-        content[:2000],
-        metadata={"event": "crewai_step", "step_type": label},
-    )
-
-
-def crew_task_callback(output: Any) -> None:
-    """Generic task-completion telemetry; serializable for native checkpoints."""
-    scope = get_job()
-    task_name = str(getattr(output, "name", None) or getattr(output, "description", ""))
-    raw = str(getattr(output, "raw", None) or output or "")
-    scope.bridge.emit(
-        "status",
-        f"CrewAI task completed: {task_name[:160] or '(unnamed)'}",
-        metadata={"event": "crewai_task_done", "output": raw[:2000]},
-    )
