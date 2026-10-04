@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.sqlite3
+/data/
+/workspaces/
+.venv/
+.env
+changelog/
+pytest.ini
+tests/
+test_*.py
+PLAN.md

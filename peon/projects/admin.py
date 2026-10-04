@@ -24,7 +24,7 @@ class RulesOfEngagementInline(admin.StackedInline):
 class ObjectiveInline(admin.TabularInline):
     model = Objective
     extra = 0
-    fields = ("seq", "title", "phase", "status", "skill_suggestion", "profile_suggestion")
+    fields = ("seq", "title", "phase", "status", "role_id", "profile_suggestion")
     show_change_link = True
 
 
@@ -46,9 +46,9 @@ class ProjectAdmin(admin.ModelAdmin):
 
 @admin.register(Objective)
 class ObjectiveAdmin(admin.ModelAdmin):
-    list_display = ("seq", "title", "project", "phase", "status", "skill_suggestion")
+    list_display = ("seq", "title", "project", "phase", "status", "role_id")
     list_filter = ("phase", "status")
-    search_fields = ("title", "skill_suggestion")
+    search_fields = ("title", "role_id")
     filter_horizontal = ("depends_on",)
     readonly_fields = ("id", "created_at", "updated_at")
 

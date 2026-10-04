@@ -110,7 +110,7 @@ class EvidenceBundle:
                         "status": obj.status,
                         "description": obj.description,
                         "acceptance_criteria": obj.acceptance_criteria,
-                        "skill_suggestion": obj.skill_suggestion,
+                        "role_id": obj.role_id,
                         "blocked_reason": obj.blocked_reason,
                     }
                 )
@@ -124,7 +124,7 @@ class EvidenceBundle:
                         "title": j.title,
                         "status": j.status,
                         "skills": ", ".join(
-                            str(s) for s in (j.skill_names or []) if str(s).strip()
+                            str(s) for s in (j.role_ids or []) if str(s).strip()
                         ),
                     }
                 )
@@ -618,7 +618,7 @@ class ReportSynthesizer:
     def _complete_reporting_objectives(job: Job) -> None:
         if job.project_id is None:
             return
-        for obj in job.project.objectives.filter(skill_suggestion="analyzer").exclude(
+        for obj in job.project.objectives.filter(role_id="analyzer").exclude(
             status=ObjectiveStatus.CANCELLED
         ):
             obj.status = ObjectiveStatus.COMPLETED

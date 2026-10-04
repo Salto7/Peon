@@ -26,7 +26,16 @@ class Command(BaseCommand):
         parser.add_argument("--in-scope", dest="in_scope", default="")
         parser.add_argument("--exclusions", default="")
         parser.add_argument("--authorization", default="")
-        parser.add_argument("--skills", default="", help="Comma-separated skill ids")
+        parser.add_argument(
+            "--roles",
+            default="",
+            help="Comma-separated CrewAI role ids (roles/)",
+        )
+        parser.add_argument(
+            "--skills",
+            default="",
+            help="Deprecated alias for --roles",
+        )
 
     def handle(self, *args, **options) -> None:
         description = (options.get("brief") or "").strip()
@@ -36,6 +45,7 @@ class Command(BaseCommand):
         if not description:
             raise CommandError("Provide a brief string or --brief-file")
 
+        roles = split_csv(options["roles"]) or split_csv(options["skills"])
         try:
             result = PlanningService.run_llm_plan(
                 description=description,
@@ -45,7 +55,7 @@ class Command(BaseCommand):
                 in_scope=parse_target_lines(options["in_scope"]),
                 exclusions=parse_target_lines(options["exclusions"]),
                 authorization=options["authorization"],
-                skills=split_csv(options["skills"]),
+                role_ids=roles,
             )
         except Exception as exc:
             raise CommandError(str(exc)) from exc

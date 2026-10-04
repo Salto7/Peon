@@ -11,7 +11,6 @@ from django.utils import timezone as dj_tz
 
 from orchestrator.utils.job_env import JobEnv
 from agent_runtime.api import Session
-from orchestrator.skills.execute import LocalSkillExecutor, SkillExecutionDispatcher
 from orchestrator.tools.catalog import CatalogProvisioner
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
@@ -121,7 +120,7 @@ def _emit(job: Job, message_type: str, content: str, **meta) -> None:
     emit_job_stream(job, message_type, content, meta or None, swallow_errors=True)
 
 def _roe_blocks(job: Job) -> str | None:
-    """Fail-closed for active probe skills with empty in_scope (type ignored)."""
+    """Fail-closed for active probe roles with empty in_scope (type ignored)."""
     if job.project_id is None:
         return None
     from peon.projects.targets import roe_block_reason
@@ -131,9 +130,9 @@ def _roe_blocks(job: Job) -> str | None:
         project,
         texts=[job.description or "", job.title or "", project.summary or ""],
     )
-    names = [str(n).strip() for n in (job.skill_names or []) if str(n).strip()]
+    names = [str(n).strip() for n in (job.role_ids or []) if str(n).strip()]
     if not names and job.objective_id and job.objective:
-        hint = (job.objective.skill_suggestion or "").strip()
+        hint = (job.objective.role_id or "").strip()
         if hint:
             names = [hint]
     return roe_block_reason(names, roe.in_scope)
@@ -150,15 +149,6 @@ def _targets_json_for_job(job: Job) -> tuple[str, str, str]:
     excl = coerce_targets(getattr(roe, "exclusions", None) if roe else None)
     seed = coerce_targets(getattr(roe, "seed", None) if roe else None)
     return json.dumps(scope), json.dumps(excl), json.dumps(seed)
-
-
-def ensure_skill_executor() -> SkillExecutionDispatcher:
-    """Register LocalSkillExecutor once (Docker sandbox) for agent tool runs."""
-    dispatcher = SkillExecutionDispatcher.shared()
-    local = LocalSkillExecutor.shared()
-    if not any(isinstance(e, LocalSkillExecutor) for e in dispatcher._executors):
-        dispatcher.register(local)
-    return dispatcher
 
 
 def _finish(job: Job, *, status: str, error: str = "", result: str | None = None) -> Job:
@@ -199,7 +189,7 @@ def _finish(job: Job, *, status: str, error: str = "", result: str | None = None
                 }:
                     sched.mark(obj, ObjectiveStatus.CANCELLED)
     elif job.project_id and status == JobStatus.CANCELLED:
-        ProjectLifecycle.cancel_open_objectives_for_skills(job.project, job.skill_names or [])
+        ProjectLifecycle.cancel_open_objectives_for_roles(job.project, job.role_ids or [])
 
     if error:
         _emit(job, "error", error)
@@ -259,8 +249,14 @@ def _bind_job_env(job: Job, ws: Path):
         ),
         "ORCHESTRATOR_RPC_TOKEN": str(getattr(settings, "RPC_TOKEN", "") or ""),
         "SKILLS_DIR": str(settings.SKILLS_DIR),
+        "ROLES_DIR": str(getattr(settings, "ROLES_DIR", "") or ""),
         "SANDBOX_SKILLS_PATH": str(
             getattr(settings, "SANDBOX_SKILLS_PATH", "") or settings.SKILLS_DIR
+        ),
+        "SANDBOX_ROLES_PATH": str(
+            getattr(settings, "SANDBOX_ROLES_PATH", "")
+            or getattr(settings, "ROLES_DIR", "")
+            or ""
         ),
         "TOOLS_CATALOG_DIR": str(
             getattr(settings, "TOOLS_CATALOG_DIR", "")
@@ -310,10 +306,10 @@ def _run_analyzer_only(job: Job, ws: Path) -> Job:
     try:
         report = synthesize_report_for_job(job, ws)
         chunk = f"## analyzer\nok=True\nWrote {report}"
-        _emit(job, "result", str(report), skill="analyzer")
+        _emit(job, "result", str(report), role_id="analyzer")
         return _finish(job, status=JobStatus.COMPLETED, error="", result=chunk)
     except Exception as exc:
-        _emit(job, "error", str(exc), skill="analyzer")
+        _emit(job, "error", str(exc), role_id="analyzer")
         return _finish(
             job,
             status=JobStatus.FAILED,
@@ -331,13 +327,13 @@ def run_job(job: Job) -> Job:
     if block:
         return _finish(job, status=JobStatus.FAILED, error=block, result="")
 
-    names = [str(n).strip() for n in (job.skill_names or []) if str(n).strip()]
+    names = [str(n).strip() for n in (job.role_ids or []) if str(n).strip()]
     if not names and job.objective_id and job.objective:
-        names = ObjectiveScheduler().skills_for(job.objective)
-        job.skill_names = names
-        job.save(update_fields=["skill_names", "updated_at"])
+        names = ObjectiveScheduler().roles_for(job.objective)
+        job.role_ids = names
+        job.save(update_fields=["role_ids", "updated_at"])
     if not names:
-        return _finish(job, status=JobStatus.FAILED, error="No skill_names on Job")
+        return _finish(job, status=JobStatus.FAILED, error="No role_ids on Job")
 
     if job.objective_id and job.objective is not None:
         obj = job.objective
@@ -357,7 +353,7 @@ def run_job(job: Job) -> Job:
     _emit(
         job,
         "status",
-        f"Running skills: {', '.join(names)}",
+        f"Running roles: {', '.join(names)}",
         job_status=JobStatus.RUNNING,
     )
 
@@ -378,40 +374,36 @@ def run_job(job: Job) -> Job:
                 f"sandbox {sb.mode}:{sb.name} ({sb.action})"
                 + (f" base_cmds={len(sb.base_commands)}" if sb.base_commands else ""),
             )
-            from orchestrator.skills.eligibility import eligible_cli_names
-            from orchestrator.skills.registry import SkillRegistry
+            from orchestrator.crew.roles.registry import RoleRegistry
 
             cli_names: list[str] = []
-            reg = SkillRegistry.shared()
-            for sid in names:
-                skill = reg.load_skill(sid)
-                if skill is None:
+            reg = RoleRegistry.shared()
+            for rid in names:
+                role = reg.get(rid)
+                if role is None:
                     continue
-                for cli in eligible_cli_names(skill):
+                for cli in role.allow_binaries:
                     if cli not in cli_names:
                         cli_names.append(cli)
-            # Skill names resolve toolkits; CLI names catch tag/suggested catalog hits.
-            # CatalogProvisioner skips CLIs already on PATH (Kali base image).
-            provision_keys = list(dict.fromkeys([*names, *cli_names]))
-            provision = CatalogProvisioner.shared().provision(
-                provision_keys, workspace=ws
-            )
-            if provision.installed:
-                _emit(job, "log", "provisioned: " + ", ".join(provision.installed))
-            if provision.verified:
-                _emit(job, "log", "verified CLIs: " + ", ".join(provision.verified))
-            if provision.errors:
-                _emit(job, "error", "CLI provision: " + "; ".join(provision.errors))
+            # Role allow_binaries drive catalog installs; skips CLIs already on PATH.
+            if cli_names:
+                provision = CatalogProvisioner.shared().provision(
+                    cli_names, workspace=ws
+                )
+                if provision.installed:
+                    _emit(job, "log", "provisioned: " + ", ".join(provision.installed))
+                if provision.verified:
+                    _emit(job, "log", "verified CLIs: " + ", ".join(provision.verified))
+                if provision.errors:
+                    _emit(job, "error", "CLI provision: " + "; ".join(provision.errors))
         except Exception as exc:
             _emit(job, "error", f"sandbox/provision error: {exc}")
-
-        ensure_skill_executor()
 
         stopped = _steer_stop(job, [])
         if stopped is not None:
             return stopped
 
-        # Bookend: analyzer alone is deterministic report synth (no LangGraph).
+        # Bookend: analyzer alone is deterministic report synth (no crew loop).
         if names == ["analyzer"]:
             return _run_analyzer_only(job, ws)
 
@@ -420,7 +412,7 @@ def run_job(job: Job) -> Job:
             job.resume_from_checkpoint = False
             job.save(update_fields=["resume_from_checkpoint", "updated_at"])
         return run_job_via_agent(
-            job, skill_names=names, workspace=str(ws), resume=resume
+            job, role_ids=names, workspace=str(ws), resume=resume
         )
     finally:
         JobEnv.reset(token)
@@ -430,7 +422,7 @@ def run_job(job: Job) -> Job:
 def run_job_via_agent(
     job: Job,
     *,
-    skill_names: list[str],
+    role_ids: list[str],
     workspace: str,
     resume: bool = False,
 ) -> Job:
@@ -445,24 +437,66 @@ def run_job_via_agent(
         depth += 1
         parent = parent.parent
 
+    extras: dict = {}
+    names = list(role_ids)
+    if names:
+        # CrewAI roles share ids with former skill names when present under roles/.
+        extras["role_id"] = str(names[0])
+    if job.project_id:
+        project = job.project
+        if getattr(project, "crew_flow_id", ""):
+            extras["crew_flow_id"] = str(project.crew_flow_id)
+        if extras.get("role_id") == "project-manager":
+            extras["crew_mode"] = "project"
+
+    bridge = JobAgentBridge(job)
+    steer_bits = bridge.drain_operator_guidance()
+    steer = "\n\n".join(steer_bits).strip()
+    if any(b.startswith("OPERATOR") and "REPLAN" in b.upper() for b in steer_bits):
+        extras["replan"] = True
+    # Directives that literally start with REPLAN: mark crew replan.
+    if "REPLAN:" in steer.upper():
+        extras["replan"] = True
+
     scope = JobScope(
         job_id=str(job.id),
         project_id=str(job.project_id or ""),
         parent_job_id=str(job.parent_id or ""),
         workspace=workspace,
-        skill_names=list(skill_names),
+        role_ids=names,
         brief=(job.description or job.title or "").strip(),
         depth=depth,
-        bridge=JobAgentBridge(job),
+        bridge=bridge,
+        extras=extras,
     )
     _emit(
         job,
         "status",
         f"Agent runtime (max_iter={cfg.max_iterations}"
         + ("; resume" if resume else "")
+        + (f"; role={extras.get('role_id')}" if extras.get("role_id") else "")
+        + ("; replan" if extras.get("replan") else "")
         + ")",
     )
-    result = run_agent(scope, cfg, resume=resume)
+    if job.project_id and extras.get("crew_mode") == "project":
+        try:
+            from peon.projects.crew_control import set_crew_status
+
+            set_crew_status(job.project, "running")
+        except Exception:
+            pass
+    result = run_agent(scope, cfg, resume=resume, steer=steer)
+    if job.project_id and extras.get("crew_mode") == "project":
+        try:
+            from peon.projects.crew_control import set_crew_status
+
+            set_crew_status(
+                job.project,
+                "done" if result.ok else "stopped",
+                flow_id=str(scope.extras.get("crew_flow_id") or ""),
+            )
+        except Exception:
+            pass
     try:
         from peon.projects.findings import ingest_workspace_findings
 
@@ -555,8 +589,8 @@ def apply_directive(job: Job, action: str, *, cascade: bool = True) -> Job:
                         job.objective, ObjectiveStatus.CANCELLED
                     )
                 else:
-                    ProjectLifecycle.cancel_open_objectives_for_skills(
-                        job.project, job.skill_names or []
+                    ProjectLifecycle.cancel_open_objectives_for_roles(
+                        job.project, job.role_ids or []
                     )
                 ProjectLifecycle.reconcile_project_status(job.project)
     return job

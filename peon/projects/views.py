@@ -61,7 +61,7 @@ from peon.projects.workspaces import (
     save_project_input,
 )
 from peon.projects.project_status import ProjectOpsPayload
-from peon.projects.catalog import SkillCards
+from peon.projects.catalog_cards.role import RoleCards
 from peon.projects.runtime_settings import PeonSettings
 
 PROJECT_LIST_LIMIT = 50
@@ -213,8 +213,8 @@ def project_create(request: HttpRequest) -> HttpResponse:
         "projects/create.html",
         {
             "nav": "projects",
-            "available_skills": SkillCards.picker(),
-            "selected_skills": SkillCards.required_names(),
+            "available_roles": RoleCards.picker(),
+            "selected_roles": RoleCards.required_names(),
         },
     )
 
@@ -278,10 +278,10 @@ def _create_project_from_post(request: HttpRequest) -> dict:
 
     picked = [
         str(s).strip()
-        for s in request.POST.getlist("skill_names")
+        for s in request.POST.getlist("role_ids")
         if str(s).strip()
     ]
-    required = SkillCards.required_names()
+    required = RoleCards.required_names()
     picked = list(dict.fromkeys([*required, *picked]))
     brief = (summary or title).strip()
     if uploaded_paths:
@@ -316,7 +316,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
                 in_scope=scope,
                 exclusions=list(roe.exclusions) if roe else [],
                 authorization=(roe.authorization_note if roe else ""),
-                skills=picked or None,
+                role_ids=picked or None,
                 preferred_tags=list(project.focus_tags or []),
                 project=project,
             )
@@ -403,6 +403,12 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
     # Full finding set for the asset graph (board may be status-filtered).
     graph_findings = list(project.findings.order_by("seq", "created_at")[:300])
     attack_surface = engagement_graph(project, findings=graph_findings)
+    try:
+        from peon.projects.crew_org import org_chart_for_project
+
+        org_chart = org_chart_for_project(project)
+    except Exception:
+        org_chart = {"roots": [], "roles": [], "crew_status": "", "crew_flow_id": ""}
     return render(
         request,
         "projects/detail.html",
@@ -421,6 +427,7 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
             "has_next_objective": has_next_objective,
             "project_inputs": project_inputs,
             "attack_surface": attack_surface,
+            "org_chart": org_chart,
             "nav": "projects",
             "stream_bootstrap": json.dumps(bootstrap),
         },
@@ -712,11 +719,16 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
     project = get_object_or_404(Project, pk=pk)
     action = (request.POST.get("action") or "").strip().lower()
     if action == "pause":
-        ProjectLifecycle.pause_project(project)
+        from peon.projects.crew_control import pause_project as crew_pause
+
+        crew_pause(project)
         messages.success(request, f"Paused project {project.title}")
         return redirect("project_detail", pk=project.pk)
     if action == "resume":
-        ProjectLifecycle.resume_project(project)
+        from peon.projects.crew_control import resume_project as crew_resume
+
+        steer = (request.POST.get("description") or request.POST.get("steer") or "").strip()
+        crew_resume(project, steer=steer)
         messages.success(request, f"Resumed project {project.title}")
         return redirect("project_detail", pk=project.pk)
     if action == "run_next":
@@ -735,14 +747,29 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
             return redirect("project_detail", pk=project.pk)
         brief = (request.POST.get("description") or "").strip()
         try:
-            result = ProjectLifecycle.replan_from_prompt(project, brief)
+            from peon.projects.crew_control import replan_project as crew_replan
+
+            result = crew_replan(project, brief)
             messages.success(
                 request,
-                f"Replanned — {result.get('objectives', 0)} objectives; "
+                f"Replanned ({result.get('mode')}) — "
                 f"next job {result.get('primary_job_id') or '(none)'}",
             )
         except Exception as exc:
             messages.error(request, f"Replan failed: {exc}")
+        return redirect("project_detail", pk=project.pk)
+    if action == "reprompt":
+        note = (request.POST.get("description") or request.POST.get("steer") or "").strip()
+        try:
+            from peon.projects.crew_control import reprompt_manager
+
+            result = reprompt_manager(project, note)
+            messages.success(
+                request,
+                f"Reprompted manager job {result.get('primary_job_id') or '(none)'}",
+            )
+        except Exception as exc:
+            messages.error(request, f"Reprompt failed: {exc}")
         return redirect("project_detail", pk=project.pk)
     if action in {"delete", "remove"}:
         title = project.title

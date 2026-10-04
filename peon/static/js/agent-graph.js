@@ -258,7 +258,11 @@
 
     var role = document.createElement("div");
     role.className = "flow-node-role";
-    role.textContent = agent.role || "ROOT";
+    var roleId = agent.primary_role_id || (agent.role_ids && agent.role_ids[0]) || "";
+    role.textContent = roleId || agent.role || "ROOT";
+    if (agent.reports_to) {
+      role.title = "reports to " + agent.reports_to;
+    }
     head.appendChild(role);
     node.appendChild(head);
 
@@ -266,6 +270,14 @@
     title.className = "flow-node-title";
     title.textContent = agent.title || agent.id;
     node.appendChild(title);
+
+    if (agent.reports_to) {
+      var reports = document.createElement("div");
+      reports.className = "flow-node-cmd";
+      reports.textContent = "→ " + agent.reports_to;
+      reports.title = "ROLE.yaml hierarchy.reports_to";
+      node.appendChild(reports);
+    }
 
     var cmd = document.createElement("div");
     cmd.className = "flow-node-cmd";

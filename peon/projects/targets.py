@@ -27,14 +27,17 @@ _TYPE_PREFIX = re.compile(
     re.I,
 )
 
-# Skills that actively probe remotes — need non-empty in_scope *values*
-# (type labels are hints only; never gate on type).
-ACTIVE_NETWORK_SKILLS = frozenset(
-    {
-        "network-scanner",
-        "http-prober",
-    }
-)
+def _active_probe_role_ids() -> frozenset[str]:
+    """Roles that require RoE before networked work (from ROLE.yaml)."""
+    try:
+        from orchestrator.crew.roles.registry import RoleRegistry
+
+        return frozenset(
+            r.id for r in RoleRegistry.shared().list_roles() if r.requires_roe
+        )
+    except Exception:
+        return frozenset()
+
 
 _EMAIL_RE = re.compile(r"\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", re.I)
 _URL_RE = re.compile(
@@ -443,18 +446,26 @@ def extract_targets(*texts: str) -> list[dict[str, str]]:
     return coerce_targets(found)
 
 
-def roe_block_reason(skill_names: Iterable[str] | None, scope: Iterable[Any] | None) -> str | None:
-    """Fail-closed when active probe skills have no in-scope *values*."""
-    names = [str(n).strip() for n in (skill_names or []) if str(n).strip()]
+def roe_block_reason(role_ids: Iterable[str] | None, scope: Iterable[Any] | None) -> str | None:
+    """Fail-closed when requires_roe roles have no in-scope *values*."""
+    names = [str(n).strip() for n in (role_ids or []) if str(n).strip()]
     if coerce_targets(scope):
         return None
-    needing = [n for n in names if n in ACTIVE_NETWORK_SKILLS]
+    active = _active_probe_role_ids()
+    needing = [n for n in names if n in active]
     if not needing:
         return None
     return (
         "Rules of Engagement fail-closed: in_scope has no authorized targets for "
         f"{', '.join(needing)} (add targets or deduce from brief)"
     )
+
+
+# Back-compat aliases (call sites that iterate the frozenset get a live snapshot).
+def __getattr__(name: str):
+    if name in {"ACTIVE_NETWORK_ROLES", "ACTIVE_NETWORK_SKILLS"}:
+        return _active_probe_role_ids()
+    raise AttributeError(name)
 
 
 def parse_target_lines(raw: str) -> list[dict[str, str]]:

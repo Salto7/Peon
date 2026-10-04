@@ -1,5 +1,3 @@
-"""Concrete agent runtimes."""
+"""Legacy package path — Job runtimes live in ``orchestrator.crew.runtimes``."""
 
-from orchestrator.agent.runtimes.langgraph import LangGraphAgentRuntime
-
-__all__ = ["LangGraphAgentRuntime"]
+__all__: list[str] = []

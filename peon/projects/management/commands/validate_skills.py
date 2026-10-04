@@ -25,7 +25,7 @@ class Command(BaseCommand):
             issues = result.get("issues") or []
             bad = [i for i in issues if i.get("level") == "error"]
             warn = [i for i in issues if i.get("level") == "warning"]
-            name = result.get("skill_name") or result.get("skill_dir")
+            name = result.get("role_id") or result.get("skill_dir")
             if bad:
                 errors += 1
                 self.stdout.write(self.style.ERROR(f"FAIL {name}"))

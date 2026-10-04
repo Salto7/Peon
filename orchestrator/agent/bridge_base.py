@@ -26,7 +26,7 @@ class AgentBridgeBase(ABC):
         *,
         title: str,
         description: str,
-        skill_names: list[str] | None = None,
+        role_ids: list[str] | None = None,
         link: AgentLink = "peer",
     ) -> str:
         """Enqueue another Job.
@@ -84,3 +84,19 @@ class AgentBridgeBase(ABC):
     ) -> str:
         del to_job_id, type, body, artifact_refs
         return "send_message bridge not configured."
+
+    # --- RoE (CrewAI roles; peon implements against RulesOfEngagement) ---
+
+    def roe_summary(self) -> str:
+        return "RoE bridge not configured."
+
+    def assert_in_scope(self, target: str) -> str:
+        """Return empty string if allowed, else a denial reason."""
+        del target
+        return "RoE bridge not configured."
+
+    def assert_command_allowed(self, command: str) -> str:
+        """Return empty string if sandbox command may run, else denial reason."""
+        del command
+        return ""
+

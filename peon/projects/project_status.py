@@ -1,4 +1,4 @@
-"""War-room ops console JSON (agents, skills, progress)."""
+"""War-room ops console JSON (agents, roles, progress)."""
 
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from peon.projects.models import (
     StreamMessageType,
 )
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.catalog import SkillCards
+from peon.projects.catalog_cards.role import RoleCards
 
 # Prefer tool lines; fall back to recent log/status for graph snippets.
 _COMMAND_TYPES = (
@@ -26,7 +26,7 @@ _COMMAND_TYPES = (
 
 
 class ProjectOpsPayload:
-    """Build JSON for the war-room ops console (agents, skills, progress)."""
+    """Build JSON for the war-room ops console (agents, roles, progress)."""
 
     @classmethod
     def job_payload(cls, job: Job) -> dict:
@@ -35,7 +35,7 @@ class ProjectOpsPayload:
             "title": job.title,
             "status": job.status,
             "profile": job.profile or "",
-            "skill_names": job.skill_names or [],
+            "role_ids": job.role_ids or [],
             "parent_id": str(job.parent_id) if job.parent_id else "",
             "error": job.error,
             "updated_at": job.updated_at.isoformat() if job.updated_at else "",
@@ -66,6 +66,29 @@ class ProjectOpsPayload:
 
 
     @classmethod
+    def _primary_role_id(cls, job: Job) -> str:
+        for raw in job.role_ids or []:
+            rid = str(raw).strip()
+            if rid:
+                return rid
+        obj = getattr(job, "objective", None)
+        if obj is not None:
+            return str(obj.role_id or "").strip()
+        return ""
+
+    @classmethod
+    def _reports_to(cls, role_id: str) -> str:
+        if not role_id:
+            return ""
+        try:
+            from orchestrator.crew.roles.registry import RoleRegistry
+
+            role = RoleRegistry.shared().get(role_id)
+            return (role.reports_to or "") if role else ""
+        except Exception:
+            return ""
+
+    @classmethod
     def _agent_base(cls, job: Job, *, role: str) -> dict:
         obj = getattr(job, "objective", None)
         obj_cmds = [
@@ -77,12 +100,15 @@ class ProjectOpsPayload:
         description = (job.description or "").strip()
         # Edit/re-run targets agent-emitted CLI/tool lines — never the full brief.
         operator_command = pick_agent_command(*obj_cmds)
+        primary = cls._primary_role_id(job)
         return {
             "id": str(job.id),
             "title": job.title,
             "status": job.status,
             "profile": job.profile or "",
-            "skill_names": job.skill_names or [],
+            "role_ids": job.role_ids or [],
+            "primary_role_id": primary,
+            "reports_to": cls._reports_to(primary),
             "terminal": job.status in TERMINAL_JOB_STATUSES,
             "updated_at": job.updated_at.isoformat() if job.updated_at else "",
             "error": job.error or "",
@@ -117,7 +143,7 @@ class ProjectOpsPayload:
             "phase": obj.phase,
             "description": (obj.description or "").strip(),
             "acceptance_criteria": (obj.acceptance_criteria or "").strip(),
-            "skill_suggestion": obj.skill_suggestion or "",
+            "role_id": obj.role_id or "",
             "status": obj.status,
         }
 
@@ -168,42 +194,75 @@ class ProjectOpsPayload:
 
 
     @classmethod
-    def skills_used_from_jobs(cls, jobs: list[Job]) -> list[dict]:
+    def roles_used_from_jobs(cls, jobs: list[Job]) -> list[dict]:
         names: list[str] = []
         seen: set[str] = set()
         for job in jobs:
-            for raw in job.skill_names or []:
+            for raw in job.role_ids or []:
                 name = str(raw).strip()
                 if not name or name in seen:
                     continue
                 seen.add(name)
                 names.append(name)
-        return SkillCards.for_names(names)
+        return RoleCards.for_names(names)
 
 
     @classmethod
     def agents_tree(cls, jobs: list[Job]) -> list[dict]:
-        by_parent: dict[str, list[Job]] = {}
-        roots: list[Job] = []
+        """Build agent graph: ROLE.yaml reports_to first, then Job.parent edges."""
+        by_id = {str(j.id): j for j in jobs}
+        # Latest job per role_id (for supervisor lookup).
+        by_role: dict[str, Job] = {}
         for job in jobs:
-            if job.parent_id:
-                by_parent.setdefault(str(job.parent_id), []).append(job)
-            else:
-                roots.append(job)
-        # Chronological / objective order (jobs queryset is newest-first).
+            rid = cls._primary_role_id(job)
+            if rid and rid not in by_role:
+                by_role[rid] = job
+
+        children: dict[str, list[Job]] = {str(j.id): [] for j in jobs}
+        roots: list[Job] = []
+        attached: set[str] = set()
+
+        for job in jobs:
+            jid = str(job.id)
+            primary = cls._primary_role_id(job)
+            supervisor_role = cls._reports_to(primary)
+            supervisor_job = by_role.get(supervisor_role) if supervisor_role else None
+            if (
+                supervisor_job is not None
+                and str(supervisor_job.id) != jid
+                and str(supervisor_job.id) in children
+            ):
+                children[str(supervisor_job.id)].append(job)
+                attached.add(jid)
+                continue
+            if job.parent_id and str(job.parent_id) in by_id:
+                children[str(job.parent_id)].append(job)
+                attached.add(jid)
+                continue
+            roots.append(job)
+
+        # Jobs that became children via reports_to should not also be roots.
+        roots = [j for j in roots if str(j.id) not in attached]
+
         def _root_key(j: Job) -> tuple:
             obj = getattr(j, "objective", None)
             seq = obj.seq if obj is not None else 10**9
             created = j.created_at.timestamp() if j.created_at else 0
-            return (seq, created)
+            # Managers (no reports_to) first.
+            reports = 0 if not cls._reports_to(cls._primary_role_id(j)) else 1
+            return (reports, seq, created)
 
         roots = sorted(roots, key=_root_key)
-        for kids in by_parent.values():
+        for kids in children.values():
             kids.sort(key=lambda j: j.created_at.timestamp() if j.created_at else 0)
-        return [
-            cls.agent_payload(root, subagents=by_parent.get(str(root.id), []), role="ROOT")
-            for root in roots
-        ]
+
+        def _payload(job: Job, *, role: str) -> dict:
+            kids = children.get(str(job.id), [])
+            payload = cls._agent_base(job, role=role)
+            payload["subagents"] = [_payload(c, role="SUB") for c in kids]
+            return payload
+
+        return [_payload(root, role="ROOT") for root in roots]
 
 
     @classmethod
@@ -338,7 +397,7 @@ class ProjectOpsPayload:
         return {
             "project": cls.project_status_payload(project, objectives=objectives, jobs=jobs),
             "agents": agents,
-            "skills_used": cls.skills_used_from_jobs(jobs),
+            "roles_used": cls.roles_used_from_jobs(jobs),
             "jobs": [cls.job_payload(j) for j in jobs],
             "objectives": [cls.objective_payload(o) for o in objectives],
             "reports": reports_payload(str(project.id)),

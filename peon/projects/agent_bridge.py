@@ -63,22 +63,22 @@ class JobAgentBridge(AgentBridgeBase):
         *,
         title: str,
         description: str,
-        skill_names: list[str] | None = None,
+        role_ids: list[str] | None = None,
         link: str = "peer",
     ) -> str:
         kind = (link or "peer").strip().lower()
         if kind == "child":
             return self._spawn_child(
-                title=title, description=description, skill_names=list(skill_names or [])
+                title=title, description=description, role_ids=list(role_ids or [])
             )
         if kind == "peer":
             return self._spawn_peer(
-                title=title, description=description, skill_names=skill_names
+                title=title, description=description, role_ids=role_ids
             )
         return "Error: link must be 'peer' or 'child'"
 
     def _spawn_child(
-        self, *, title: str, description: str, skill_names: list[str]
+        self, *, title: str, description: str, role_ids: list[str]
     ) -> str:
         cfg = agent_run_config()
         active = self._job.children.exclude(
@@ -88,13 +88,13 @@ class JobAgentBridge(AgentBridgeBase):
             raise RuntimeError(f"Too many active child agents (max {cfg.max_subagents})")
         from peon.projects.tasks import enqueue_job
 
-        skills = list(skill_names or []) or list(self._job.skill_names or [])
+        roles = list(role_ids or []) or list(self._job.role_ids or [])
         child = Job.objects.create(
             title=(title or "child-agent")[:255],
             description=description or "",
             lifecycle=JobLifecycle.LONG,
             status=JobStatus.PENDING,
-            skill_names=skills,
+            role_ids=roles,
             project_id=self._job.project_id,
             objective_id=self._job.objective_id,
             parent=self._job,
@@ -110,7 +110,7 @@ class JobAgentBridge(AgentBridgeBase):
         *,
         title: str,
         description: str,
-        skill_names: list[str] | None = None,
+        role_ids: list[str] | None = None,
     ) -> str:
         if not self._job.project_id or not self._job.objective_id:
             return "Error: peer spawn requires project + objective on this job."
@@ -127,8 +127,8 @@ class JobAgentBridge(AgentBridgeBase):
             )
         from peon.projects.objectives import ObjectiveScheduler
 
-        skills = list(skill_names or []) or list(self._job.skill_names or [])
-        skill = skills[0] if skills else ""
+        roles = list(role_ids or []) or list(self._job.role_ids or [])
+        role = roles[0] if roles else ""
         jobs = ObjectiveScheduler().enqueue_peer_jobs(
             self._job.project,
             self._job.objective,
@@ -136,7 +136,7 @@ class JobAgentBridge(AgentBridgeBase):
                 {
                     "title": (title or "peer")[:255],
                     "description": description or "",
-                    "skill_name": skill,
+                    "role_id": role,
                 }
             ],
             plan_text=self._job.plan_text or "",
@@ -187,7 +187,7 @@ class JobAgentBridge(AgentBridgeBase):
         if not rows:
             return "No objectives."
         return "\n".join(
-            f"OBJ-{o.seq} [{o.status}] {o.title} skill={o.skill_suggestion or '-'}"
+            f"OBJ-{o.seq} [{o.status}] {o.title} role={o.role_id or '-'}"
             for o in rows
         )
 
@@ -376,7 +376,7 @@ class JobAgentBridge(AgentBridgeBase):
         if not peers:
             return "No other jobs on this objective."
         return "\n".join(
-            f"{p['job_id']} [{p['status']}] {p['title']} skills={','.join(p['skills']) or '-'}"
+            f"{p['job_id']} [{p['status']}] {p['title']} roles={','.join(p.get('roles') or p.get('skills') or []) or '-'}"
             for p in peers
         )
 
@@ -384,18 +384,17 @@ class JobAgentBridge(AgentBridgeBase):
         if not self._job.project_id or not self._job.objective_id:
             return "Error: propose_agents requires project + objective."
         from orchestrator.agent.propose import propose_agents, specs_as_dicts
-        from orchestrator.skills.registry import SkillRegistry
+        from orchestrator.crew.roles.registry import RoleRegistry
         from peon.projects.objectives import ObjectiveScheduler
 
         obj = self._job.objective
-        primary = (obj.skill_suggestion or "").strip().split(",")[0].strip()
-        if not primary and self._job.skill_names:
-            primary = str(self._job.skill_names[0])
-        reg = SkillRegistry.shared()
+        primary = (obj.role_id or "").strip().split(",")[0].strip()
+        if not primary and self._job.role_ids:
+            primary = str(self._job.role_ids[0])
         allowed = [
-            s.name
-            for s in reg.get_registry().values()
-            if getattr(s, "jobable", True) and (s.category or "") == "custom"
+            r.id
+            for r in RoleRegistry.shared().list_roles()
+            if r.id not in {"project-manager", "analyzer"}
         ]
         notes = (context_notes or "").strip()
         if not notes:
@@ -404,8 +403,8 @@ class JobAgentBridge(AgentBridgeBase):
             objective_title=obj.title or "",
             objective_description=obj.description or "",
             acceptance=obj.acceptance_criteria or "",
-            primary_skill=primary,
-            allowed_skills=allowed or ([primary] if primary else []),
+            primary_role=primary,
+            allowed_roles=allowed or ([primary] if primary else []),
             context_notes=notes,
             max_agents=max_agents,
         )
@@ -421,5 +420,93 @@ class JobAgentBridge(AgentBridgeBase):
         )
         lines = [f"Spawned {len(jobs)} peer agent(s):"]
         for j, spec in zip(jobs, specs):
-            lines.append(f"- {j.id} [{spec.skill_name or '-'}] {spec.title}")
+            lines.append(f"- {j.id} [{spec.role_id or '-'}] {spec.title}")
         return "\n".join(lines)
+
+    def _roe(self):
+        if not self._job.project_id:
+            return None
+        return getattr(self._job.project, "roe", None)
+
+    def roe_summary(self) -> str:
+        from peon.projects.targets import format_targets
+
+        roe = self._roe()
+        if roe is None:
+            return "No Rules of Engagement on this project."
+        scope = format_targets(roe.in_scope) or ["(empty)"]
+        excl = format_targets(roe.exclusions) or ["(none)"]
+        lines = [
+            "Rules of Engagement:",
+            f"- in_scope: {', '.join(scope)}",
+            f"- exclusions: {', '.join(excl)}",
+        ]
+        note = (roe.authorization_note or "").strip()
+        if note:
+            lines.append(f"- authorization: {note[:500]}")
+        return "\n".join(lines)
+
+    def assert_in_scope(self, target: str) -> str:
+        """Empty string = allowed; otherwise denial reason."""
+        from peon.projects.targets import coerce_targets
+
+        value = (target or "").strip()
+        if not value:
+            return "empty target"
+        roe = self._roe()
+        if roe is None:
+            return "no RoE on project"
+        exclusions = {
+            (t.get("value") or "").strip().lower()
+            for t in coerce_targets(roe.exclusions)
+            if t.get("value")
+        }
+        needle = value.lower()
+        if needle in exclusions or any(needle in e or e in needle for e in exclusions if e):
+            return f"{value!r} is excluded by RoE"
+        scope_vals = [
+            (t.get("value") or "").strip().lower()
+            for t in coerce_targets(roe.in_scope)
+            if t.get("value")
+        ]
+        if not scope_vals:
+            return "in_scope is empty — promote targets before active probing"
+        if any(needle == s or needle in s or s in needle for s in scope_vals):
+            return ""
+        return f"{value!r} is not in authorized RoE scope"
+
+    def assert_command_allowed(self, command: str) -> str:
+        """Block active probe commands when RoE scope is empty or target denied."""
+        import re
+
+        cmd = (command or "").strip()
+        if not cmd:
+            return "empty command"
+        roe = self._roe()
+        if roe is None:
+            return "no RoE on project"
+        from peon.projects.targets import coerce_targets
+
+        scope_vals = [
+            (t.get("value") or "").strip()
+            for t in coerce_targets(roe.in_scope)
+            if t.get("value")
+        ]
+        # Passive targets from the command; if none, allow (local tools / listing).
+        found = set(
+            re.findall(
+                r"(?:https?://[^\s\"']+|\b(?:\d{1,3}\.){3}\d{1,3}\b|"
+                r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9-]{1,63})+\b)",
+                cmd,
+                flags=re.I,
+            )
+        )
+        if not found:
+            return ""
+        if not scope_vals:
+            return "in_scope is empty — cannot run networked probe commands"
+        for hit in found:
+            reason = self.assert_in_scope(hit)
+            if reason:
+                return reason
+        return ""

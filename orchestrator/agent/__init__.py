@@ -3,12 +3,11 @@
 Layers:
 - ``config`` — run caps
 - ``bridge_base`` / ``bridges`` / ``job`` — control-plane adapter + per-Job scope
-- ``runtime_base`` / ``runtimes`` — one Job tool loop (LangGraph + checkpoints)
-- ``graph`` — LangGraph StateGraph only
+- ``runtime_base`` — Job runtime ABC; concrete impl via ``orchestrator.crew``
 - ``propose`` — LLM specialist proposals (control plane spawns Jobs)
 - ``messaging_base`` — A2A-ready DTOs (control plane persistence)
 
-Multi-agent orchestration lives in Peon Jobs, not inside LangGraph.
+Multi-agent / role orchestration lives in ``orchestrator.crew`` (CrewAI).
 """
 
 from orchestrator.agent.bridge_base import AgentBridgeBase, AgentLink
@@ -23,7 +22,6 @@ from orchestrator.agent.runtime_base import (
     run_agent,
     set_agent_runtime,
 )
-from orchestrator.agent.runtimes import LangGraphAgentRuntime
 
 __all__ = [
     "AgentBridgeBase",
@@ -33,7 +31,6 @@ __all__ = [
     "AgentRunResult",
     "AgentRuntimeBase",
     "JobScope",
-    "LangGraphAgentRuntime",
     "NullAgentBridge",
     "agent_run_config_from_mapping",
     "bind_job",

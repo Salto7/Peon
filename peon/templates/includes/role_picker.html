@@ -1,0 +1,31 @@
+<div class="skill-picker">
+  <div class="skill-picker-head">
+    <span class="skill-picker-title">Roles</span>
+    <span class="meta skill-picker-hint">{{ hint|default:"Core crew roles stay on; add specialists for the planner" }}</span>
+  </div>
+  <div class="skill-picker-grid">
+    {% for role in available_roles %}
+    {% if role.required %}
+    <input type="hidden" name="role_ids" value="{{ role.name }}">
+    {% endif %}
+    <label class="skill-chip{% if role.required %} skill-chip-required{% endif %}">
+      <input type="checkbox" {% if not role.required %}name="role_ids" value="{{ role.name }}"{% endif %}
+        {% if role.required or role.name in selected_roles %}checked{% endif %}
+        {% if role.required %}disabled aria-disabled="true"{% endif %}>
+      <span class="skill-chip-face" title="{{ role.description }}{% if role.required %} (always included){% endif %}">
+        <span class="skill-chip-name">{{ role.name }}</span>
+        {% if role.required %}<span class="skill-chip-lock">Required</span>{% endif %}
+        {% if role.category %}<span class="skill-chip-cat">{{ role.category }}</span>{% endif %}
+        {% if role.description %}<span class="skill-chip-desc">{{ role.description }}</span>{% endif %}
+        {% if role.tags %}
+        <span class="skill-card-tags">
+          {% for t in role.tags %}<span class="chip">{{ t }}</span>{% endfor %}
+        </span>
+        {% endif %}
+      </span>
+    </label>
+    {% empty %}
+    <p class="meta">No roles in the catalog (roles/).</p>
+    {% endfor %}
+  </div>
+</div>

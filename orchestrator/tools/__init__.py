@@ -1,6 +1,7 @@
 """CLI tool catalog + install resolver.
 
-LangChain Job tools live in ``orchestrator.capabilities.tools``.
+Shared capability tool defs live in ``orchestrator.capabilities.tools``.
+CrewAI role tools live in ``orchestrator.crew.tools``.
 """
 
 from orchestrator.tools.catalog import CatalogTool, ToolCatalog

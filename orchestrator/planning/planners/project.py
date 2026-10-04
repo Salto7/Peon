@@ -6,78 +6,46 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+from orchestrator.crew.constants import engagement_end_role, engagement_start_role
 from orchestrator.planning.planner_base import PlannerBase
-from orchestrator.skills.common import PROJECT_PLAN_END, PROJECT_PLAN_START
 from orchestrator.utils.strings import extract_json
 
-PROJECT_PLAN_SYSTEM = """You are the PROJECT planner for an authorized engagement orchestrator.
+PROJECT_PLAN_SYSTEM = """You are the PROJECT planner for an authorized Peon engagement (CrewAI roles).
 
-Mission: decompose the engagement into kill-chain OBJECTIVES that every job under
-the project can share. You do not call tools and you do not execute. You produce
-the shared project plan (objectives + dependencies), not a per-job Approach playbook.
+Mission: decompose the engagement into kill-chain OBJECTIVES. You do not execute.
+You produce the shared project plan (objectives + dependencies) for CrewAI roles.
 
 ## Hard constraints (RoE)
 - Plan ONLY against in-scope subjects; never expand scope
 - NEVER plan actions against exclusions
-- If RoE / in-scope is missing or empty: minimal blueprint + passive/seed-driven
-  objectives only; do not invent attack targets. Active network skills
-  (e.g. network, web) need at least one in-scope *value* (any type
-  hint is fine — authorization is the string, not the label)
-- Target type prefixes (person:, phone:, ip:, file:, malware:, …) are optional hints;
-  discoveries are candidates — not authorized until promoted
-- Prefer Ubuntu sandbox + skill-installed tools from the catalog — not a fixed distro
-- Skills are system-wide; project data lives under workspace/ and findings/
-- Findings are engagement discoveries about any subject class (with evidence), not
-  job/objective/agent status
+- If RoE / in-scope is empty: manager + passive/OSINT only; do not invent attack targets
+- Roles with requires_roe / active probing need in-scope values
+- Project data lives under workspace/ and findings/
 
 ## Planning principles
-- First objective MUST use skill_suggestion `blueprint` (confirm/refine `plans/latest.md`
-  before any execution). Do not invent a different planner skill name.
-- Start with recon/analysis after the blueprint unless the brief shows that work is done
-- Keep 3–8 objectives total (including the mandatory blueprint + analyzer bookends);
-  each must be independently verifiable and cheap to re-plan
-- Prefer skill catalog order and documented prerequisites (blueprint → early work → follow-on → analyzer)
-- Operator focus tags (if any) are a starting preference only — add objectives and
-  skill_suggestion values for other phases when the project needs them
-- Prefer skill_suggestion from the Skill catalog whose tags fit the
-  objective; never invent skill names. Prefer coarse skills (`recon`, `web`,
-  `network`) plus builtin `blueprint`/`analyzer`. Every non-bookend objective
-  MUST have a non-empty skill_suggestion from the catalog matching the work.
-  skill_suggestion is the PRIMARY skill for the first Job (one id). Additional
-  specialists are spawned at runtime from context (`propose_agents`), not
-  by comma-listing skills on the objective.
-  Omit the objective entirely rather than leaving skill_suggestion empty.
-- Optional profile_suggestion: a role name for the job that will run the objective
-  (e.g. OSINT-lead, report-writer) when a roles list is provided; else leave empty
+- First objective MUST use the engagement manager role_id from the Role catalog
+  (allow_delegation, empty reports_to)
+- Last objective MUST use the analyzer role_id (capabilities include report)
+- Keep 3–8 objectives total including those bookends
+- Middle objectives MUST use a role_id from the Role catalog (never invent names)
+  Match using goal + capabilities/tags + reports_to from the Role catalog block
+  Authoring/Learn (mode=authoring) only when the brief asks to draft/suggest
+- role_id is the PRIMARY role for the Job that runs the objective
 - depends_on uses 1-based indices in THIS objectives list
-- Parallel only when objectives are truly independent; otherwise chain with depends_on
-- One worker job per phase — no duplicate corroboration workers unless asked
-- On revise: do not cancel objectives that already produced usable workspace/findings
-  evidence — mark completed or leave; prefer update over cancel
-- Exactly ONE reporting objective, LAST, with skill_suggestion `analyzer` — no duplicate
-  pending reporting clones and no analyzer/blueprint in the middle
-- Reporting acceptance_criteria MUST require: write the sole findings/report.md as the
-  primary deliverable; phase workers write findings/<phase>.md only (never report.md);
-  keep phase artifacts as supporting docs (do not delete them)
+- Parallel only when independent; otherwise chain with depends_on
 - No ethics lectures, no prose outside JSON
 
 ## Quality bar for each objective
-- title: short, verb-led (e.g. “Inventory in-scope subjects”)
+- title: short, verb-led
 - phase: recon | initial-access | post-exploit | reporting
-- description: concrete actions on named in-scope subjects (tools/skills when known)
-- acceptance_criteria: observable done condition an executor can check
-- mitre: relevant technique ids when known; else []
-- skill_suggestion: REQUIRED catalog skill id (never invent; never leave empty
-  for executable objectives)
-- profile_suggestion: role id or empty
-- commands: 1–4 concrete calls that WOULD run for this objective (dry-run only —
-  you never execute). Prefer `run_skill_script("<skill>", "scripts/…", …)` forms
-  from the skill catalog; use `provision_cli("<binary>")` before missing CLIs;
-  fill in-scope subjects; use `sandbox_setup()` when needed.
-  Empty list only when the objective is pure planning/reporting with no tool call.
+- description: concrete actions on named in-scope subjects
+- acceptance_criteria: observable done condition
+- mitre: technique ids when known; else []
+- role_id: REQUIRED catalog role id
+- commands: 1–4 dry-run tool hints (`assert_in_scope`, `provision_cli`, `run_cli`)
 
 ## Output
-Return ONLY a JSON object (no markdown fences, no commentary) with this shape:
+Return ONLY a JSON object:
 {
   "approach": "project",
   "goal": "one-line project goal tied to in-scope subjects",
@@ -89,12 +57,8 @@ Return ONLY a JSON object (no markdown fences, no commentary) with this shape:
       "acceptance_criteria": "observable done condition",
       "mitre": ["T1046"],
       "depends_on": [1],
-      "skill_suggestion": "<catalog skill id — required>",
-      "profile_suggestion": "<role id or empty>",
-      "commands": [
-        "sandbox_setup()",
-        "run_skill_script(\"<skill>\", \"scripts/run.py\", command=\"…\")"
-      ]
+      "role_id": "<catalog role id — required>",
+      "commands": ["assert_in_scope(\"<target>\")", "run_cli(\"…\")"]
     }
   ]
 }
@@ -185,16 +149,21 @@ def parse_project_objectives(raw: str) -> dict[str, Any]:
 
 
 def _is_bookend_objective(obj: dict[str, Any]) -> bool:
-
-    skill = str(obj.get("skill_suggestion") or "").strip()
+    role = str(obj.get("role_id") or obj.get("skill_suggestion") or "").strip()
     phase = str(obj.get("phase") or "").strip().lower()
-    if skill in {PROJECT_PLAN_START, PROJECT_PLAN_END}:
+    start, end = engagement_start_role(), engagement_end_role()
+    if role and role in {start, end}:
         return True
     return phase == "reporting"
 
 
 def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ensure every project plan starts with blueprint and ends with analyzer."""
+    """Ensure every project plan starts with manager and ends with analyzer."""
+
+    start = engagement_start_role()
+    end = engagement_end_role()
+    if not start or not end:
+        return [dict(o) for o in (objectives or []) if isinstance(o, dict)]
 
     raw = [dict(o) for o in (objectives or []) if isinstance(o, dict)]
     survivors: list[tuple[int, dict[str, Any]]] = []
@@ -202,25 +171,23 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
         if not _is_bookend_objective(obj):
             survivors.append((idx, obj))
 
-    blueprint = {
-        "title": "Project blueprint",
+    manager = {
+        "title": "Project manager — plan and hire",
         "phase": "recon",
         "description": (
-            "Confirm the shared project plan under plans/latest.md before execution."
+            "Read RoE, hire specialist roles, assign tasks, recover from failures, "
+            "and hand off to analyzer when done."
         ),
-        "acceptance_criteria": "plans/latest.md exists and reflects the engagement goal",
+        "acceptance_criteria": "Specialist work assigned and tracked under RoE",
         "mitre": [],
         "depends_on": [],
-        "skill_suggestion": PROJECT_PLAN_START,
-        "profile_suggestion": "",
-        "commands": [
-            f'run_skill_script("{PROJECT_PLAN_START}", "scripts/run.py", command="")',
-        ],
+        "role_id": start,
+        "commands": ["roe_status()"],
     }
     middle: list[dict[str, Any]] = []
     old_to_final: dict[int, int] = {}
     for old_idx, obj in survivors:
-        final_idx = len(middle) + 2  # start skill occupies index 1
+        final_idx = len(middle) + 2
         deps: list[int] = [1]
         for dep in obj.get("depends_on") or []:
             try:
@@ -232,11 +199,12 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
                 deps.append(mapped)
         row = dict(obj)
         row["depends_on"] = deps
-        skill = str(row.get("skill_suggestion") or "").strip()
-        if not skill:
-            # Unexecutable middle objectives poison the DAG — drop them.
+        # Accept legacy planner key during transition.
+        role = str(row.get("role_id") or row.get("skill_suggestion") or "").strip()
+        if not role:
             continue
-        row["skill_suggestion"] = skill
+        row["role_id"] = role
+        row.pop("skill_suggestion", None)
         old_to_final[old_idx] = final_idx
         middle.append(row)
 
@@ -248,24 +216,20 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
             "Synthesize a standalone findings/report.md from workspace evidence. "
             "Do not collect new evidence or invent discoveries."
         ),
-        "acceptance_criteria": (
-            "findings/report.md written as the sole project report"
-        ),
+        "acceptance_criteria": "findings/report.md written as the sole project report",
         "mitre": [],
         "depends_on": [last_middle],
-        "skill_suggestion": PROJECT_PLAN_END,
-        "profile_suggestion": "",
-        "commands": [
-            f'run_skill_script("{PROJECT_PLAN_END}", "scripts/run.py", command="")',
-        ],
+        "role_id": end,
+        "commands": ["list_findings()", "write_report_note(\"summary\", \"…\")"],
     }
-    return [blueprint, *middle, analyzer]
+    return [manager, *middle, analyzer]
 
 
-def bookend_skill_names(names: list[str] | None) -> list[str]:
-    """Put plan-start first and plan-end last; drop duplicates of either."""
+def bookend_role_ids(names: list[str] | None) -> list[str]:
+    """Put manager first and analyzer last; drop duplicates of either."""
 
-    bookends = {PROJECT_PLAN_START, PROJECT_PLAN_END}
+    start, end = engagement_start_role(), engagement_end_role()
+    bookends = {x for x in (start, end) if x}
     middle: list[str] = []
     seen: set[str] = set()
     for raw in names or []:
@@ -274,7 +238,13 @@ def bookend_skill_names(names: list[str] | None) -> list[str]:
             continue
         seen.add(name)
         middle.append(name)
-    return [PROJECT_PLAN_START, *middle, PROJECT_PLAN_END]
+    out: list[str] = []
+    if start:
+        out.append(start)
+    out.extend(middle)
+    if end:
+        out.append(end)
+    return out
 
 
 def render_project_objectives(project_title: str, payload: dict[str, Any], objectives: list) -> str:
@@ -295,12 +265,12 @@ def render_project_objectives(project_title: str, payload: dict[str, Any], objec
         )
         lines.append(f"   - Acceptance: {obj.acceptance_criteria or '—'}")
         lines.append(f"   - MITRE: {mitre}")
-        suggestion = getattr(obj, "skill_suggestion", "") or ""
-        if suggestion:
-            lines.append(f"   - Skill suggestion: `{suggestion}`")
+        role = getattr(obj, "role_id", "") or getattr(obj, "skill_suggestion", "") or ""
+        if role:
+            lines.append(f"   - Role: `{role}`")
         profile = getattr(obj, "profile_suggestion", "") or ""
         if profile:
-            lines.append(f"   - Profile suggestion: `{profile}`")
+            lines.append(f"   - Profile: `{profile}`")
         cmds = list(getattr(obj, "commands", None) or [])
         if cmds:
             lines.append("   - Commands (dry-run):")
@@ -322,7 +292,7 @@ def _objectives_from_payload(payload: dict[str, Any]) -> list:
                 description=o.get("description") or "",
                 acceptance_criteria=o.get("acceptance_criteria") or "",
                 mitre_techniques=list(o.get("mitre") or []),
-                skill_suggestion=o.get("skill_suggestion") or "",
+                role_id=o.get("role_id") or o.get("skill_suggestion") or "",
                 profile_suggestion=o.get("profile_suggestion") or o.get("profile") or "",
                 commands=list(o.get("commands") or []),
             )
@@ -347,10 +317,9 @@ class ProjectPlanner(PlannerBase):
         prior_plan: str = "",
         memory_block: str = "",
         existing_objectives_summary: str = "",
-        filtered_skills_index: str = "",
+        filtered_roles_index: str = "",
         focus_tags: list[str] | None = None,
         role_ids: list[str] | None = None,
-        **_kwargs,
     ) -> list:
         parts = [
             f"Project: {project_title}",
@@ -358,11 +327,8 @@ class ProjectPlanner(PlannerBase):
             f"Job brief:\n{(description or '').strip()}",
             format_roe_block(roe),
         ]
-        if filtered_skills_index.strip():
-            parts.append(
-                "Skill catalog (full — focus tags are preferences only):\n"
-                + filtered_skills_index.strip()
-            )
+        if filtered_roles_index.strip():
+            parts.append("Role catalog:\n" + filtered_roles_index.strip())
         if focus_tags:
             parts.append(
                 "Project focus tags (preference, not exclusive): " + ", ".join(focus_tags)

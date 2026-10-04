@@ -5,7 +5,7 @@
 <header class="page-header">
   <div>
     <h1>New project</h1>
-    <p class="lead">Title, brief, optional Rules of Engagement targets, then skill picks for the planner (core skills are always included).</p>
+    <p class="lead">Title, brief, optional Rules of Engagement targets, then crew role picks for the planner (core roles are always included).</p>
   </div>
   <p class="bar">
     <a class="btn secondary" href="{% url 'project_list' %}">← Projects</a>
@@ -39,7 +39,7 @@
     <p class="meta upload-disclaimer">
       Peon does not validate file types or content. Upload files at your own responsibility.
     </p>
-    {% include "includes/skill_picker.html" with available_skills=available_skills selected_skills=selected_skills %}
+    {% include "includes/role_picker.html" with available_roles=available_roles selected_roles=selected_roles %}
     <div class="bar">
       <button type="submit" id="project-create-submit">Create</button>
       <a class="btn secondary" href="{% url 'project_list' %}">Cancel</a>

@@ -37,12 +37,12 @@ class ObjectiveScheduler:
                 continue
             if not self.dependencies_met(obj):
                 continue
-            if not (obj.skill_suggestion or "").strip():
+            if not (obj.role_id or "").strip():
                 self.mark(
                     obj,
                     ObjectiveStatus.BLOCKED,
                     reason=(
-                        "No skill_suggestion — assign a catalog skill or replan"
+                        "No role_id — assign a CrewAI role or replan"
                     ),
                 )
                 continue
@@ -79,9 +79,9 @@ class ObjectiveScheduler:
         objective.save(update_fields=fields)
         return objective
 
-    def skills_for(self, objective: Objective) -> list[str]:
+    def roles_for(self, objective: Objective) -> list[str]:
         """Primary skill for the first Job (single id; not a peer list)."""
-        hint = (objective.skill_suggestion or "").strip()
+        hint = (objective.role_id or "").strip()
         if not hint:
             return []
         # If planners historically comma-joined, take the first as primary only.
@@ -132,7 +132,7 @@ class ObjectiveScheduler:
         plan_path: str = "",
         workspace_id: str | None = None,
         enqueue: bool = True,
-        skill_names: list[str] | None = None,
+        role_ids: list[str] | None = None,
     ) -> Job | None:
         """Spawn one Solo Job for an objective. No-op if deps unmet or job already active."""
         if objective.status == ObjectiveStatus.CANCELLED:
@@ -149,7 +149,7 @@ class ObjectiveScheduler:
             ).order_by("-created_at").first()
 
         preferred = (
-            list(skill_names) if skill_names is not None else self.skills_for(objective)
+            list(role_ids) if role_ids is not None else self.roles_for(objective)
         )
         solo = preferred[:1]
         if not solo:
@@ -157,7 +157,7 @@ class ObjectiveScheduler:
                 objective,
                 ObjectiveStatus.BLOCKED,
                 reason=(
-                    "No skill_suggestion — assign a catalog skill (recon, web, …) "
+                    "No role_id — assign a CrewAI role (osint-expert, …) "
                     "or replan"
                 ),
             )
@@ -169,7 +169,7 @@ class ObjectiveScheduler:
             description=self.build_brief(project, objective),
             lifecycle=JobLifecycle.LONG,
             status=JobStatus.PENDING,
-            skill_names=solo,
+            role_ids=solo,
             project=project,
             objective=objective,
             plan_text=plan_text or "",
@@ -203,30 +203,30 @@ class ObjectiveScheduler:
             return created
         ws = safe_workspace_key(workspace_id or str(project.id))
         project_workspace_dir(ws)
-        primary = (self.skills_for(objective) or [""])[0]
+        primary = (self.roles_for(objective) or [""])[0]
         base_brief = self.build_brief(project, objective)
         for raw in peers:
             if isinstance(raw, str):
-                skill = raw.strip()
-                title = f"OBJ-{objective.seq}/{skill}: {objective.title}"[:255]
+                role = raw.strip()
+                title = f"OBJ-{objective.seq}/{role}: {objective.title}"[:255]
                 description = base_brief
             elif isinstance(raw, dict):
-                skill = str(raw.get("skill_name") or primary or "").strip()
-                title = str(raw.get("title") or skill or objective.title).strip()[:255]
+                role = str(raw.get("role_id") or primary or "").strip()
+                title = str(raw.get("title") or role or objective.title).strip()[:255]
                 focus = str(raw.get("description") or "").strip()
                 description = (
                     f"{base_brief}\n\n## Specialist focus\n{focus}" if focus else base_brief
                 )
             else:
                 continue
-            if not skill and not title:
+            if not role and not title:
                 continue
             job = Job.objects.create(
                 title=title or f"OBJ-{objective.seq}: {objective.title}"[:255],
                 description=description,
                 lifecycle=JobLifecycle.LONG,
                 status=JobStatus.PENDING,
-                skill_names=[skill] if skill else list(self.skills_for(objective)[:1]),
+                role_ids=[role] if role else list(self.roles_for(objective)[:1]),
                 project=project,
                 objective=objective,
                 parent=parent,
@@ -271,12 +271,12 @@ def _normalize_phase(value: object) -> str:
 
 
 def _default_commands(objective: dict) -> list[str]:
-    skill_id = str(objective.get("skill_suggestion") or "").strip()
-    if not skill_id:
+    role_id = str(objective.get("role_id") or "").strip()
+    if not role_id:
         return []
     return [
-        "sandbox_setup()",
-        f'run_skill_script("{skill_id}", "scripts/run.py", command="<fill from objective>")',
+        "roe_status()",
+        f'run_cli(command="<fill for role {role_id}>")',
     ]
 
 
@@ -311,7 +311,7 @@ class ObjectivePlanSync:
             mitre = item.get("mitre") or item.get("mitre_techniques") or []
             if not isinstance(mitre, list):
                 mitre = []
-            skill = str(item.get("skill_suggestion") or "").strip()
+            role_id = str(item.get("role_id") or "").strip()
             profile = str(
                 item.get("profile_suggestion") or item.get("profile") or ""
             ).strip()
@@ -332,7 +332,7 @@ class ObjectivePlanSync:
                     mitre_techniques=[str(m).strip() for m in mitre if str(m).strip()][:12],
                     acceptance_criteria=acceptance,
                     status=ObjectiveStatus.PENDING,
-                    skill_suggestion=skill,
+                    role_id=role_id,
                     profile_suggestion=profile,
                     commands=cmds or _default_commands(item),
                 )
@@ -345,7 +345,7 @@ class ObjectivePlanSync:
                     [str(m).strip() for m in mitre if str(m).strip()][:12]
                     or obj.mitre_techniques
                 )
-                obj.skill_suggestion = skill or obj.skill_suggestion
+                obj.role_id = role_id or obj.role_id
                 obj.profile_suggestion = profile or obj.profile_suggestion
                 if cmds:
                     obj.commands = cmds

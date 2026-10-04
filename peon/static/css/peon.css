@@ -3284,3 +3284,40 @@ body.war-room .as-leg-swatch {
 body.war-room .as-edge {
   stroke-width: 1.25;
 }
+
+/* CrewAI org chart (Peon-crewAI) */
+body.war-room .org-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.25rem 0 0.5rem;
+}
+body.war-room .org-children {
+  list-style: none;
+  margin: 0.5rem 0 0 1.25rem;
+  padding: 0;
+  border-left: 1px solid rgba(62, 200, 240, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+body.war-room .org-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  align-items: center;
+  padding: 0.55rem 0.75rem;
+  background: rgba(10, 18, 28, 0.55);
+  border: 1px solid rgba(62, 200, 240, 0.18);
+  border-radius: 6px;
+}
+body.war-room .org-root > .org-card {
+  border-color: rgba(62, 200, 240, 0.4);
+}
+body.war-room .crew-reprompt-form input[type="text"] {
+  background: rgba(10, 18, 28, 0.7);
+  border: 1px solid rgba(62, 200, 240, 0.25);
+  color: inherit;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+}

@@ -11,12 +11,11 @@ from orchestrator.prompts import FINDINGS_GUIDANCE, INSTALL_CASCADE
 
 # Peon engagement default; host may override via configure(...).
 _DEFAULT_SYSTEM_PREAMBLE = (
-    "You are a Peon job agent for an authorized engagement.\n"
-    "Use only bound tools.\n"
-    "Prefer run_skill_script for catalog skills; run_cli only for ad-hoc shell.\n"
+    "You are a Peon CrewAI role agent for an authorized engagement.\n"
+    "Use only bound tools for your role.\n"
     f"Call provision_cli before missing CLIs ({INSTALL_CASCADE}).\n"
-    "Do not search the filesystem for skill scripts — invoke them via run_skill_script.\n"
-    "Stay in-scope; do not expand RoE. Be concise.\n"
+    "Use run_cli for sandbox shell; never expand Rules of Engagement.\n"
+    "Stay in-scope; call assert_in_scope before networked probes.\n"
     "Obey OPERATOR INSTRUCTION / FOLLOW-UP messages when they appear.\n"
     f"{FINDINGS_GUIDANCE}"
 )
@@ -72,9 +71,9 @@ class RuntimeConfig:
     agent_max_subagents: int = 4
     agent_max_subagent_depth: int = 2
     agent_runtime_enabled: bool = True
-    # LangGraph checkpointer: auto|memory|sqlite (sqlite needs langgraph-checkpoint-sqlite)
-    agent_checkpoint_backend: str = "auto"
-    agent_checkpoint_path: str = ""
+    # Job/crew orchestration module (crewai only on Peon-crewAI).
+    agent_module: str = "crewai"
+    roles_dir: Path = field(default_factory=lambda: Path("roles").resolve())
 
     sandbox_enabled: bool = True
     sandbox_image: str = "peon-sandbox:local"
@@ -85,14 +84,17 @@ class RuntimeConfig:
 
     def ensure_dirs(self) -> None:
         self.skills_dir.mkdir(parents=True, exist_ok=True)
+        self.roles_dir.mkdir(parents=True, exist_ok=True)
         self.tools_catalog_dir.mkdir(parents=True, exist_ok=True)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_env(self) -> None:
         """Export path hints used by catalog / docker exec helpers."""
         os.environ["SKILLS_DIR"] = str(self.skills_dir)
+        os.environ["ROLES_DIR"] = str(self.roles_dir)
         os.environ["TOOLS_CATALOG_DIR"] = str(self.tools_catalog_dir)
         os.environ["PROJECT_WORKSPACES_DIR"] = str(self.workspaces_dir)
+        os.environ["AGENT_MODULE"] = (self.agent_module or "crewai").strip().lower()
         if self.litellm_api_key:
             provider = (self.llm_provider or "").strip().lower()
             key_env = LLM_PROVIDER_KEY_ENV.get(provider, "LITELLM_API_KEY")
@@ -119,6 +121,7 @@ class RuntimeConfig:
         return cls(
             skills_dir=_env_path("SKILLS_DIR", base / "skills"),
             skills_external_dirs=external,
+            roles_dir=_env_path("ROLES_DIR", base / "roles"),
             tools_catalog_dir=_env_path("TOOLS_CATALOG_DIR", base / "tools" / "catalog"),
             workspaces_dir=_env_path("PROJECT_WORKSPACES_DIR", base / "workspaces"),
             llm_provider=provider,
@@ -138,9 +141,7 @@ class RuntimeConfig:
             agent_max_subagents=int(_env("AGENT_MAX_SUBAGENTS", "4") or 4),
             agent_max_subagent_depth=int(_env("AGENT_MAX_SUBAGENT_DEPTH", "2") or 2),
             agent_runtime_enabled=as_bool(_env("AGENT_RUNTIME_ENABLED", "true"), default=True),
-            agent_checkpoint_backend=_env("AGENT_CHECKPOINT_BACKEND", "auto") or "auto",
-            agent_checkpoint_path=_env("AGENT_CHECKPOINT_PATH")
-            or str((_env_path("PROJECT_WORKSPACES_DIR", base / "workspaces") / ".checkpoints" / "langgraph.sqlite")),
+            agent_module=_env("AGENT_MODULE", "crewai") or "crewai",
             sandbox_enabled=as_bool(_env("SANDBOX_ENABLED", "true"), default=True),
             sandbox_image=_env("SANDBOX_IMAGE", "peon-sandbox:local"),
             sandbox_prefix=_env("PROJECT_SANDBOX_PREFIX")

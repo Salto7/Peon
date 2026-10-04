@@ -176,7 +176,7 @@ class PeonSettings:
             ),
             "AGENT_RUNTIME_ENABLED": (
                 "Agent runtime enabled",
-                "Emergency kill switch for LangGraph job agents.",
+                "Emergency kill switch for CrewAI job / project agents.",
                 False,
             ),
             "LLM_PROXY_ENABLED": (

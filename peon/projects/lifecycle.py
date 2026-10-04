@@ -40,7 +40,7 @@ class ProjectLifecycle:
 
 
     @classmethod
-    def cancel_open_objectives_for_skills(cls, 
+    def cancel_open_objectives_for_roles(cls, 
         project: Project | None, skills: Iterable[str]
     ) -> int:
         """Mark still-open objectives for the given skills as cancelled."""
@@ -51,7 +51,7 @@ class ProjectLifecycle:
             return 0
         n = 0
         for obj in project.objectives.filter(
-            skill_suggestion__in=names, status__in=_OPEN_OBJECTIVE
+            role_id__in=names, status__in=_OPEN_OBJECTIVE
         ):
             obj.status = ObjectiveStatus.CANCELLED
             obj.save(update_fields=["status", "updated_at"])
@@ -505,20 +505,24 @@ class ProjectLifecycle:
 
     @classmethod
     def bulk_pause_projects(cls, ids: Iterable[str]) -> int:
+        from peon.projects.crew_control import pause_project as crew_pause
+
         n = 0
         for project in cls._projects(ids):
             if project.status == ProjectStatus.ACTIVE:
-                cls.pause_project(project)
+                crew_pause(project)
                 n += 1
         return n
 
 
     @classmethod
     def bulk_resume_projects(cls, ids: Iterable[str]) -> int:
+        from peon.projects.crew_control import resume_project as crew_resume
+
         n = 0
         for project in cls._projects(ids):
             if project.status == ProjectStatus.PAUSED:
-                cls.resume_project(project)
+                crew_resume(project)
                 n += 1
         return n
 

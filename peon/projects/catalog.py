@@ -13,12 +13,13 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from orchestrator.skills.registry import SkillRegistry
 from orchestrator.skills.router import SkillRouter
 from orchestrator.tools.catalog import ToolCatalog
-from peon.projects.catalog_cards import CatalogCardsBase, SkillCards, ToolCards
+from peon.projects.catalog_cards import CatalogCardsBase, RoleCards, SkillCards, ToolCards
 from peon.projects.http_helpers import split_csv
 
 # Stable re-exports for call sites that import from peon.projects.catalog
 __all__ = [
     "CatalogCardsBase",
+    "RoleCards",
     "SkillCards",
     "ToolCards",
     "catalog_page",
@@ -170,7 +171,7 @@ def api_resolve(request: HttpRequest) -> JsonResponse:
         )
     return JsonResponse(
         {
-            "skill_names": names,
+            "role_ids": names,
             "description": description,
             "lifecycle": lifecycle,
             "project": project,

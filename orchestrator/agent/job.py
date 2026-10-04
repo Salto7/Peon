@@ -20,7 +20,7 @@ class JobScope:
     project_id: str = ""
     parent_job_id: str = ""
     workspace: str = ""
-    skill_names: list[str] = field(default_factory=list)
+    role_ids: list[str] = field(default_factory=list)
     brief: str = ""
     depth: int = 1
     bridge: AgentBridgeBase = field(default_factory=NullAgentBridge)

@@ -119,6 +119,10 @@ _skills = Path(_env("SKILLS_DIR") or (BASE_DIR / "skills"))
 SKILLS_DIR = _skills if _skills.is_absolute() else (BASE_DIR / _skills).resolve()
 SKILLS_EXTERNAL_DIRS: list[str] = []
 
+_roles = Path(_env("ROLES_DIR") or (BASE_DIR / "roles"))
+ROLES_DIR = _roles if _roles.is_absolute() else (BASE_DIR / _roles).resolve()
+os.environ.setdefault("ROLES_DIR", str(ROLES_DIR))
+
 _tools_catalog = Path(_env("TOOLS_CATALOG_DIR") or (BASE_DIR / "tools" / "catalog"))
 TOOLS_CATALOG_DIR = (
     _tools_catalog if _tools_catalog.is_absolute() else (BASE_DIR / _tools_catalog).resolve()
@@ -220,7 +224,7 @@ LITELLM_MASTER_KEY = _env("LITELLM_MASTER_KEY", "sk-peon-litellm") or "sk-peon-l
 # OpenCode model id (provider/model) used inside the Learn lab.
 OPENCODE_MODEL = _env("OPENCODE_MODEL", "peon/default") or "peon/default"
 
-# Agent runtime governors (LangGraph job loop — peon passes these into orchestrator).
+# Agent runtime governors (peon passes these into orchestrator).
 # Overridable live via Peon Settings UI (RuntimeSettings); .env values are defaults.
 AGENT_MAX_FAILURE_REPLANS = max(0, int(_env("AGENT_MAX_FAILURE_REPLANS", "2") or 2))
 AGENT_MAX_ITERATIONS = max(1, int(_env("AGENT_MAX_ITERATIONS", "40") or 40))
@@ -228,6 +232,8 @@ AGENT_MAX_SUBAGENTS = max(0, int(_env("AGENT_MAX_SUBAGENTS", "4") or 4))
 AGENT_MAX_SUBAGENT_DEPTH = max(1, int(_env("AGENT_MAX_SUBAGENT_DEPTH", "2") or 2))
 # Emergency kill switch (default on). Jobs use orchestrator.agent; false fails closed.
 AGENT_RUNTIME_ENABLED = _env_bool("AGENT_RUNTIME_ENABLED", True)
+# Orchestration module (crewai only on Peon-crewAI).
+AGENT_MODULE = (_env("AGENT_MODULE", "crewai") or "crewai").strip().lower()
 
 # Parallel dispatch caps (live via Settings UI; Dramatiq threads need worker restart).
 MAX_PARALLEL_PROJECTS = max(1, int(_env("MAX_PARALLEL_PROJECTS", "3") or 3))

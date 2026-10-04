@@ -98,7 +98,7 @@ class DjangoAgentMessaging(AgentMessagingPortBase):
                 "job_id": str(j.id),
                 "title": j.title,
                 "status": j.status,
-                "skills": list(j.skill_names or []),
+                "roles": list(j.role_ids or []),
             }
             for j in qs[:40]
         ]

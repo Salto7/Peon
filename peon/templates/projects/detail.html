@@ -69,6 +69,9 @@
         <span class="status-pill" id="project-status" data-status="{{ project.status }}">{{ project.status }}</span>
         <span class="meta">Runtime <code>{{ project.get_sandbox_runtime_display }}</code></span>
         <span class="meta" id="project-phase-wrap">Phase <code id="project-phase">{{ ops.project.phase|default:"—" }}</code></span>
+        {% if org_chart.crew_status %}
+        <span class="meta">Crew <code id="crew-status">{{ org_chart.crew_status }}</code></span>
+        {% endif %}
         <code class="mission-id">{{ project.id }}</code>
       </div>
     </div>
@@ -91,10 +94,10 @@
                style="width: {% widthratio ops.project.progress.ratio 1 100 %}%"></div>
         </div>
       </div>
-      <div class="banner-skills" aria-label="Skills used by agents">
-        <span class="banner-skills-label">Skills</span>
-        <div id="skills-used" class="skills-used-list">
-          {% for s in ops.skills_used %}
+      <div class="banner-skills" aria-label="Roles used by agents">
+        <span class="banner-skills-label">Roles</span>
+        <div id="roles-used" class="skills-used-list">
+          {% for s in ops.roles_used %}
           <span class="skills-used-chip" tabindex="0">
             <span class="skills-used-name">{{ s.name }}</span>
             <span class="skills-used-tip" role="tooltip">
@@ -145,6 +148,14 @@
       <input type="hidden" name="action" value="replan">
       <button type="submit" class="secondary">Replan</button>
     </form>
+    <form method="post" action="{% url 'project_control' project.pk %}" class="crew-reprompt-form"
+          style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="reprompt">
+      <input type="text" name="description" placeholder="Reprompt manager…" maxlength="2000"
+             aria-label="Reprompt manager" style="min-width:12rem">
+      <button type="submit" class="secondary">Reprompt</button>
+    </form>
     {% endif %}
     <form method="post" action="{% url 'project_control' project.pk %}"
           onsubmit="return confirm('Delete this project and its Docker sandbox (if any)?');">
@@ -152,6 +163,60 @@
       <input type="hidden" name="action" value="delete">
       <button type="submit">Delete project</button>
     </form>
+  </div>
+</section>
+
+{# 2 — Org chart (CrewAI roles) #}
+<section class="war-zone console-graph" data-expandable data-collapsible
+         aria-labelledby="org-heading">
+  <div class="workspace-header">
+    <h2 id="org-heading">Org chart <span class="panel-hint">roles · hierarchy</span></h2>
+    {% if org_chart.crew_flow_id %}
+    <span class="meta">flow <code>{{ org_chart.crew_flow_id|truncatechars:12 }}</code></span>
+    {% endif %}
+  </div>
+  <div class="org-chart" id="org-chart">
+    {% if org_chart.roots %}
+      {% for root in org_chart.roots %}
+      <div class="org-node org-root">
+        <div class="org-card">
+          <strong>{{ root.label }}</strong>
+          <span class="meta">{{ root.id }}{% if root.reports_to %} · reports to {{ root.reports_to }}{% else %} · root{% endif %}</span>
+          {% if root.job_status %}<span class="status-pill" data-status="{{ root.job_status }}">{{ root.job_status }}</span>{% endif %}
+          <span class="meta">tags: {{ root.capabilities|join:", "|default:"—" }}</span>
+        </div>
+        {% if root.children %}
+        <ul class="org-children">
+          {% for child in root.children %}
+          <li class="org-node">
+            <div class="org-card">
+              <strong>{{ child.label }}</strong>
+              <span class="meta">{{ child.id }} → {{ child.reports_to|default:"—" }}{% if child.requires_roe %} · RoE{% endif %}</span>
+              {% if child.job_status %}<span class="status-pill" data-status="{{ child.job_status }}">{{ child.job_status }}</span>{% endif %}
+              <span class="meta">{{ child.capabilities|join:", " }}</span>
+            </div>
+            {% if child.children %}
+            <ul class="org-children">
+              {% for grand in child.children %}
+              <li class="org-node">
+                <div class="org-card">
+                  <strong>{{ grand.label }}</strong>
+                  <span class="meta">{{ grand.id }} → {{ grand.reports_to|default:"—" }}</span>
+                  {% if grand.job_status %}<span class="status-pill" data-status="{{ grand.job_status }}">{{ grand.job_status }}</span>{% endif %}
+                </div>
+              </li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="meta">No roles loaded (check <code>roles/</code> and AGENT_MODULE=crewai).</p>
+    {% endif %}
   </div>
 </section>
 
@@ -368,7 +433,7 @@
               <h3 class="objective-card-title">{{ o.title }}</h3>
               <div class="objective-card-meta">
                 <span class="meta">{{ o.phase }}</span>
-                <code>{{ o.skill_suggestion|default:"—" }}</code>
+                <code>{{ o.role_id|default:"—" }}</code>
               </div>
             </article>
           {% endfor %}

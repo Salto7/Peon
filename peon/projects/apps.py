@@ -67,6 +67,11 @@ def configure_orchestrator() -> None:
                 getattr(settings, "AGENT_MAX_SUBAGENT_DEPTH", 2) or 2
             ),
             agent_runtime_enabled=bool(getattr(settings, "AGENT_RUNTIME_ENABLED", True)),
+            agent_module=str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai")
+            .strip()
+            .lower()
+            or "crewai",
+            roles_dir=Path(getattr(settings, "ROLES_DIR", settings.BASE_DIR / "roles")).resolve(),
             sandbox_enabled=bool(getattr(settings, "SANDBOX_ENABLED", True)),
             sandbox_image=str(getattr(settings, "SANDBOX_IMAGE", "peon-sandbox:local")),
             sandbox_prefix=str(
@@ -116,7 +121,6 @@ class ProjectsConfig(AppConfig):
     def ready(self) -> None:
         # Broker only — do not import tasks here (dramatiq worker imports tasks
         # which may call django.setup(); nested populate() would fail).
-        # LocalSkillExecutor is registered from run_job via ensure_skill_executor().
         configure_orchestrator()
         configure_broker()
         from agent_runtime.registry import register_builtin

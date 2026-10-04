@@ -483,16 +483,16 @@
     head.appendChild(role);
     body.appendChild(head);
 
-    if (agent.skill_names && agent.skill_names.length) {
-      const skills = document.createElement("div");
-      skills.className = "chip-row context-skills";
-      agent.skill_names.forEach(function (s) {
+    if (agent.role_ids && agent.role_ids.length) {
+      const roles = document.createElement("div");
+      roles.className = "chip-row context-skills";
+      agent.role_ids.forEach(function (s) {
         const chip = document.createElement("span");
         chip.className = "chip";
         chip.textContent = s;
-        skills.appendChild(chip);
+        roles.appendChild(chip);
       });
-      body.appendChild(skills);
+      body.appendChild(roles);
     }
 
     if (agent.objective_title) {
@@ -821,18 +821,18 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  function updateSkills(skills) {
-    const row = el("skills-used");
+  function updateRoles(roles) {
+    const row = el("roles-used") || el("skills-used");
     if (!row) return;
     row.replaceChildren();
-    if (!skills || !skills.length) {
+    if (!roles || !roles.length) {
       const empty = document.createElement("span");
       empty.className = "meta empty-skills";
       empty.textContent = "None yet";
       row.appendChild(empty);
       return;
     }
-    skills.forEach(function (s) {
+    roles.forEach(function (s) {
       const name = typeof s === "string" ? s : s.name || "";
       const desc = typeof s === "string" ? "" : s.description || "";
       const tags = typeof s === "string" ? [] : s.tags || [];
@@ -1440,7 +1440,7 @@
           const project = data.project || {};
           const agents = data.agents || [];
           const objectives = data.objectives || [];
-          const skills = data.skills_used || [];
+          const roles = data.roles_used || data.skills_used || [];
           const status = project.status || "";
           if (lastProjectStatus && lastProjectStatus !== status) {
             if (
@@ -1501,7 +1501,7 @@
                 );
               })
               .join("|"),
-            JSON.stringify(skills),
+            JSON.stringify(roles),
             objectives
               .map(function (o) {
                 return o.id + ":" + o.status;
@@ -1532,7 +1532,7 @@
           renderContext(selected, latestByJob);
           fillContextActions(el("context-actions"), selected, projectPk);
           updateObjectives(objectives);
-          updateSkills(skills);
+          updateRoles(roles);
           updateProjectStatus(project, projectPk);
         } catch (_) {}
       }

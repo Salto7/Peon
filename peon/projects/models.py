@@ -1,6 +1,6 @@
 """Project control plane: Project, RoE, Objective, Job, Finding.
 
-Filesystem skills stay in orchestrator SkillRegistry — Job.skill_names holds ids only.
+Engagement agents are CrewAI roles (``roles/``). Job.role_ids holds role catalog ids.
 """
 
 from __future__ import annotations
@@ -86,7 +86,19 @@ class Project(models.Model):
     focus_tags = models.JSONField(
         default=list,
         blank=True,
-        help_text="Soft SkillRouter preferred_tags (domains/techniques).",
+        help_text="Soft RoleRouter preferred tags (domains/techniques).",
+    )
+    crew_flow_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="CrewAI project Flow / crew run id (Peon-crewAI).",
+    )
+    crew_status = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="Crew run status: running|paused|awaiting_feedback|stopped|done.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -178,10 +190,10 @@ class Objective(models.Model):
         default=ObjectiveStatus.PENDING,
     )
     blocked_reason = models.TextField(blank=True)
-    skill_suggestion = models.CharField(
+    role_id = models.CharField(
         max_length=128,
         blank=True,
-        help_text="Catalog skill id from SkillRegistry (e.g. network-scanner).",
+        help_text="CrewAI role id from roles/ (e.g. osint-expert).",
     )
     profile_suggestion = models.CharField(
         max_length=128,
@@ -229,7 +241,7 @@ TERMINAL_JOB_STATUSES = frozenset(
 
 
 class Job(models.Model):
-    """One agent run; optional Project / Objective link. skill_names → SkillRegistry."""
+    """One agent run; optional Project / Objective link. role_ids → roles/ catalog."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
@@ -244,10 +256,10 @@ class Job(models.Model):
         choices=JobStatus.choices,
         default=JobStatus.PENDING,
     )
-    skill_names = models.JSONField(
+    role_ids = models.JSONField(
         default=list,
         blank=True,
-        help_text="Catalog skill ids (SkillRegistry / SkillRouter).",
+        help_text="CrewAI role ids from roles/ (RoleRegistry).",
     )
     project = models.ForeignKey(
         Project,
@@ -282,7 +294,7 @@ class Job(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     resume_from_checkpoint = models.BooleanField(
         default=False,
-        help_text="Next agent run should continue LangGraph thread_id=job_id.",
+        help_text="Next agent run should resume the CrewAI role/crew with steer context.",
     )
 
     class Meta:
@@ -435,13 +447,13 @@ class Finding(models.Model):
     kind = models.CharField(
         max_length=32,
         default="observation",
-        help_text="Free-form finding kind slug (skill/LLM); not a closed enum.",
+        help_text="Free-form finding kind slug (role/LLM); not a closed enum.",
     )
     asset_type = models.CharField(
         max_length=32,
         default="",
         blank=True,
-        help_text="Free-form asset/target type slug (skill/LLM); not a closed enum.",
+        help_text="Free-form asset/target type slug (role/LLM); not a closed enum.",
     )
     severity = models.CharField(
         max_length=20,

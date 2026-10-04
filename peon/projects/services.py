@@ -1,7 +1,7 @@
 """Thin planning services: call orchestrator planners, persist Project/Job/Objective.
 
 Project mode schedules **one Job per ready objective** (objective-style), not a
-single skill-batch job for the whole plan.
+single role-batch job for the whole plan.
 """
 
 from __future__ import annotations
@@ -17,11 +17,10 @@ from orchestrator.planning import (
     JobPlanner,
     ProjectPlanner,
     bookend_project_objectives,
-    bookend_skill_names,
+    bookend_role_ids,
     parse_project_objectives,
 )
-from orchestrator.skills.registry import SkillRegistry
-from orchestrator.skills.router import SkillRouter
+from orchestrator.crew.router import RoleRouter
 from orchestrator.utils.llm import chat_model
 
 from peon.projects.models import (
@@ -50,7 +49,7 @@ class PlanDraft:
 
     mode: str
     plan_text: str
-    skill_names: list[str] = field(default_factory=list)
+    role_ids: list[str] = field(default_factory=list)
     objectives_payload: list[dict[str, Any]] = field(default_factory=list)
     description: str = ""
     title: str = "adhoc"
@@ -67,7 +66,7 @@ class PlanResult:
     plan_text: str
     project: Project | None = None
     objectives: list | None = None
-    skill_names: list[str] | None = None
+    role_ids: list[str] | None = None
 
 
 
@@ -86,7 +85,7 @@ class PlanningService:
         in_scope: list | None = None,
         exclusions: list | None = None,
         authorization: str = "",
-        skill_names: list[str] | None = None,
+        role_ids: list[str] | None = None,
         workspace_id: str | None = None,
         project: Project | None = None,
         preferred_tags: list[str] | None = None,
@@ -94,7 +93,7 @@ class PlanningService:
         start: bool = True,
     ) -> PlanResult:
         """Sync objectives (replace by default) and enqueue the first ready objective job."""
-        del skill_names  # per-objective skills come from each objective row
+        del role_ids  # per-objective roles come from each objective row
         scope = coerce_targets(in_scope or [])
         excl = coerce_targets(exclusions or [])
         tags = list(preferred_tags or [])
@@ -185,17 +184,17 @@ class PlanningService:
                     enqueue=True,
                 )
 
-        skills = [
-            str(o.skill_suggestion).strip()
+        used_roles = [
+            str(o.role_id).strip()
             for o in created
-            if str(o.skill_suggestion or "").strip()
+            if str(o.role_id or "").strip()
         ]
         return PlanResult(
             project=project,
             job=job,
             plan_text=plan_text,
             objectives=created,
-            skill_names=bookend_skill_names(skills),
+            role_ids=bookend_role_ids(used_roles),
         )
 
 
@@ -206,11 +205,11 @@ class PlanningService:
         description: str,
         plan_text: str,
         title: str = "adhoc-job",
-        skill_names: list[str] | None = None,
+        role_ids: list[str] | None = None,
         workspace_id: str | None = None,
     ) -> PlanResult:
-        """Write a standalone Job + plan file (job mode — skill list, no objectives)."""
-        skills = list(skill_names or [])
+        """Write a standalone Job + plan file (job mode — role list, no objectives)."""
+        roles = list(role_ids or [])
         ws = safe_workspace_key(workspace_id or f"job-{uuid.uuid4()}")
         project_workspace_dir(ws)
 
@@ -220,13 +219,13 @@ class PlanningService:
             description=(description or "").strip(),
             lifecycle=JobLifecycle.SHORT,
             status=JobStatus.PENDING,
-            skill_names=skills,
+            role_ids=roles,
             plan_text=plan_text,
             plan_path=plan_path or "plans/latest.md",
             workspace_id=ws,
         )
         enqueue_job(str(job.id))
-        return PlanResult(job=job, plan_text=plan_text, skill_names=skills)
+        return PlanResult(job=job, plan_text=plan_text, role_ids=roles)
 
 
     @classmethod
@@ -239,11 +238,12 @@ class PlanningService:
         in_scope: list | None = None,
         exclusions: list | None = None,
         authorization: str = "",
-        skills: list[str] | None = None,
+        role_ids: list[str] | None = None,
         preferred_tags: list[str] | None = None,
         project: Project | None = None,
+        **_kwargs,
     ) -> PlanDraft:
-        """Call SkillRouter + planners; return draft (no DB write)."""
+        """Call RoleRouter + planners; return draft (no DB write)."""
         text = (description or "").strip()
         if not text:
             raise ValueError("description is required")
@@ -255,17 +255,16 @@ class PlanningService:
         scope = coerce_targets(in_scope or [])
         excl = coerce_targets(exclusions or [])
         tags = list(preferred_tags or [])
-        explicit = list(skills or [])
-        resolved = SkillRouter.shared().resolve_default_skills(
+        # Accept legacy ``skills=`` kwarg from older call sites.
+        explicit = list(role_ids or _kwargs.get("skills") or [])
+        resolved = RoleRouter.shared().resolve(
             text,
-            lifecycle="long" if mode_norm == "project" else "auto",
             explicit=explicit or None,
             project=mode_norm == "project",
-            preferred_tags=tags or None,
         )
         prompt = text
         if resolved:
-            prompt = f"{text}\n\nPreloaded skills: {', '.join(resolved)}"
+            prompt = f"{text}\n\nPreloaded roles: {', '.join(resolved)}"
 
         prior_plan = ""
         existing_summary = ""
@@ -295,7 +294,7 @@ class PlanningService:
             for obj in project.objectives.order_by("seq")[:40]:
                 lines.append(
                     f"- OBJ-{obj.seq} [{obj.status}] {obj.title} "
-                    f"skill={obj.skill_suggestion or '-'}"
+                    f"role={obj.role_id or '-'}"
                 )
             existing_summary = "\n".join(lines)
 
@@ -313,7 +312,7 @@ class PlanningService:
                     testing_window_notes="",
                     abort_triggers="",
                 ),
-                filtered_skills_index=SkillRegistry.shared().skills_index(jobable_only=True),
+                filtered_roles_index=RoleRouter.shared().roles_index_text(),
                 focus_tags=tags or None,
                 prior_plan=prior_plan,
                 existing_objectives_summary=existing_summary,
@@ -321,15 +320,15 @@ class PlanningService:
             raw = planner.message_text(llm.invoke(msgs).content)
             payload = parse_project_objectives(raw)
             plan_text = planner.format_result(raw, project_title=title)
-            obj_skills = [
-                str(o.get("skill_suggestion") or "").strip()
+            obj_roles = [
+                str(o.get("role_id") or "").strip()
                 for o in (payload.get("objectives") or [])
-                if str(o.get("skill_suggestion") or "").strip()
+                if str(o.get("role_id") or "").strip()
             ]
             return PlanDraft(
                 mode=mode_norm,
                 plan_text=plan_text,
-                skill_names=bookend_skill_names([*obj_skills, *resolved]),
+                role_ids=bookend_role_ids([*obj_roles, *resolved]),
                 objectives_payload=list(payload.get("objectives") or []),
                 description=description,
                 title=title,
@@ -346,7 +345,7 @@ class PlanningService:
         return PlanDraft(
             mode=mode_norm,
             plan_text=plan_text,
-            skill_names=resolved,
+            role_ids=resolved,
             description=description,
             title=title,
             preferred_tags=tags,
@@ -371,7 +370,7 @@ class PlanningService:
                 in_scope=draft.in_scope,
                 exclusions=draft.exclusions,
                 authorization=draft.authorization,
-                skill_names=draft.skill_names,
+                role_ids=draft.role_ids,
                 workspace_id=workspace_id,
                 project=project,
                 preferred_tags=draft.preferred_tags,
@@ -382,7 +381,7 @@ class PlanningService:
             description=draft.description,
             plan_text=draft.plan_text,
             title=draft.title,
-            skill_names=draft.skill_names,
+            role_ids=draft.role_ids,
             workspace_id=workspace_id,
         )
 
@@ -397,9 +396,10 @@ class PlanningService:
         in_scope: list | None = None,
         exclusions: list | None = None,
         authorization: str = "",
-        skills: list[str] | None = None,
+        role_ids: list[str] | None = None,
         preferred_tags: list[str] | None = None,
         project: Project | None = None,
+        **_kwargs,
     ) -> PlanResult:
         """Draft via LLM then persist (enqueue first ready objective for projects)."""
         draft = cls.draft_llm_plan(
@@ -410,7 +410,7 @@ class PlanningService:
             in_scope=in_scope,
             exclusions=exclusions,
             authorization=authorization,
-            skills=skills,
+            role_ids=role_ids or _kwargs.get("skills"),
             preferred_tags=preferred_tags,
             project=project,
         )
