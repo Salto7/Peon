@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from orchestrator.agent.bridges.null import NullAgentBridge
 from orchestrator.agent.config import agent_run_config_from_mapping
@@ -20,7 +20,10 @@ from orchestrator.crew.roles.factory import (
     restore_agent_runtime_policy,
 )
 from orchestrator.crew.roles.registry import RoleRegistry
-from orchestrator.crew.runtime_support import augment_tool_result
+from orchestrator.crew.runtime_support import (
+    augment_tool_result,
+    drain_agent_inbox_context,
+)
 
 
 class CrewRuntimeFeatureTests(SimpleTestCase):
@@ -160,3 +163,78 @@ class CrewReplanControlTests(SimpleTestCase):
         set_status.assert_called_once_with(project, "running")
         self.assertEqual(result["mode"], "crew_replan")
         self.assertEqual(result["objectives"], 4)
+
+
+class CrewGenericRoleTests(SimpleTestCase):
+    def test_analyzer_detection_uses_role_metadata_not_slug(self):
+        from orchestrator.crew.roles.hierarchy import is_analyzer_role_id
+
+        role = SimpleNamespace(is_analyzer=True)
+        registry = SimpleNamespace(
+            get=lambda role_id: role if role_id == "custom-report-author" else None
+        )
+
+        self.assertTrue(is_analyzer_role_id("custom-report-author", registry))
+        self.assertFalse(is_analyzer_role_id("analyzer", registry))
+
+    def test_job_brief_includes_bounded_current_plan(self):
+        from peon.projects.worker import _job_agent_brief
+
+        job = SimpleNamespace(
+            description="Execute the objective",
+            title="fallback",
+            plan_text="P" * 5000,
+        )
+        brief = _job_agent_brief(job)
+
+        self.assertIn("Execute the objective", brief)
+        self.assertIn("CURRENT PLAN:", brief)
+        self.assertLessEqual(len(brief), 7800)
+
+
+class CrewDirectiveTests(TestCase):
+    def _scope_for(self, job):
+        from peon.projects.agent_bridge import JobAgentBridge
+
+        return JobScope(
+            job_id=str(job.id),
+            workspace="/tmp",
+            bridge=JobAgentBridge(job),
+        )
+
+    def test_replan_is_classified_by_directive_kind(self):
+        from peon.projects.models import Job, JobDirective, JobDirectiveKind
+
+        job = Job.objects.create(title="manager")
+        JobDirective.objects.create(
+            job=job,
+            kind=JobDirectiveKind.REPLAN,
+            content="Revise the objective order",
+        )
+
+        inbox = drain_agent_inbox_context(self._scope_for(job))
+
+        self.assertEqual(inbox.directive_kinds, frozenset({"replan"}))
+        self.assertIn("OPERATOR REPLAN REQUEST", inbox.text)
+        self.assertFalse(
+            JobDirective.objects.filter(job=job, consumed_at__isnull=True).exists()
+        )
+        self.assertEqual(
+            drain_agent_inbox_context(self._scope_for(job)).text,
+            "",
+        )
+
+    def test_steer_text_cannot_accidentally_trigger_replan(self):
+        from peon.projects.models import Job, JobDirective, JobDirectiveKind
+
+        job = Job.objects.create(title="specialist")
+        JobDirective.objects.create(
+            job=job,
+            kind=JobDirectiveKind.STEER,
+            content="Do not replan; continue the existing task",
+        )
+
+        inbox = drain_agent_inbox_context(self._scope_for(job))
+
+        self.assertEqual(inbox.directive_kinds, frozenset({"steer"}))
+        self.assertNotIn("replan", inbox.directive_kinds)

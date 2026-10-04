@@ -32,6 +32,18 @@ def analyzer_role(reg: RoleRegistry | None = None) -> RoleSpec | None:
     return None
 
 
+def is_manager_role_id(role_id: str, reg: RoleRegistry | None = None) -> bool:
+    """Whether a catalog role is manager-class, based only on role metadata."""
+    role = (reg or RoleRegistry.shared()).get(str(role_id or "").strip())
+    return bool(role and role.is_manager)
+
+
+def is_analyzer_role_id(role_id: str, reg: RoleRegistry | None = None) -> bool:
+    """Whether a catalog role is analyzer-class, based only on role metadata."""
+    role = (reg or RoleRegistry.shared()).get(str(role_id or "").strip())
+    return bool(role and role.is_analyzer)
+
+
 def specialists_for(
     role_ids: list[str] | tuple[str, ...] | None = None,
     *,

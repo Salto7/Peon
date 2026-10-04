@@ -15,7 +15,7 @@ from orchestrator.crew.roles.factory import (
 )
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtimes.project_crewai import run_project_crew_from_scope
-from orchestrator.crew.runtime_support import drain_agent_inbox
+from orchestrator.crew.runtime_support import drain_agent_inbox_context
 
 
 def resolve_role_id(scope) -> str:
@@ -90,9 +90,9 @@ class CrewAIJobRuntime(AgentRuntimeBase):
             brief = (
                 f"{brief}\n\nOPERATOR INSTRUCTION:\n{request.steer.strip()}"
             ).strip()
-        inbox = drain_agent_inbox(scope)
-        if inbox:
-            brief = f"{brief}\n\nAGENT INBOX:\n{inbox}".strip()
+        inbox = drain_agent_inbox_context(scope)
+        if inbox.text:
+            brief = f"{brief}\n\nAGENT INBOX:\n{inbox.text}".strip()
         if request.resume:
             brief = (
                 "Continue from the native CrewAI checkpoint under Rules of "

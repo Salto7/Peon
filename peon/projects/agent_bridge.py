@@ -300,8 +300,8 @@ class JobAgentBridge(AgentBridgeBase):
             f"FIND-{f.seq} [{f.severity}/{f.kind}] {f.title}" for f in rows
         )
 
-    def drain_operator_guidance(self) -> list[str]:
-        """Consume pending JobDirective rows into agent-facing guidance strings."""
+    def drain_operator_directives(self) -> tuple[list[str], set[str]]:
+        """Consume typed directives into agent guidance and runtime control metadata."""
         from django.db import transaction
 
         with transaction.atomic():
@@ -311,11 +311,13 @@ class JobAgentBridge(AgentBridgeBase):
                 .order_by("created_at")
             )
             if not pending:
-                return []
+                return [], set()
             now = dj_tz.now()
             out: list[str] = []
+            kinds: set[str] = set()
             for d in pending:
                 d.consumed_at = now
+                kinds.add(str(d.kind))
                 text = (d.content or "").strip()
                 if not text:
                     continue
@@ -327,13 +329,22 @@ class JobAgentBridge(AgentBridgeBase):
                         "If they supply an exact command, prefer executing that "
                         "command (re-scan / re-run when requested)."
                     )
+                elif d.kind == JobDirectiveKind.REPLAN:
+                    out.append(
+                        "OPERATOR REPLAN REQUEST — revise the plan and continue "
+                        f"under Rules of Engagement:\n{text}"
+                    )
                 else:
                     out.append(
                         "OPERATOR INSTRUCTION — revise your approach and continue "
                         f"under Rules of Engagement:\n{text}"
                     )
             JobDirective.objects.bulk_update(pending, ["consumed_at"])
-        return out
+        return out, kinds
+
+    def drain_operator_guidance(self) -> list[str]:
+        guidance, _ = self.drain_operator_directives()
+        return guidance
 
     def drain_peer_messages(self) -> list[str]:
         from peon.projects.agent_messaging import DjangoAgentMessaging
@@ -403,7 +414,7 @@ class JobAgentBridge(AgentBridgeBase):
         allowed = [
             r.id
             for r in RoleRegistry.shared().list_roles()
-            if r.id not in {"project-manager", "analyzer"}
+            if not r.is_manager and not r.is_analyzer and not r.is_authoring
         ]
         notes = (context_notes or "").strip()
         if not notes:

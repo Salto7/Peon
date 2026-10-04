@@ -307,6 +307,7 @@ class Job(models.Model):
 class JobDirectiveKind(models.TextChoices):
     STEER = "steer", "Steer"
     FOLLOWUP = "followup", "Follow-up"
+    REPLAN = "replan", "Replan"
 
 
 class JobDirective(models.Model):

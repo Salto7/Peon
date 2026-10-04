@@ -71,6 +71,14 @@ class AgentBridgeBase(ABC):
     def drain_operator_guidance(self) -> list[str]:
         return []
 
+    def drain_operator_directives(self) -> tuple[list[str], set[str]]:
+        """Consume guidance with machine-readable directive kinds.
+
+        Bridges that persist typed directives should override this method.
+        The fallback preserves compatibility with guidance-only bridges.
+        """
+        return self.drain_operator_guidance(), set()
+
     def drain_peer_messages(self) -> list[str]:
         return []
 

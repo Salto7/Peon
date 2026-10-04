@@ -20,7 +20,7 @@ from orchestrator.crew.runtime_base import (
     CrewRunResult,
     CrewRuntimeBase,
 )
-from orchestrator.crew.runtime_support import drain_agent_inbox
+from orchestrator.crew.runtime_support import drain_agent_inbox_context
 
 
 class ProjectCrewRuntime(CrewRuntimeBase):
@@ -57,13 +57,14 @@ class ProjectCrewRuntime(CrewRuntimeBase):
         scope.extras["crew_flow_id"] = flow_id
         scope.extras["crew_mode"] = "project"
 
-        inbox = drain_agent_inbox(scope)
-        if inbox:
+        inbox = drain_agent_inbox_context(scope)
+        if inbox.text:
             operator_context = (
-                f"{operator_context}\n\n{inbox}".strip()
+                f"{operator_context}\n\n{inbox.text}".strip()
                 if operator_context
-                else inbox
+                else inbox.text
             )
+        replan_requested = request.replan or "replan" in inbox.directive_kinds
         if request.resume:
             scope.bridge.emit(
                 "status",
@@ -100,7 +101,7 @@ class ProjectCrewRuntime(CrewRuntimeBase):
                 status="stopped",
             )
 
-        action = "replan" if request.replan else ("resume" if request.resume else "start")
+        action = "replan" if replan_requested else ("resume" if request.resume else "start")
         scope.bridge.emit(
             "status",
             f"project crew {action} flow={flow_id[:8]}",

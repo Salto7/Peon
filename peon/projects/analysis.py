@@ -618,7 +618,12 @@ class ReportSynthesizer:
     def _complete_reporting_objectives(job: Job) -> None:
         if job.project_id is None:
             return
-        for obj in job.project.objectives.filter(role_id="analyzer").exclude(
+        from orchestrator.crew.roles.hierarchy import analyzer_role
+
+        analyzer = analyzer_role()
+        if analyzer is None:
+            return
+        for obj in job.project.objectives.filter(role_id=analyzer.id).exclude(
             status=ObjectiveStatus.CANCELLED
         ):
             obj.status = ObjectiveStatus.COMPLETED

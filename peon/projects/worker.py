@@ -296,25 +296,38 @@ def _operator_skill_command(job: Job) -> str:
     return ""
 
 
-def _run_analyzer_only(job: Job, ws: Path) -> Job:
+def _job_agent_brief(job: Job) -> str:
+    """Bounded execution context containing both the assignment and current plan."""
+    description = (job.description or job.title or "").strip()
+    plan = (job.plan_text or "").strip()
+    parts = [description[:4000]] if description else []
+    if plan:
+        parts.append("CURRENT PLAN:\n" + plan[:3500])
+    return "\n\n".join(parts)[:7800]
+
+
+def _run_analyzer_only(
+    job: Job, ws: Path, *, role_id: str, role_label: str = ""
+) -> Job:
     """Deterministic report synth — no LLM loop (analyzer bookend)."""
     from peon.projects.analysis import synthesize_report_for_job
 
+    display = role_label or role_id
     stopped = _steer_stop(job, [])
     if stopped is not None:
         return stopped
     try:
         report = synthesize_report_for_job(job, ws)
-        chunk = f"## analyzer\nok=True\nWrote {report}"
-        _emit(job, "result", str(report), role_id="analyzer")
+        chunk = f"## {display}\nok=True\nWrote {report}"
+        _emit(job, "result", str(report), role_id=role_id)
         return _finish(job, status=JobStatus.COMPLETED, error="", result=chunk)
     except Exception as exc:
-        _emit(job, "error", str(exc), role_id="analyzer")
+        _emit(job, "error", str(exc), role_id=role_id)
         return _finish(
             job,
             status=JobStatus.FAILED,
             error=str(exc)[:2000],
-            result=f"## analyzer\nok=False\n{exc}",
+            result=f"## {display}\nok=False\n{exc}",
         )
 
 
@@ -403,9 +416,14 @@ def run_job(job: Job) -> Job:
         if stopped is not None:
             return stopped
 
-        # Bookend: analyzer alone is deterministic report synth (no crew loop).
-        if names == ["analyzer"]:
-            return _run_analyzer_only(job, ws)
+        # Analyzer-class bookends use deterministic report synthesis.
+        from orchestrator.crew.roles.hierarchy import analyzer_role
+
+        analyzer = analyzer_role(reg)
+        if analyzer is not None and names == [analyzer.id]:
+            return _run_analyzer_only(
+                job, ws, role_id=analyzer.id, role_label=analyzer.label
+            )
 
         resume = bool(getattr(job, "resume_from_checkpoint", False))
         if resume:
@@ -466,35 +484,13 @@ def run_job_via_agent(
             )
 
     bridge = JobAgentBridge(job)
-    from orchestrator.crew.runtime_support import drain_agent_inbox
-
-    steer = drain_agent_inbox(
-        JobScope(
-            job_id=str(job.id),
-            project_id=str(job.project_id or ""),
-            parent_job_id=str(job.parent_id or ""),
-            workspace=workspace,
-            role_ids=names,
-            brief=(job.description or job.title or "").strip(),
-            depth=depth,
-            bridge=bridge,
-            extras=extras,
-        )
-    )
-    steer_bits = [steer] if steer else []
-    if any(b.startswith("OPERATOR") and "REPLAN" in b.upper() for b in steer_bits):
-        extras["replan"] = True
-    # Directives that literally start with REPLAN: mark crew replan.
-    if "REPLAN:" in steer.upper():
-        extras["replan"] = True
-
     scope = JobScope(
         job_id=str(job.id),
         project_id=str(job.project_id or ""),
         parent_job_id=str(job.parent_id or ""),
         workspace=workspace,
         role_ids=names,
-        brief=(job.description or job.title or "").strip(),
+        brief=_job_agent_brief(job),
         depth=depth,
         bridge=bridge,
         extras=extras,
@@ -515,7 +511,7 @@ def run_job_via_agent(
             set_crew_status(job.project, "running")
         except Exception:
             pass
-    result = run_agent(scope, cfg, resume=resume, steer=steer)
+    result = run_agent(scope, cfg, resume=resume)
     if job.project_id and extras.get("crew_mode") == "project":
         try:
             from peon.projects.crew_control import set_crew_status

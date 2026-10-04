@@ -10,7 +10,14 @@ from typing import Any
 from django.conf import settings
 
 from peon.projects.lifecycle import ProjectLifecycle
-from peon.projects.models import Job, JobLifecycle, JobStatus, Project, ProjectStatus
+from peon.projects.models import (
+    Job,
+    JobDirectiveKind,
+    JobLifecycle,
+    JobStatus,
+    Project,
+    ProjectStatus,
+)
 from peon.projects.tasks import enqueue_job
 
 
@@ -133,10 +140,9 @@ def _ensure_manager_job(
                 "updated_at",
             ]
         )
-    # Stash replan flag on description prefix consumed via extras in worker — use directive.
     if replan and steer:
         ProjectLifecycle.enqueue_job_directive(
-            job, f"REPLAN:\n{steer}", kind="steer"
+            job, steer, kind=JobDirectiveKind.REPLAN
         )
     enqueue_job(str(job.id))
     return job
