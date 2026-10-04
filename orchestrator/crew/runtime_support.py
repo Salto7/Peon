@@ -36,13 +36,10 @@ def augment_tool_result(result: Any, *, scope: JobScope | None = None) -> Any:
     if not inbox:
         return result
     note = "NEW AGENT INBOX — apply before your next action:\n" + inbox
-    try:
-        from crewai.tools.tool_failure import ToolFailure
+    from crewai.tools.tool_failure import ToolFailure
 
-        if isinstance(result, ToolFailure):
-            return result.model_copy(update={"message": f"{result.message}\n\n{note}"})
-    except ImportError:  # pragma: no cover - guarded by the CrewAI runtime dependency
-        pass
+    if isinstance(result, ToolFailure):
+        return result.model_copy(update={"message": f"{result.message}\n\n{note}"})
     return f"{result if result is not None else ''}\n\n{note}".strip()
 
 

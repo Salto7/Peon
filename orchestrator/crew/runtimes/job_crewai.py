@@ -32,7 +32,7 @@ def resolve_role_id(scope) -> str:
 
 
 class CrewAIJobRuntime(AgentRuntimeBase):
-    """Run one CrewAI role, or the full project crew when role is project-manager."""
+    """Run one role, or a metadata-selected project crew when requested by scope."""
 
     def start(self, request: AgentRunRequest) -> AgentRunResult:
         if not request.config.runtime_enabled:
