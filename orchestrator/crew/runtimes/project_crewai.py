@@ -13,6 +13,7 @@ from orchestrator.crew.checkpoint import (
     output_log_path,
 )
 from orchestrator.crew.flows.engagement import build_engagement_crew
+from orchestrator.crew.roles.factory import restore_agent_runtime_policy
 from orchestrator.crew.roles.hierarchy import manager_role
 from orchestrator.crew.runtime_base import (
     CrewRunRequest,
@@ -117,12 +118,31 @@ class ProjectCrewRuntime(CrewRuntimeBase):
                     if request.resume and cfg.checkpoint_enabled
                     else None
                 )
+                if restore is not None and restore.restore_from is not None:
+                    from crewai import Crew
+
+                    crew = Crew.from_checkpoint(restore)
+                    crew.memory = memory
+                    crew._memory = memory
+                    crew.checkpoint = checkpoint
+                    crew.output_log_file = output_log_path(scope)
+                    restored_agents = [*crew.agents]
+                    if crew.manager_agent is not None:
+                        restored_agents.append(crew.manager_agent)
+                    for restored_agent in restored_agents:
+                        restore_agent_runtime_policy(
+                            restored_agent,
+                            max_iterations=cfg.max_iterations,
+                            max_replans=cfg.max_failure_replans,
+                            max_execution_time=cfg.max_execution_seconds or None,
+                            memory=None,
+                            checkpoint=None,
+                        )
                 result = crew.kickoff(
                     inputs={
                         "brief": brief[:6000],
                         "operator_context": operator_context[:4000] or "(none)",
                     },
-                    from_checkpoint=restore,
                 )
             except Exception as exc:
                 scope.bridge.emit("error", f"project crew failed: {exc}")

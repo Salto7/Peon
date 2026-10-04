@@ -15,7 +15,10 @@ from orchestrator.agent.config import agent_run_config_from_mapping
 from orchestrator.agent.job import JobScope
 from orchestrator.crew.checkpoint import checkpoint_config, latest_checkpoint
 from orchestrator.crew.flows.engagement import build_engagement_crew
-from orchestrator.crew.roles.factory import build_crew_agent
+from orchestrator.crew.roles.factory import (
+    build_crew_agent,
+    restore_agent_runtime_policy,
+)
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtime_support import augment_tool_result
 
@@ -95,6 +98,39 @@ class CrewRuntimeFeatureTests(SimpleTestCase):
         self.assertEqual(crew.manager_agent.planning_config.max_replans, 2)
         self.assertIsNotNone(crew.tasks[0].guardrail)
         self.assertIn("{brief}", crew.tasks[0].description)
+
+    @patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"})
+    def test_native_checkpoint_round_trip_rehydrates_role_policy(self):
+        from crewai import Crew, RuntimeState
+        from crewai.state.runtime import _prepare_entities
+
+        with TemporaryDirectory() as root:
+            scope = self._scope(root)
+            config = checkpoint_config(scope)
+            crew = build_engagement_crew(
+                role_ids=["network-scanner"],
+                max_iterations=7,
+                max_replans=2,
+                checkpoint=config,
+            )
+            state = RuntimeState(root=[crew])
+            _prepare_entities(state.root)
+            saved = config.provider.checkpoint(state.model_dump_json(), config.location)
+            restored = Crew.from_checkpoint(
+                config.model_copy(update={"restore_from": saved})
+            )
+            restore_agent_runtime_policy(
+                restored.manager_agent,
+                max_iterations=7,
+                max_replans=2,
+                max_execution_time=60,
+                memory=None,
+                checkpoint=config,
+            )
+
+        self.assertEqual(restored.manager_agent.planning_config.max_replans, 2)
+        self.assertTrue(restored.agents[0].tools)
+        self.assertIsInstance(restored.tasks[0].guardrail, str)
 
 
 class CrewReplanControlTests(SimpleTestCase):

@@ -75,3 +75,48 @@ def build_crew_agent(
             max_step_iterations=min(kwargs["max_iter"], 10),
         )
     return Agent(**kwargs)
+
+
+def restore_agent_runtime_policy(
+    agent: Any,
+    *,
+    max_iterations: int,
+    max_replans: int,
+    max_execution_time: int | None,
+    memory: Any | None,
+    checkpoint: Any | None,
+) -> Any:
+    """Reapply catalog/runtime policy omitted by CrewAI checkpoint payloads."""
+    from crewai import PlanningConfig
+
+    from orchestrator.crew.roles.registry import RoleRegistry
+
+    identity = str(getattr(agent, "role", "") or "").strip()
+    role = next(
+        (
+            item
+            for item in RoleRegistry.shared().list_roles()
+            if identity in {item.id, item.label, item.crew_role}
+        ),
+        None,
+    )
+    if role is None:
+        raise RuntimeError(f"restored CrewAI agent has no matching role pack: {identity!r}")
+
+    limit = min(int(role.max_iter), max(1, int(max_iterations)))
+    agent.max_iter = limit
+    agent.max_retry_limit = max(1, int(max_replans))
+    agent.max_execution_time = max_execution_time
+    agent.memory = memory
+    agent.checkpoint = checkpoint
+    agent.planning_config = (
+        PlanningConfig(
+            reasoning_effort="medium",
+            max_replans=max(0, int(max_replans)),
+            max_steps=limit,
+            max_step_iterations=min(limit, 10),
+        )
+        if role.reasoning
+        else None
+    )
+    return agent

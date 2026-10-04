@@ -9,7 +9,10 @@ from orchestrator.agent.runtime_base import (
     AgentRuntimeBase,
 )
 from orchestrator.crew.checkpoint import build_memory, checkpoint_config
-from orchestrator.crew.roles.factory import build_crew_agent
+from orchestrator.crew.roles.factory import (
+    build_crew_agent,
+    restore_agent_runtime_policy,
+)
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtimes.project_crewai import run_project_crew_from_scope
 from orchestrator.crew.runtime_support import drain_agent_inbox
@@ -136,7 +139,21 @@ class CrewAIJobRuntime(AgentRuntimeBase):
                     if request.resume and request.config.checkpoint_enabled
                     else None
                 )
-                result = agent.kickoff(brief[:8000], from_checkpoint=restore)
+                if restore is not None and restore.restore_from is not None:
+                    from crewai import Agent
+
+                    agent = Agent.from_checkpoint(restore)
+                    restore_agent_runtime_policy(
+                        agent,
+                        max_iterations=request.config.max_iterations,
+                        max_replans=request.config.max_failure_replans,
+                        max_execution_time=(
+                            request.config.max_execution_seconds or None
+                        ),
+                        memory=memory,
+                        checkpoint=checkpoint,
+                    )
+                result = agent.kickoff(brief[:8000])
             except Exception as exc:
                 scope.bridge.emit("error", f"crewai role failed: {exc}")
                 return AgentRunResult(ok=False, error=str(exc))
