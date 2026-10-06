@@ -11,7 +11,14 @@ from django.conf import settings
 
 from orchestrator.crew.roles.registry import manager_role
 from peon.projects.lifecycle import ProjectLifecycle
-from peon.projects.models import Job, JobLifecycle, JobStatus, Project, ProjectStatus
+from peon.projects.models import (
+    Job,
+    JobDirectiveKind,
+    JobLifecycle,
+    JobStatus,
+    Project,
+    ProjectStatus,
+)
 from peon.projects.tasks import enqueue_job
 
 
@@ -53,7 +60,11 @@ def replan_project(project: Project, message: str) -> dict[str, Any]:
         raise ValueError("Replan message is required")
     if project.status == ProjectStatus.CANCELLED:
         raise RuntimeError("Project is cancelled — cannot replan")
-    if project.status == ProjectStatus.PAUSED:
+    if project.status in {
+        ProjectStatus.PAUSED,
+        ProjectStatus.FINISHED_WITH_ERRORS,
+        ProjectStatus.FINISHED,
+    }:
         project.status = ProjectStatus.ACTIVE
         project.save(update_fields=["status", "updated_at"])
 
@@ -161,10 +172,9 @@ def _ensure_manager_job(
                 "updated_at",
             ]
         )
-    # Stash replan flag on description prefix consumed via extras in worker — use directive.
     if replan and steer:
         ProjectLifecycle.enqueue_job_directive(
-            job, f"REPLAN:\n{steer}", kind="steer"
+            job, steer, kind=JobDirectiveKind.REPLAN
         )
     enqueue_job(str(job.id))
     return job

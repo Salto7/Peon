@@ -12,7 +12,7 @@ from orchestrator.utils.commands import (
 )
 from orchestrator.utils.stream_events import display_command
 from peon.projects.catalog_cards.role import RoleCards
-from peon.projects.console_chat import pending_operator_prompts
+from peon.projects.console import pending_operator_prompts
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
     Job,

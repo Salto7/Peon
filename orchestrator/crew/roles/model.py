@@ -134,7 +134,14 @@ def llm_id_for_crew() -> str:
     return model or "openrouter/openai/gpt-4o-mini"
 
 
-def build_crew_agent(role: RoleSpec, *, tools: list[Any] | None = None) -> Any:
+def build_crew_agent(
+    role: RoleSpec,
+    *,
+    tools: list[Any] | None = None,
+    max_iterations: int | None = None,
+    reasoning_effort: str | None = None,
+    reasoning_max_attempts: int | None = None,
+) -> Any:
     """Instantiate a CrewAI ``Agent`` for ``role`` (lazy crewai import)."""
     try:
         # deferred: optional heavy crewai
@@ -157,6 +164,9 @@ def build_crew_agent(role: RoleSpec, *, tools: list[Any] | None = None) -> Any:
             f"{backstory}\n\n## Hierarchy\nYou report to `{role.reports_to}`."
         ).strip()
 
+    cfg = get_config()
+    role_iters = max(1, int(role.max_iter))
+    cap = max(1, int(max_iterations if max_iterations is not None else cfg.agent_max_iterations))
     agent_tools = tools if tools is not None else build_tools(role.tools)
     kwargs: dict[str, Any] = {
         "role": role.crew_role,
@@ -165,24 +175,38 @@ def build_crew_agent(role: RoleSpec, *, tools: list[Any] | None = None) -> Any:
         "tools": agent_tools,
         "allow_delegation": bool(role.allow_delegation),
         "verbose": False,
-        "max_iter": int(role.max_iter),
+        "max_iter": min(role_iters, cap),
         "llm": llm_id_for_crew(),
     }
     # ``advanced_reasoning`` is crew-level planning only (engagement.py).
-    # Agent planning stays off unless ROLE.yaml sets ``reasoning: true``, and
-    # then uses low-effort / single-attempt config — never bare reasoning=True
-    # (CrewAI medium effort + unbounded refine = multi-minute bookends).
+    # Agent planning stays off unless ROLE.yaml sets ``reasoning: true``.
     if role.reasoning:
+        effort = (
+            (reasoning_effort or cfg.crew_reasoning_effort or "low").strip().lower()
+        )
+        if effort not in {"low", "medium", "high"}:
+            effort = "low"
+        attempts = max(
+            1,
+            min(
+                5,
+                int(
+                    reasoning_max_attempts
+                    if reasoning_max_attempts is not None
+                    else cfg.crew_reasoning_max_attempts
+                ),
+            ),
+        )
         try:
             from crewai.agent.planning_config import PlanningConfig
 
             kwargs["planning_config"] = PlanningConfig(
-                reasoning_effort="low",
-                max_attempts=1,
+                reasoning_effort=effort,
+                max_attempts=attempts,
             )
         except Exception:
             kwargs["reasoning"] = True
-            kwargs["max_reasoning_attempts"] = 1
+            kwargs["max_reasoning_attempts"] = attempts
     try:
         return Agent(**kwargs)
     except TypeError:

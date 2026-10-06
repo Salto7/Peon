@@ -12,7 +12,8 @@ from peon.projects.runtime_settings import PeonSettings
 from peon.projects.streaming import emit_job_stream
 
 
-def _emit(job: Job, message_type: str, content: str, **meta) -> None:
+def emit(job: Job, message_type: str, content: str, **meta) -> None:
+    """Stream a job event (swallow errors so workers stay alive)."""
     emit_job_stream(job, message_type, content, meta or None, swallow_errors=True)
 
 
@@ -44,14 +45,17 @@ def reclaim_stuck_jobs(*, older_than_seconds: int | None = None) -> int:
         Job.objects.filter(status=JobStatus.RUNNING, updated_at__lt=cutoff)[:50]
     )
     n = 0
+    # Lazy import: job_run imports claim helpers from this module.
+    from peon.projects.job_run import finish_job
+
     for job in stuck:
-        job.status = JobStatus.FAILED
-        job.error = (job.error or "")[:1800] + (
-            f"\n[reclaimed] stuck RUNNING > {seconds}s"
+        err = (job.error or "").strip()
+        note = f"[reclaimed] stuck RUNNING > {seconds}s"
+        finish_job(
+            job,
+            status=JobStatus.FAILED,
+            error=(f"{err}\n{note}" if err else note)[:2000],
         )
-        job.completed_at = dj_tz.now()
-        job.save(update_fields=["status", "error", "completed_at", "updated_at"])
-        _emit(job, "error", f"Reclaimed stuck RUNNING job (>{seconds}s)")
         n += 1
     return n
 

@@ -1362,7 +1362,7 @@ main.shell { max-width: 1180px; }
   padding: 0.1rem 0 0;
 }
 
-/* n8n-style flow graph */
+/* n8n-style flow graph — content-sized canvas centered in the panel */
 .console-graph .agent-tree {
   max-height: 40rem;
   overflow: auto;
@@ -1370,10 +1370,15 @@ main.shell { max-width: 1180px; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 0.35rem;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
 }
 .flow-canvas {
   position: relative;
-  min-width: 100%;
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 .flow-edges {
   position: absolute;
@@ -1753,11 +1758,15 @@ body.war-room .console-graph .agent-tree {
   overflow-y: visible;
   min-height: 0;
   width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
 }
 body.war-room .console-graph .flow-canvas {
   display: block;
   max-width: none;
-  width: 100%;
+  width: auto;
+  min-width: 0;
 }
 body.war-room .console-workspace .terminal-host {
   height: min(32rem, 48vh);

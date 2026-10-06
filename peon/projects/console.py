@@ -1,23 +1,17 @@
-"""Console chat intents: classify, answer, instruct, replan, stop."""
+"""Console chat: Q&A, operator intents, and HITL prompts."""
 
 from __future__ import annotations
 
 import logging
-
 from django.core.exceptions import ObjectDoesNotExist
-
-from orchestrator.utils.llm import (
-    LLM_NOT_CONFIGURED,
-    chat_json,
-    chat_text,
-    llm_configured,
-)
-from peon.projects.crew_control import (
-    instruct_project,
-    replan_project,
-    stop_project,
-)
+from django.http import JsonResponse
+from django.urls import reverse
+from django.utils import timezone as dj_tz
+from orchestrator.utils.llm import LLM_NOT_CONFIGURED, chat_json, chat_text, llm_configured
+from peon.projects.crew_control import instruct_project, replan_project, stop_project
+from peon.projects.http_helpers import json_or_redirect, request_values, wants_json as request_wants_json
 from peon.projects.lifecycle import ProjectLifecycle
+from peon.projects.roe_ops import authorize_operator_scope
 from peon.projects.models import (
     Finding,
     Job,
@@ -25,12 +19,17 @@ from peon.projects.models import (
     ObjectiveStatus,
     Project,
     ProjectStatus,
+    TERMINAL_JOB_STATUSES,
+    JobDirectiveKind,
+    Objective,
+    OperatorPrompt,
 )
-from peon.projects.roe_ops import authorize_operator_scope
 from peon.projects.streaming import (
     anchor_job,
     audit_project_stream,
     has_live_agents,
+    emit_job_stream,
+    stream_meta,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,7 +60,6 @@ Do not invent findings, hosts, or scan results. If the context lacks the answer,
 Do not start scans or suggest out-of-scope probing; for new work the operator should
 send a work request (the console will replan)."""
 
-
 def _ack(job: Job | None, project: Project, text: str, *, tag: str, event: str) -> None:
 
     audit_project_stream(
@@ -74,13 +72,11 @@ def _ack(job: Job | None, project: Project, text: str, *, tag: str, event: str) 
         message_type="status" if tag in {"need", "stop"} else "log",
     )
 
-
 def _record_user(project: Project, text: str, *, event: str = "console_user") -> Job | None:
 
     return audit_project_stream(
         project, text, tag="you", event=event, role="user", message_type="log"
     )
-
 
 def _with_reply(
     result: dict,
@@ -105,7 +101,6 @@ def _with_reply(
         out.setdefault("primary_job_id", jid)
     return out
 
-
 def _objective_lines(project: Project, *, limit: int = 12) -> list[str]:
     rows = list(
         project.objectives.exclude(status=ObjectiveStatus.CANCELLED)
@@ -115,7 +110,6 @@ def _objective_lines(project: Project, *, limit: int = 12) -> list[str]:
     for o in rows:
         lines.append(f"• OBJ-{o.seq} [{o.status}] {o.title}")
     return lines
-
 
 def _replan_narration(project: Project, result: dict, operator_text: str) -> str:
     """Conversational ack for a replan — always shown in the chat thread."""
@@ -140,7 +134,6 @@ def _replan_narration(project: Project, result: dict, operator_text: str) -> str
         "status, findings, or to change direction."
     )
     return "\n".join(lines)
-
 
 def _project_brief(project: Project) -> str:
     """Compact SoT context for answer + routing (not a domain taxonomy)."""
@@ -189,7 +182,6 @@ def _project_brief(project: Project) -> str:
         lines.append(f"- Finding [Severity {sev}/{kind}] {title}")
     return "\n".join(lines)
 
-
 def _fallback_intent(project: Project, text: str) -> str:
     """Conservative routing when the classifier LLM is unavailable."""
     normalized = " ".join((text or "").strip().lower().split())
@@ -198,7 +190,6 @@ def _fallback_intent(project: Project, text: str) -> str:
     if normalized.endswith("?"):
         return "answer"
     return "instruct" if has_live_agents(project) else "replan"
-
 
 def _classify(project: Project, text: str) -> str:
     """Return answer|instruct|replan|stop for default chat mode."""
@@ -222,7 +213,6 @@ def _classify(project: Project, text: str) -> str:
     if intent not in {"answer", "instruct", "replan", "stop"}:
         intent = "answer"
     return intent
-
 
 def _do_replan(project: Project, text: str) -> dict:
     if not llm_configured():
@@ -253,7 +243,6 @@ def _do_replan(project: Project, text: str) -> dict:
         event="console_replan_reply",
     )
 
-
 def _do_instruct(
     project: Project, text: str, *, job_id: str | None = None
 ) -> dict:
@@ -281,7 +270,6 @@ def _do_instruct(
         tag="steer",
         event="console_instruct_reply",
     )
-
 
 def _answer(project: Project, text: str) -> dict:
     job = _record_user(project, text, event="console_ask")
@@ -333,4 +321,263 @@ def _do_stop(project: Project, text: str) -> dict:
         job=job,
         tag="ask",
         event="operator_stop_acked",
+    )
+
+
+def pending_operator_prompts(project: Project) -> list[dict]:
+    """Open HITL prompts + blocked objectives that need the operator."""
+    out: list[dict] = []
+    for p in OperatorPrompt.objects.filter(
+        project=project, resolved_at__isnull=True
+    ).select_related("job").order_by("created_at")[:20]:
+        out.append(
+            {
+                "id": str(p.id),
+                "kind": "prompt",
+                "question": p.question,
+                "job_id": str(p.job_id) if p.job_id else "",
+                "job_title": (p.job.title if p.job_id else "") or "",
+                "created_at": p.created_at.isoformat() if p.created_at else "",
+            }
+        )
+    for obj in Objective.objects.filter(
+        project=project, status=ObjectiveStatus.BLOCKED
+    ).order_by("seq")[:20]:
+        reason = (obj.blocked_reason or "").strip() or "Objective is blocked"
+        out.append(
+            {
+                "id": f"obj-{obj.id}",
+                "kind": "blocked_objective",
+                "question": f"OBJ-{obj.seq} {obj.title}: {reason}",
+                "job_id": "",
+                "job_title": "",
+                "objective_id": str(obj.id),
+                "created_at": obj.updated_at.isoformat() if obj.updated_at else "",
+            }
+        )
+    return out
+
+def create_operator_prompt(
+    project: Project,
+    question: str,
+    *,
+    job: Job | None = None,
+) -> OperatorPrompt:
+    """Record a HITL ask and emit a NEED feed line for the console."""
+    text = (question or "").strip()
+    if not text:
+        raise ValueError("question is required")
+    prompt = OperatorPrompt.objects.create(
+        project=project,
+        job=job,
+        question=text,
+    )
+    anchor = job or anchor_job(project)
+    if anchor is not None:
+        emit_job_stream(
+            anchor,
+            "status",
+            f"Operator input needed: {text}",
+            stream_meta(
+                project,
+                role="assistant",
+                tag="need",
+                event="need_input",
+                prompt_id=str(prompt.id),
+            ),
+        )
+    return prompt
+
+def _resolve_prompt(prompt: OperatorPrompt, reply: str) -> dict:
+
+    text = (reply or "").strip()
+    if not text:
+        raise ValueError("Reply is required")
+    prompt.reply = text
+    prompt.resolved_at = dj_tz.now()
+    prompt.save(update_fields=["reply", "resolved_at"])
+
+    note = (
+        "OPERATOR REPLY (human-in-the-loop):\n"
+        f"Question: {prompt.question}\n"
+        f"Answer: {text}\n\n"
+        "Honor this under Rules of Engagement and continue the objective."
+    )
+    job = prompt.job
+    steered: list[str] = []
+    if job is not None and job.status not in TERMINAL_JOB_STATUSES:
+        ProjectLifecycle.enqueue_job_directive(
+            job, note, kind=JobDirectiveKind.STEER
+        )
+        steered.append(str(job.id))
+    elif job is not None and job.status in TERMINAL_JOB_STATUSES:
+        ProjectLifecycle.enqueue_job_directive(
+            job, note, kind=JobDirectiveKind.FOLLOWUP
+        )
+        ProjectLifecycle.queue_job(job)
+        steered.append(str(job.id))
+    else:
+        result = ProjectLifecycle.route_operator_instruction(
+            prompt.project, note, record_stream=False
+        )
+        steered = list(result.get("job_ids") or [])
+        job = anchor_job(prompt.project)
+
+    if job is not None:
+        emit_job_stream(
+            job,
+            "log",
+            text,
+            stream_meta(
+                prompt.project,
+                role="user",
+                tag="you",
+                event="operator_reply",
+                prompt_id=str(prompt.id),
+            ),
+        )
+    reply = f"Reply delivered to {len(steered)} job(s). They will continue under Rules of Engagement."
+    return _with_reply(
+        {
+            "ok": True,
+            "mode": "reply",
+            "prompt_id": str(prompt.id),
+            "job_ids": steered,
+            "primary_job_id": str(job.id) if job else "",
+        },
+        prompt.project,
+        reply,
+        job=job,
+        tag="steer",
+        event="operator_reply_acked",
+    )
+
+def _first_pending_prompt(project: Project) -> OperatorPrompt | None:
+    return (
+        OperatorPrompt.objects.filter(project=project, resolved_at__isnull=True)
+        .order_by("created_at")
+        .first()
+    )
+
+
+logger = logging.getLogger(__name__)
+
+def handle_console_chat(
+    project: Project,
+    message: str,
+    *,
+    mode: str = "chat",
+    job_id: str | None = None,
+    prompt_id: str | None = None,
+) -> dict:
+    """Dispatch console chat. Default ``chat`` auto-routes; overrides stay explicit."""
+    m = (mode or "chat").strip().lower()
+    if m in {"auto", "ask"}:
+        m = "chat"
+    if m not in {"chat", "instruct", "replan", "stop", "reply"}:
+        m = "chat"
+
+    text = (message or "").strip()
+
+    if m == "stop":
+        return _do_stop(project, text)
+
+    if not text:
+        raise ValueError("Message is required")
+
+    if prompt_id:
+        pending = OperatorPrompt.objects.filter(
+            project=project, id=prompt_id, resolved_at__isnull=True
+        ).first()
+        if pending is None:
+            raise RuntimeError("Pending prompt not found or already answered")
+        return _resolve_prompt(pending, text)
+
+    if m == "reply":
+        pending = _first_pending_prompt(project)
+        if pending is None:
+            raise RuntimeError("No pending operator prompt to answer")
+        return _resolve_prompt(pending, text)
+
+    if m == "chat":
+        pending = _first_pending_prompt(project)
+        intent = _classify(project, text)
+        # Pending NEED + non-question message → treat as HITL reply.
+        if pending is not None and intent == "answer" and not text.rstrip().endswith("?"):
+            return _resolve_prompt(pending, text)
+        if intent == "stop":
+            return _do_stop(project, text)
+        if intent == "instruct":
+            return _do_instruct(project, text, job_id=job_id)
+        if intent == "replan":
+            return _do_replan(project, text)
+        return _answer(project, text)
+
+    if m == "replan":
+        return _do_replan(project, text)
+
+    # instruct — inject into current running objective agents (+ optional job)
+    return _do_instruct(project, text, job_id=job_id)
+
+def http_handle_console_chat(request, project: Project):
+    """Parse request + dispatch + dual JSON/HTML response for the chat endpoint."""
+
+    fields = request_values(
+        request, "message", "mode", "job_id", "prompt_id", defaults={"mode": "chat"}
+    )
+    message = fields["message"]
+    mode = (fields["mode"] or "chat").strip().lower()
+    job_id = fields["job_id"] or None
+    prompt_id = fields["prompt_id"] or None
+    detail = reverse("project_detail", kwargs={"pk": project.pk})
+
+    if mode != "stop" and not message:
+        return json_or_redirect(
+            request,
+            ok=False,
+            redirect_to=detail,
+            error="Message is required.",
+            status=400,
+        )
+
+    try:
+        result = handle_console_chat(
+            project, message, mode=mode, job_id=job_id, prompt_id=prompt_id
+        )
+    except RuntimeError as exc:
+        return json_or_redirect(
+            request, ok=False, redirect_to=detail, error=str(exc), status=409
+        )
+    except ValueError as exc:
+        return json_or_redirect(
+            request, ok=False, redirect_to=detail, error=str(exc), status=400
+        )
+    except Exception as exc:
+        logger.exception("console chat failed")
+        return json_or_redirect(
+            request,
+            ok=False,
+            redirect_to=detail,
+            error=f"Console action failed: {exc}",
+            status=500,
+        )
+
+    if request_wants_json(request):
+
+        return JsonResponse(result)
+
+    label = result.get("mode") or mode
+    if label == "stop":
+        flash = "Engagement paused."
+    elif label == "answer":
+        flash = "Answered."
+    elif label in {"reply", "instruct", "instruct_selected", "continue"}:
+        flash = f"Injected into {len(result.get('job_ids') or [])} agent(s)"
+    else:
+        flash = (
+            f"Replanned — {result.get('objectives', 0)} objectives; "
+            f"next job {result.get('primary_job_id') or '(none)'}"
+        )
+    return json_or_redirect(
+        request, ok=True, redirect_to=detail, flash=flash, flash_level="success"
     )

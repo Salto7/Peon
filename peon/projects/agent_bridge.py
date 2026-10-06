@@ -18,7 +18,7 @@ from orchestrator.agent.propose import propose_agents, specs_as_dicts
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.utils.paths import format_roe_block
 from peon.projects.agent_messaging import DjangoAgentMessaging
-from peon.projects.console_chat import create_operator_prompt
+from peon.projects.console import create_operator_prompt
 from peon.projects.findings import FindingStore
 from orchestrator.utils.commands import catalog_cli_in_command
 from orchestrator.utils.stream_events import (
@@ -27,7 +27,6 @@ from orchestrator.utils.stream_events import (
     event_of,
     hosts_in_command,
     is_event,
-    legacy_run_cli_command,
     payload_cli,
     payload_command,
     payload_hosts,
@@ -69,6 +68,12 @@ def agent_run_config() -> AgentRunConfig:
             "AGENT_RUNTIME_ENABLED": PeonSettings.get_bool(
                 "AGENT_RUNTIME_ENABLED", True
             ),
+            "CREW_REASONING_EFFORT": PeonSettings.get_str(
+                "CREW_REASONING_EFFORT", "low"
+            ),
+            "CREW_REASONING_MAX_ATTEMPTS": PeonSettings.get_int(
+                "CREW_REASONING_MAX_ATTEMPTS", 1
+            ),
         }
     )
 
@@ -78,6 +83,7 @@ class JobAgentBridge(AgentBridgeBase):
 
     def __init__(self, job: Job) -> None:
         self._job = job
+        self.replan_requested = False
 
     def emit(
         self, message_type: str, content: str, *, metadata: dict[str, Any] | None = None
@@ -275,34 +281,36 @@ class JobAgentBridge(AgentBridgeBase):
                 pass
         return f"OBJ-{obj.seq} → {obj.status}"
 
+    def _finding_payload(self, fields: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "title": str(fields.get("title") or "").strip(),
+            "severity": str(fields.get("severity") or "info"),
+            "kind": str(fields.get("kind") or "observation"),
+            "evidence": str(fields.get("evidence") or ""),
+            "host": str(fields.get("host") or ""),
+            "description": str(
+                fields.get("description") or fields.get("summary") or ""
+            ),
+            "asset_type": str(fields.get("asset_type") or ""),
+            "evidence_path": str(fields.get("evidence_path") or ""),
+            "remediation": str(fields.get("remediation") or ""),
+            "service": str(fields.get("service") or ""),
+            "port": fields.get("port"),
+            "cve_id": str(fields.get("cve_id") or ""),
+            "cwe_id": str(fields.get("cwe_id") or ""),
+            "metadata": fields.get("metadata")
+            if isinstance(fields.get("metadata"), dict)
+            else {},
+        }
+
     def record_finding(self, **fields: Any) -> str:
         if not self._job.project_id:
             return "No project on this job."
-        title = str(fields.get("title") or "").strip()
-        if not title:
+        if not str(fields.get("title") or "").strip():
             return "Error: title required."
-
-        description = str(fields.get("description") or fields.get("summary") or "")
         row = FindingStore().record(
             self._job.project,
-            {
-                "title": title,
-                "severity": str(fields.get("severity") or "info"),
-                "kind": str(fields.get("kind") or "observation"),
-                "evidence": str(fields.get("evidence") or ""),
-                "host": str(fields.get("host") or ""),
-                "description": description,
-                "asset_type": str(fields.get("asset_type") or ""),
-                "evidence_path": str(fields.get("evidence_path") or ""),
-                "remediation": str(fields.get("remediation") or ""),
-                "service": str(fields.get("service") or ""),
-                "port": fields.get("port"),
-                "cve_id": str(fields.get("cve_id") or ""),
-                "cwe_id": str(fields.get("cwe_id") or ""),
-                "metadata": fields.get("metadata")
-                if isinstance(fields.get("metadata"), dict)
-                else {},
-            },
+            self._finding_payload(fields),
             job=self._job,
             objective=self._job.objective,
         )
@@ -317,12 +325,20 @@ class JobAgentBridge(AgentBridgeBase):
             return f"Invalid JSON: {exc}"
         if not isinstance(rows, list):
             return "Expected a JSON list."
+        if not self._job.project_id:
+            return "No project on this job."
         n = 0
+        store = FindingStore()
         for row in rows:
-            if isinstance(row, dict) and row.get("title"):
-                msg = self.record_finding(**row)
-                if msg.startswith("Recorded"):
-                    n += 1
+            if not isinstance(row, dict) or not str(row.get("title") or "").strip():
+                continue
+            if store.record(
+                self._job.project,
+                self._finding_payload(row),
+                job=self._job,
+                objective=self._job.objective,
+            ):
+                n += 1
         return f"Recorded {n} finding(s)."
 
     def list_findings(self, kind: str = "") -> str:
@@ -409,6 +425,7 @@ class JobAgentBridge(AgentBridgeBase):
     def drain_operator_guidance(self) -> list[str]:
         """Consume pending JobDirective rows into agent-facing guidance strings."""
 
+        self.replan_requested = False
         with transaction.atomic():
             pending = list(
                 JobDirective.objects.select_for_update()
@@ -424,7 +441,13 @@ class JobAgentBridge(AgentBridgeBase):
                 text = (d.content or "").strip()
                 if not text:
                     continue
-                if d.kind == JobDirectiveKind.FOLLOWUP:
+                if d.kind == JobDirectiveKind.REPLAN:
+                    self.replan_requested = True
+                    out.append(
+                        "OPERATOR REPLAN — revise the engagement plan and continue "
+                        f"under Rules of Engagement:\n{text}"
+                    )
+                elif d.kind == JobDirectiveKind.FOLLOWUP:
                     out.append(
                         "OPERATOR FOLLOW-UP:\n"
                         f"{text}\n\n"
@@ -592,10 +615,7 @@ class JobAgentBridge(AgentBridgeBase):
             meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
             if event_of(meta) and not is_event(meta, EVENT_RUN_CLI):
                 continue
-            prev_cmd = (
-                payload_command(meta)
-                or legacy_run_cli_command(str(row.get("content") or ""))
-            )
+            prev_cmd = payload_command(meta)
             if not prev_cmd:
                 continue
             prev_cli = payload_cli(meta) or catalog_cli_in_command(prev_cmd)

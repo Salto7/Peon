@@ -173,6 +173,3 @@ class RoleAuthoring(SharedServiceBase):
             bootstrap_script=role.authoring_bootstrap_text(),
         )
 
-
-# Back-compat alias for imports that still say OpenCodeAuthoring.
-OpenCodeAuthoring = RoleAuthoring

@@ -7,7 +7,7 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from peon.projects.http_helpers import split_csv
-from peon.projects.planning_persist import PlanningService
+from peon.projects.planning import PlanningService
 from peon.projects.target_shapes import parse_target_lines
 
 

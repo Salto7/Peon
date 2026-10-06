@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from orchestrator.tools.catalog import CatalogTool, ToolCatalog
-from peon.projects.catalog_cards_base import CatalogCardsBase
+from peon.projects.catalog_cards.base import CatalogCardsBase
 
 
 class ToolCards(CatalogCardsBase):

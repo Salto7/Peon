@@ -123,23 +123,34 @@ class ObjectiveScheduler:
                 "objective is the analyzer."
             ),
         ]
-        # Dynamic index of prior-agent outputs (any tool format) so reporting
-        # roles do not guess paths or re-collect.
-        try:
-            ws = project_workspace_dir(str(project.id), create=False)
-            index = format_workspace_artifact_index(ws)
-        except Exception:
-            index = ""
-        if index:
-            parts.extend(
-                [
-                    "",
-                    "## Workspace artifacts from prior agents",
-                    "Read these with list_workspace_artifacts / read_workspace_artifact "
-                    "(do not re-scan to rediscover them):",
-                    index,
-                ]
-            )
+        # Artifact index only for reporting roles (keeps specialist briefs small).
+        role_id = (objective.role_id or "").strip()
+        wants_index = False
+        if role_id:
+            try:
+                from orchestrator.crew.roles.registry import RoleRegistry
+
+                role = RoleRegistry.shared().get(role_id)
+                caps = set(role.capabilities or ()) if role else set()
+                wants_index = bool(role and ("report" in caps or role_id == "analyzer"))
+            except Exception:
+                wants_index = role_id == "analyzer"
+        if wants_index:
+            try:
+                ws = project_workspace_dir(str(project.id), create=False)
+                index = format_workspace_artifact_index(ws)
+            except Exception:
+                index = ""
+            if index:
+                parts.extend(
+                    [
+                        "",
+                        "## Workspace artifacts from prior agents",
+                        "Read these with list_workspace_artifacts / "
+                        "read_workspace_artifact (do not re-scan to rediscover them):",
+                        index,
+                    ]
+                )
         return "\n".join(parts)
 
     def has_active_job(self, objective: Objective) -> bool:

@@ -35,7 +35,7 @@ from peon.projects.models import (
 )
 from peon.projects.objectives import ObjectiveScheduler
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.planning_persist import PlanningService
+from peon.projects.planning import PlanningService
 from peon.projects.streaming import project_message_dicts
 from peon.projects.roe_ops import roe_add_path
 from peon.projects.target_shapes import (
@@ -163,6 +163,7 @@ def settings_page(request: HttpRequest) -> HttpResponse:
         "projects/settings.html",
         {
             "fields": PeonSettings.field_meta(),
+            "categories": PeonSettings.categorized_fields(),
             "restart_needed": restart_needed,
             "nav": "settings",
         },

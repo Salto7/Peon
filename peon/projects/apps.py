@@ -118,6 +118,14 @@ def configure_orchestrator() -> None:
                 getattr(settings, "AGENT_MAX_SUBAGENT_DEPTH", 2) or 2
             ),
             agent_runtime_enabled=bool(getattr(settings, "AGENT_RUNTIME_ENABLED", True)),
+            crew_reasoning_effort=str(
+                getattr(settings, "CREW_REASONING_EFFORT", "low") or "low"
+            )
+            .strip()
+            .lower(),
+            crew_reasoning_max_attempts=int(
+                getattr(settings, "CREW_REASONING_MAX_ATTEMPTS", 1) or 1
+            ),
             agent_module=str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai")
             .strip()
             .lower()

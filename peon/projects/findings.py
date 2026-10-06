@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
+from django.conf import settings
 from django.db.models import Count, Q
 
+from orchestrator.packs import resolve_resource
 from peon.projects.models import Finding, FindingStatus, Job, Objective, Project
 from peon.projects.roe_ops import add_candidates
-from peon.projects.role_artifacts import ingest_role_artifacts
 from peon.projects.target_discovery import discovery_assets_from_finding
 from peon.projects.target_shapes import coerce_targets, sanitize_label
+
+logger = logging.getLogger(__name__)
 
 # Ranking scale for reports/UI — not a domain taxonomy.
 _SEVERITY_RANK = frozenset({"critical", "high", "medium", "low", "info"})
@@ -315,6 +322,56 @@ class FindingQueueIngestor:
         except OSError:
             pass
         return n
+
+
+def ingest_role_artifacts(job: Job, workspace: Path) -> None:
+    """Run ``assets/ingest_artifacts.py`` when a role pack provides one.
+
+    Scanners that leave raw tool output should omit this hook — the analyzer
+    AI role reads artifacts. Optional curating roles may write
+    ``workspace/findings_queue.jsonl``.
+    """
+    roles_dir = Path(settings.ROLES_DIR).resolve()
+    helpers = Path(settings.HELPERS_DIR).resolve()
+    env = os.environ.copy()
+    env["ORCHESTRATOR_WORKSPACE"] = str(workspace)
+    env["JOB_WORKSPACE"] = str(workspace)
+    py_path = [str(helpers)]
+    prior = env.get("PYTHONPATH") or ""
+    if prior:
+        py_path.append(prior)
+    env["PYTHONPATH"] = os.pathsep.join(py_path)
+
+    for raw in job.role_ids or []:
+        role_id = str(raw or "").strip()
+        if not role_id:
+            continue
+        pack = roles_dir / role_id
+        script = resolve_resource(pack, "assets/ingest_artifacts.py")
+        if script is None:
+            continue
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                cwd=str(workspace),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("role artifact ingest %s failed: %s", role_id, exc)
+            continue
+        if proc.returncode != 0:
+            logger.warning(
+                "role artifact ingest %s exit=%s stderr=%s",
+                role_id,
+                proc.returncode,
+                (proc.stderr or "")[:500],
+            )
+        elif proc.stdout:
+            logger.info("role artifact ingest %s: %s", role_id, proc.stdout.strip()[:300])
 
 
 def ingest_workspace_findings(job: Job, workspace: Path) -> int:

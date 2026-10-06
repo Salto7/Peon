@@ -57,6 +57,7 @@ class ProjectCrewRuntime(CrewRuntimeBase):
                 brief=brief,
                 role_ids=request.role_ids,
                 replan_note=request.steer if request.replan else "",
+                config=cfg,
             )
         except Exception as exc:
             scope.bridge.emit("error", f"crew build failed: {exc}")

@@ -110,7 +110,12 @@ class CrewAIJobRuntime(AgentRuntimeBase):
         scope.extras["role_id"] = role.id
 
         try:
-            agent = build_crew_agent(role)
+            agent = build_crew_agent(
+                role,
+                max_iterations=request.config.max_iterations,
+                reasoning_effort=request.config.crew_reasoning_effort,
+                reasoning_max_attempts=request.config.crew_reasoning_max_attempts,
+            )
         except Exception as exc:
             scope.bridge.emit("error", f"crew agent build failed: {exc}")
             return AgentRunResult(ok=False, error=str(exc))

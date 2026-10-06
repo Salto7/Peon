@@ -234,6 +234,14 @@ AGENT_MAX_SUBAGENTS = max(0, int(_env("AGENT_MAX_SUBAGENTS", "4") or 4))
 AGENT_MAX_SUBAGENT_DEPTH = max(1, int(_env("AGENT_MAX_SUBAGENT_DEPTH", "2") or 2))
 # Emergency kill switch (default on). Jobs use orchestrator.agent; false fails closed.
 AGENT_RUNTIME_ENABLED = _env_bool("AGENT_RUNTIME_ENABLED", True)
+# CrewAI PlanningConfig when ROLE.yaml sets reasoning: true.
+_CREW_EFFORT = (_env("CREW_REASONING_EFFORT", "low") or "low").strip().lower()
+CREW_REASONING_EFFORT = (
+    _CREW_EFFORT if _CREW_EFFORT in {"low", "medium", "high"} else "low"
+)
+CREW_REASONING_MAX_ATTEMPTS = max(
+    1, min(5, int(_env("CREW_REASONING_MAX_ATTEMPTS", "1") or 1))
+)
 # Orchestration module (crewai only on Peon-crewAI).
 AGENT_MODULE = (_env("AGENT_MODULE", "crewai") or "crewai").strip().lower()
 
@@ -241,3 +249,6 @@ AGENT_MODULE = (_env("AGENT_MODULE", "crewai") or "crewai").strip().lower()
 MAX_PARALLEL_PROJECTS = max(1, int(_env("MAX_PARALLEL_PROJECTS", "3") or 3))
 MAX_AGENTS_PER_PROJECT = max(1, int(_env("MAX_AGENTS_PER_PROJECT", "2") or 2))
 DRAMATIQ_THREADS = max(1, int(_env("DRAMATIQ_THREADS", "4") or 4))
+JOB_STUCK_RUNNING_SECONDS = max(
+    60, int(_env("JOB_STUCK_RUNNING_SECONDS", "7200") or 7200)
+)

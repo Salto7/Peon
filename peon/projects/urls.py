@@ -3,7 +3,6 @@
 from django.urls import path
 
 from peon.projects import project_control_views as control
-from peon.projects import project_job_views as jobs
 from peon.projects import project_pages as pages
 from peon.projects import terminal_views as term_views
 from peon.projects.search_palette import search_json
@@ -71,25 +70,25 @@ urlpatterns = [
     ),
     path("projects/<uuid:pk>/jobs/bulk/", control.jobs_bulk, name="jobs_bulk"),
     path("projects/<uuid:pk>/roe/", control.project_roe, name="project_roe"),
-    path("projects/<uuid:pk>/jobs.json", jobs.project_jobs_json, name="project_jobs_json"),
+    path("projects/<uuid:pk>/jobs.json", control.project_jobs_json, name="project_jobs_json"),
     path(
         "projects/<uuid:pk>/messages.json",
-        jobs.project_messages_json,
+        control.project_messages_json,
         name="project_messages_json",
     ),
-    path("projects/<uuid:pk>/jobs/<uuid:job_id>/start/", jobs.job_start, name="job_start"),
+    path("projects/<uuid:pk>/jobs/<uuid:job_id>/start/", control.job_start, name="job_start"),
     path(
-        "projects/<uuid:pk>/jobs/<uuid:job_id>/remove/", jobs.job_remove, name="job_remove"
+        "projects/<uuid:pk>/jobs/<uuid:job_id>/remove/", control.job_remove, name="job_remove"
     ),
     path("projects/<uuid:pk>/jobs/<uuid:job_id>/", pages.job_live, name="job_live"),
     path(
         "projects/<uuid:pk>/jobs/<uuid:job_id>/live.json",
-        jobs.job_live_json,
+        control.job_live_json,
         name="job_live_json",
     ),
     path(
         "projects/<uuid:pk>/jobs/<uuid:job_id>/steer/",
-        jobs.job_steer,
+        control.job_steer,
         name="job_steer",
     ),
 ]

@@ -27,12 +27,6 @@ def roe_block_reason(role_ids: Iterable[str] | None, scope: Iterable[Any] | None
     )
 
 
-# Back-compat aliases (call sites that iterate the frozenset get a live snapshot).
-def __getattr__(name: str):
-    if name == "ACTIVE_NETWORK_ROLES":
-        return _active_probe_role_ids()
-    raise AttributeError(name)
-
 def provision_project_roe(
     project: Project,
     *,

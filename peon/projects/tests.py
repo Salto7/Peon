@@ -6,7 +6,7 @@ from orchestrator.agent import JobScope
 from orchestrator.crew.flows.engagement import build_engagement_crew
 from orchestrator.crew.runtimes.job_crewai import project_crew_requested
 from orchestrator.planning import bookend_project_objectives
-from peon.projects.console_chat import (
+from peon.projects.console import (
     _do_instruct,
     _fallback_intent,
     handle_console_chat,
@@ -23,7 +23,7 @@ from peon.projects.models import (
     Project,
     ProjectStatus,
 )
-from peon.projects.planning_persist import validate_project_objectives
+from peon.projects.planning import validate_project_objectives
 
 
 class PlanningValidationTests(SimpleTestCase):
@@ -99,7 +99,10 @@ class CrewConfigurationTests(SimpleTestCase):
             if call.args[0].id == "project-manager"
         ]
         self.assertEqual(len(manager_calls), 1)
-        self.assertEqual(manager_calls[0].kwargs, {"tools": []})
+        self.assertEqual(manager_calls[0].kwargs.get("tools"), [])
+        self.assertEqual(manager_calls[0].kwargs.get("max_iterations"), 40)
+        self.assertEqual(manager_calls[0].kwargs.get("reasoning_effort"), "low")
+        self.assertEqual(manager_calls[0].kwargs.get("reasoning_max_attempts"), 1)
         self.assertNotIn("agent", task.call_args_list[0].kwargs)
 
 
@@ -181,7 +184,7 @@ class ManagerBookendTests(TestCase):
             status=JobStatus.RUNNING,
         )
         JobDirective.objects.create(
-            job=job, kind=JobDirectiveKind.STEER, content="REPLAN: expand ports"
+            job=job, kind=JobDirectiveKind.REPLAN, content="expand ports"
         )
 
         with (
@@ -250,8 +253,8 @@ class ConsoleChatRoutingTests(TestCase):
             "instruct",
         )
 
-    @patch("peon.projects.console_chat._do_instruct")
-    @patch("peon.projects.console_chat._classify", return_value="instruct")
+    @patch("peon.projects.console._do_instruct")
+    @patch("peon.projects.console._classify", return_value="instruct")
     def test_default_chat_can_instruct_live_agents(self, classify, instruct):
         instruct.return_value = {"ok": True, "mode": "instruct", "job_ids": []}
 
@@ -263,7 +266,7 @@ class ConsoleChatRoutingTests(TestCase):
         )
         self.assertEqual(result["mode"], "instruct")
 
-    @patch("peon.projects.console_intents._do_replan")
+    @patch("peon.projects.console._do_replan")
     def test_explicit_instruction_replans_if_no_agent_is_live(self, replan):
         replan.return_value = {"ok": True, "mode": "replan"}
 
@@ -275,7 +278,7 @@ class ConsoleChatRoutingTests(TestCase):
 
 class OperatorControlFacadeTests(TestCase):
     def test_console_stop_sets_crew_status_paused(self):
-        from peon.projects.console_chat import _do_stop
+        from peon.projects.console import _do_stop
 
         project = Project.objects.create(
             title="stop crew",

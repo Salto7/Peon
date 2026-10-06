@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 def process_job(job_id: str) -> None:
     """Claim PENDING→RUNNING then run the job agent inside the project sandbox."""
     # circular: tasks ↔ job_run
-    from peon.projects.job_run import _finish, run_job
+    from peon.projects.job_run import finish_job, run_job
 
     close_old_connections()
 
@@ -70,7 +70,7 @@ def process_job(job_id: str) -> None:
         run_job(job)
     except Exception as exc:
         logger.exception("process_job failed for %s", job_id)
-        _finish(job, status=JobStatus.FAILED, error=str(exc))
+        finish_job(job, status=JobStatus.FAILED, error=str(exc))
     finally:
         close_old_connections()
 

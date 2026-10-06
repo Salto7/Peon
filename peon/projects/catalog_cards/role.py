@@ -6,7 +6,7 @@ from typing import Any
 
 from orchestrator.crew.roles.registry import analyzer_role, manager_role
 from orchestrator.crew.roles.registry import RoleRegistry
-from peon.projects.catalog_cards_base import CatalogCardsBase
+from peon.projects.catalog_cards.base import CatalogCardsBase
 
 
 class RoleCards(CatalogCardsBase):

@@ -13,7 +13,7 @@
 
 ## Overview
 
-Peon turns a modular framwork shipped with Lang-gragh-based agent runtime that turns a prompt into a plan and objectives that (sub) agents execute. Objectives are fulfilled  by agents that are capable  of running  code, tools, and scripts in an **isolated Docker sandbox per project**.
+Peon turns a modular framework with a CrewAI agent runtime that turns a prompt into a plan and objectives that (sub) agents execute. Objectives are fulfilled by agents that are capable of running code, tools, and scripts in an **isolated Docker sandbox per project**.
 
 As an operator, you give your prompt with an optional Rules-Of-Engagements, you can also update scope, steer jobs, promote discoveries, triage findings, and take the report. Roles and tools extend as catalog files—not forked app code.
 

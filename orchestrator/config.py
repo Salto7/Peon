@@ -72,6 +72,9 @@ class RuntimeConfig:
     agent_max_subagents: int = 4
     agent_max_subagent_depth: int = 2
     agent_runtime_enabled: bool = True
+    # When ROLE.yaml sets reasoning: true — CrewAI PlanningConfig knobs.
+    crew_reasoning_effort: str = "low"
+    crew_reasoning_max_attempts: int = 1
     # Job/crew orchestration module (crewai only on Peon-crewAI).
     agent_module: str = "crewai"
     roles_dir: Path = field(default_factory=lambda: Path("roles").resolve())
@@ -137,6 +140,12 @@ class RuntimeConfig:
             agent_max_subagents=int(_env("AGENT_MAX_SUBAGENTS", "4") or 4),
             agent_max_subagent_depth=int(_env("AGENT_MAX_SUBAGENT_DEPTH", "2") or 2),
             agent_runtime_enabled=as_bool(_env("AGENT_RUNTIME_ENABLED", "true"), default=True),
+            crew_reasoning_effort=(
+                _env("CREW_REASONING_EFFORT", "low") or "low"
+            ).strip().lower(),
+            crew_reasoning_max_attempts=int(
+                _env("CREW_REASONING_MAX_ATTEMPTS", "1") or 1
+            ),
             agent_module=_env("AGENT_MODULE", "crewai") or "crewai",
             sandbox_enabled=as_bool(_env("SANDBOX_ENABLED", "true"), default=True),
             sandbox_image=_env("SANDBOX_IMAGE", "peon-sandbox:local"),

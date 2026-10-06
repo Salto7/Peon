@@ -35,10 +35,8 @@ def _load_class(path: str) -> type:
 
 
 def agent_module_id() -> str:
-    """Return configured module id (crewai). Legacy ``langgraph`` maps to crewai."""
-    raw = (get_config().agent_module or "crewai").strip().lower() or "crewai"
-    return "crewai" if raw == "langgraph" else raw
-
+    """Return configured module id (crewai only)."""
+    return (get_config().agent_module or "crewai").strip().lower() or "crewai"
 
 def get_job_runtime() -> AgentRuntimeBase:
     """Return the Job-level agent runtime for ``AGENT_MODULE``."""

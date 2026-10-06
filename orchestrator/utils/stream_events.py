@@ -162,11 +162,3 @@ def _normalize_host_token(token: str) -> str:
     except ValueError:
         pass
     return lower
-
-
-# Back-compat: older rows stored hosts only inside free-text ``run_cli: …``.
-def legacy_run_cli_command(content: str) -> str:
-    text = str(content or "").strip()
-    if text.lower().startswith("run_cli:"):
-        return text.split(":", 1)[-1].strip()
-    return ""
