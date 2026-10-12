@@ -49,14 +49,35 @@ def search_json(request: HttpRequest) -> JsonResponse:
             "label": "Shared catalog",
             "group": "Navigate",
             "href": reverse("catalog"),
-            "keywords": "roles tools",
+            "keywords": "roles skills tools",
         },
         {
-            "id": "nav-learn",
-            "label": "Toolsmith",
+            "id": "nav-lab",
+            "label": "Lab",
             "group": "Navigate",
-            "href": reverse("learn"),
-            "keywords": "learn lab author role tool yaml suggest writer forge",
+            "href": reverse("lab"),
+            "keywords": "learn lab toolsmith dream cognee author skill tool yaml",
+        },
+        {
+            "id": "nav-lab-toolsmith",
+            "label": "Lab · Toolsmith",
+            "group": "Navigate",
+            "href": reverse("lab_toolsmith"),
+            "keywords": "author skill tool yaml suggest writer forge",
+        },
+        {
+            "id": "nav-lab-skills",
+            "label": "Lab · Imported skills",
+            "group": "Navigate",
+            "href": reverse("lab_skills"),
+            "keywords": "claude skills import openskills marketplace",
+        },
+        {
+            "id": "nav-lab-dream",
+            "label": "Lab · Dream",
+            "group": "Navigate",
+            "href": reverse("lab_dream"),
+            "keywords": "cognee memory dream improve recall",
         },
         {
             "id": "nav-catalog-roles",
@@ -64,6 +85,13 @@ def search_json(request: HttpRequest) -> JsonResponse:
             "group": "Navigate",
             "href": reverse("catalog") + "#roles",
             "keywords": "role registry",
+        },
+        {
+            "id": "nav-catalog-skills",
+            "label": "Skills catalog",
+            "group": "Navigate",
+            "href": reverse("catalog") + "#skills",
+            "keywords": "skill packs SKILL.md",
         },
         {
             "id": "nav-catalog-tools",
@@ -125,17 +153,32 @@ def search_json(request: HttpRequest) -> JsonResponse:
             }
         )
 
-    findings = Finding.objects.select_related("project").all()
-    if q:
-        findings = findings.filter(
-            Q(title__icontains=q)
-            | Q(description__icontains=q)
-            | Q(host__icontains=q)
-            | Q(kind__icontains=q)
-            | Q(cve_id__icontains=q)
-            | Q(project__title__icontains=q)
-        )
-    for f in findings.order_by("-updated_at")[:PALETTE_FINDING_LIMIT]:
+    from peon.projects.db import iter_project_aliases
+
+    finding_rows: list[tuple[Finding, Project]] = []
+    for pid, alias in iter_project_aliases():
+        project = Project.objects.filter(pk=pid).first()
+        if project is None:
+            continue
+        qs = Finding.objects.using(alias).all()
+        if q:
+            qs = qs.filter(
+                Q(title__icontains=q)
+                | Q(description__icontains=q)
+                | Q(host__icontains=q)
+                | Q(kind__icontains=q)
+                | Q(cve_id__icontains=q)
+            )
+            if q.lower() not in (project.title or "").lower() and not qs.exists():
+                # still allow title match via project registry
+                if q.lower() in (project.title or "").lower():
+                    qs = Finding.objects.using(alias).all()
+                else:
+                    continue
+        for f in qs.order_by("-updated_at")[:PALETTE_FINDING_LIMIT]:
+            finding_rows.append((f, project))
+    finding_rows.sort(key=lambda pair: pair[0].updated_at or pair[0].created_at, reverse=True)
+    for f, project in finding_rows[:PALETTE_FINDING_LIMIT]:
         items.append(
             {
                 "id": f"finding-{f.id}",
@@ -143,8 +186,8 @@ def search_json(request: HttpRequest) -> JsonResponse:
                 "group": "Findings",
                 "href": reverse("project_detail", kwargs={"pk": f.project_id})
                 + "#findings",
-                "keywords": f"{f.kind} {f.severity} {f.host} {f.cve_id} {f.project.title}",
-                "meta": f"{f.severity} · {f.project.title}",
+                "keywords": f"{f.kind} {f.severity} {f.host} {f.cve_id} {project.title}",
+                "meta": f"{f.severity} · {project.title}",
             }
         )
 
@@ -209,24 +252,25 @@ def search_json(request: HttpRequest) -> JsonResponse:
         if tool_hits >= PALETTE_TOOL_LIMIT:
             break
 
-    running = (
-        Job.objects.filter(status=JobStatus.RUNNING)
-        .select_related("project")
-        .order_by("-updated_at")[:20]
-    )
-    for job in running:
-        if job.project_id is None:
+    for pid, alias in iter_project_aliases():
+        project = Project.objects.filter(pk=pid).first()
+        if project is None:
             continue
-        items.append(
-            {
-                "id": f"job-{job.id}",
-                "label": f"{job.title} (running)",
-                "group": "Active runs",
-                "href": reverse(
-                    "job_live", kwargs={"pk": job.project_id, "job_id": job.pk}
-                ),
-                "keywords": f"live {job.project.title if job.project else ''}",
-                "meta": "running",
-            }
-        )
+        for job in (
+            Job.objects.using(alias)
+            .filter(status=JobStatus.RUNNING)
+            .order_by("-updated_at")[:20]
+        ):
+            items.append(
+                {
+                    "id": f"job-{job.id}",
+                    "label": f"{job.title} (running)",
+                    "group": "Active runs",
+                    "href": reverse(
+                        "job_live", kwargs={"pk": job.project_id, "job_id": job.pk}
+                    ),
+                    "keywords": f"live {project.title}",
+                    "meta": "running",
+                }
+            )
     return JsonResponse({"items": items, "q": q})

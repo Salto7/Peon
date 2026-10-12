@@ -10,32 +10,28 @@ from django.utils import timezone as dj_tz
 
 from agent_runtime.api import Session
 from orchestrator.agent import JobScope, run_agent
-from orchestrator.crew.roles.registry import RoleRegistry, engagement_bookends
+from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.tools.catalog import CatalogProvisioner
 from orchestrator.utils.commands import pick_agent_command
 from orchestrator.utils.job_env import JobEnv
 from peon.projects.agent_bridge import JobAgentBridge, agent_run_config
-from peon.projects.crew_control import set_crew_status
+from peon.projects.crew_control import CrewControl
 from peon.projects.findings import ingest_workspace_findings
-from peon.projects.job_claim import _emit, claim_next_job
+from peon.projects.job_claim import claim_next_job, emit
 from peon.projects.lifecycle import ProjectLifecycle
 from peon.projects.models import (
-    TERMINAL_JOB_STATUSES,
+    INACTIVE_PROJECT_STATUSES,
     Job,
     JobDirective,
     JobStatus,
     ObjectiveStatus,
+    ProjectStatus,
 )
 from peon.projects.objectives import ObjectiveScheduler
 from peon.projects.roe_ops import provision_project_roe, roe_block_reason
 from peon.projects.sandbox import ProjectSandbox
 from peon.projects.target_shapes import coerce_targets
-from peon.projects.workspaces import resolve_job_workspace
-
-
-def _bookend_ids() -> tuple[str, str]:
-    """``(manager_id, analyzer_id)`` from ROLE.yaml hierarchy (may be empty)."""
-    return engagement_bookends()
+from peon.projects.workspaces import WorkspaceStore
 
 
 def _roe_blocks(job: Job) -> str | None:
@@ -66,24 +62,42 @@ def _targets_json_for_job(job: Job) -> tuple[str, str, str]:
     return json.dumps(scope), json.dumps(excl), json.dumps(seed)
 
 
-def _finish(job: Job, *, status: str, error: str = "", result: str | None = None) -> Job:
+def finish_job(job: Job, *, status: str, error: str = "", result: str | None = None) -> Job:
+    from peon.projects.db import refresh_project_kpis, using_project
+
     job.status = status
     job.error = error
     if result is not None:
         job.result = result
     job.completed_at = dj_tz.now()
-    job.save(
-        update_fields=["status", "error", "result", "completed_at", "updated_at"]
-    )
+    with using_project(job.project_id):
+        job.save(
+            update_fields=["status", "error", "result", "completed_at", "updated_at"]
+        )
+    if job.project_id:
+        try:
+            refresh_project_kpis(job.project_id)
+        except Exception:
+            pass
+    # Mandatory domain checkpoint before any downstream scheduling.
+    try:
+        from peon.projects.checkpoints import write_job_checkpoint
+
+        write_job_checkpoint(job, reason="job_finished")
+    except Exception:
+        # Never leave a terminal job without a checkpoint row.
+        from peon.projects.checkpoints import require_checkpoint_before_terminal
+
+        require_checkpoint_before_terminal(job)
 
     sched = ObjectiveScheduler()
+    recovery_replan = False
     if job.project_id and job.objective_id:
         obj = job.objective
         if obj is not None:
-            if status == JobStatus.COMPLETED:
-                sched.mark(obj, ObjectiveStatus.COMPLETED)
-            elif status == JobStatus.FAILED:
-                if obj.status in {
+            if status == JobStatus.FAILED:
+                # Only primary (non-child) failures block the objective + replan.
+                if job.parent_id is None and obj.status in {
                     ObjectiveStatus.PENDING,
                     ObjectiveStatus.IN_PROGRESS,
                 }:
@@ -92,44 +106,185 @@ def _finish(job: Job, *, status: str, error: str = "", result: str | None = None
                         ObjectiveStatus.BLOCKED,
                         reason=(error or "Job failed")[:2000],
                     )
-            elif status == JobStatus.CANCELLED:
-                if obj.status in {
-                    ObjectiveStatus.PENDING,
-                    ObjectiveStatus.IN_PROGRESS,
-                    ObjectiveStatus.BLOCKED,
-                }:
+                    recovery_replan = _enqueue_failure_replan(job, error)
+
+            # Settle only after every agent tagged to this objective has
+            # finished. A failed/cancelled child cannot be masked by whichever
+            # sibling happens to finish last.
+            if (
+                obj.status != ObjectiveStatus.COMPLETED
+                and sched.all_jobs_terminal(obj)
+            ):
+                objective_statuses = set(
+                    obj.jobs.values_list("status", flat=True)
+                )
+                if JobStatus.FAILED in objective_statuses:
+                    if obj.status != ObjectiveStatus.BLOCKED:
+                        failed = (
+                            obj.jobs.filter(status=JobStatus.FAILED)
+                            .order_by("completed_at", "created_at")
+                            .first()
+                        )
+                        sched.mark(
+                            obj,
+                            ObjectiveStatus.BLOCKED,
+                            reason=(
+                                (failed.error if failed is not None else "")
+                                or "One or more objective jobs failed"
+                            )[:2000],
+                        )
+                elif JobStatus.CANCELLED in objective_statuses:
                     sched.mark(obj, ObjectiveStatus.CANCELLED)
+                else:
+                    sched.mark(obj, ObjectiveStatus.COMPLETED)
     elif job.project_id and status == JobStatus.CANCELLED:
         ProjectLifecycle.cancel_open_objectives_for_roles(job.project, job.role_ids or [])
 
+    # Structured transcript for finish.
+    try:
+        from orchestrator.agent.transcript import record_from_event
+        from orchestrator.utils.stream_events import EVENT_WORK_FINISHED
+
+        bridge = JobAgentBridge(job)
+        bridge.append_transcript(
+            record_from_event(
+                category="error" if status == JobStatus.FAILED else "outcome",
+                summary=f"job → {status}"
+                + (f": {(error or '')[:400]}" if error else ""),
+                project_id=str(job.project_id or ""),
+                objective_id=str(job.objective_id or ""),
+                job_id=str(job.id),
+                role_id=str((job.role_ids or [""])[0] if job.role_ids else ""),
+                event=EVENT_WORK_FINISHED,
+                payload={
+                    "status": status,
+                    "parent_job_id": str(job.parent_id or ""),
+                },
+            )
+        )
+    except Exception:
+        pass
+
     if error:
-        _emit(job, "error", error)
-    _emit(job, "status", f"Job → {status}", job_status=status)
+        emit(job, "error", error)
+    emit(job, "status", f"Job → {status}", job_status=status)
 
     if job.project_id and status == JobStatus.COMPLETED:
         try:
-            nxt = ObjectiveScheduler().enqueue_next(job.project)
-            if nxt is not None:
-                _emit(job, "log", f"Queued next objective job {nxt.id}")
+            project = job.project
+            queued = ObjectiveScheduler().enqueue_ready(project)
+            if queued:
+                ids = ", ".join(str(j.id) for j in queued[:8])
+                emit(
+                    job,
+                    "log",
+                    f"Queued {len(queued)} ready objective job(s): {ids}",
+                )
         except Exception as exc:
-            _emit(job, "error", f"Failed to queue next objective: {exc}")
+            emit(job, "error", f"Failed to queue ready objectives: {exc}")
+        try:
+            from peon.projects.operator_spawn import OperatorSpawnService
+
+            ana_job = OperatorSpawnService.reopen_analyzer_after_child(job)
+            if ana_job is not None:
+                emit(
+                    job,
+                    "log",
+                    f"Re-queued analyzer after child artifacts: {ana_job.id}",
+                )
+        except Exception as exc:
+            emit(job, "error", f"Analyzer re-queue after child failed: {exc}")
 
     if job.project_id:
         ProjectLifecycle.reconcile_project_status(job.project)
+        if recovery_replan:
+            # Keep the engagement live for the queued PM recovery job.
+            project = job.project
+            project.refresh_from_db()
+            if project.status not in INACTIVE_PROJECT_STATUSES:
+                if project.status != ProjectStatus.ACTIVE:
+                    project.status = ProjectStatus.ACTIVE
+                    project.save(update_fields=["status", "updated_at"])
+                CrewControl.set_status(project, "running")
 
-    if status in TERMINAL_JOB_STATUSES and job.children.exists():
+    # Spawn fan-out: COMPLETED parents leave children running (claim allows that).
+    # FAILED / CANCELLED still cascade-kill so the tree cannot orphan forever.
+    if status in {JobStatus.FAILED, JobStatus.CANCELLED} and job.children.exists():
         ProjectLifecycle.cascade_steer_children(
             job, "kill", note=f"Orphaned: parent job → {status}"
         )
     return job
 
 
+def _enqueue_failure_replan(job: Job, error: str) -> bool:
+    """Queue a project-manager REPLAN when a specialist objective job fails.
+
+    When the failure-replan budget is exhausted, raise a typed HITL prompt
+    instead of silently stalling.
+    """
+    if not job.project_id or not job.objective_id:
+        return False
+    manager_id, _ = RoleRegistry.shared().engagement_bookends()
+    roles = [str(r).strip() for r in (job.role_ids or []) if str(r).strip()]
+    if manager_id and roles == [manager_id]:
+        return False
+    from peon.projects.crew_control import CrewControl
+    from peon.projects.hitl import failure_exhausted_prompt
+    from peon.projects.runtime_settings import PeonSettings
+
+    max_r = max(0, int(PeonSettings.get_int("AGENT_MAX_FAILURE_REPLANS", 2) or 0))
+    from peon.projects.db import qs_using
+
+    fails = (
+        qs_using(Job, job.project_id)
+        .filter(
+            project_id=job.project_id,
+            status=JobStatus.FAILED,
+            objective_id__isnull=False,
+        )
+        .count()
+    )
+    if fails > max_r:
+        emit(
+            job,
+            "log",
+            f"failure replan skipped (FAILED objective jobs={fails} > max={max_r}) — HITL",
+        )
+        try:
+            failure_exhausted_prompt(job, error, fails=fails, max_r=max_r)
+        except Exception as exc:
+            emit(job, "error", f"failure HITL prompt failed: {exc}")
+        return False
+    obj = job.objective
+    seq = getattr(obj, "seq", "?")
+    msg = (
+        f"Specialist job failed for OBJ-{seq} "
+        f"({', '.join(roles) or 'unknown role'}): {(error or 'failed')[:500]}\n"
+        "Replan: unblock or replace the failed work; keep completed objectives; "
+        "ensure the analyzer can still run when enough evidence exists."
+    )
+    try:
+        result = CrewControl.replan(job.project, msg)
+        emit(
+            job,
+            "log",
+            f"Queued PM replan after failure: {result.get('primary_job_id') or '-'}",
+        )
+        return True
+    except Exception as exc:
+        emit(job, "error", f"failure replan enqueue failed: {exc}")
+        try:
+            failure_exhausted_prompt(job, error, fails=fails, max_r=max_r)
+        except Exception:
+            pass
+        return False
+
 def _steer_stop(job: Job, lines: list[str]) -> Job | None:
     """If operator cancelled/paused mid-run, persist and return the job; else None."""
     job.refresh_from_db()
     joined = "\n\n".join(lines)
     if job.status == JobStatus.CANCELLED:
-        return _finish(
+        return finish_job(
             job,
             status=JobStatus.CANCELLED,
             error=job.error or "Cancelled",
@@ -157,11 +312,8 @@ def _bind_job_env(job: Job, ws: Path):
             getattr(settings, "RPC_SOCKET_PATH", "") or ""
         ),
         "ORCHESTRATOR_RPC_TOKEN": str(getattr(settings, "RPC_TOKEN", "") or ""),
-        "ROLES_DIR": str(settings.ROLES_DIR),
+        "SKILLS_DIR": str(settings.SKILLS_DIR),
         "HELPERS_DIR": str(settings.HELPERS_DIR),
-        "SANDBOX_ROLES_PATH": str(
-            getattr(settings, "SANDBOX_ROLES_PATH", "") or settings.ROLES_DIR
-        ),
         "TOOLS_CATALOG_DIR": str(settings.TOOLS_CATALOG_DIR),
         "ORCHESTRATOR_IN_SCOPE": scope_json,
         "ORCHESTRATOR_EXCLUSIONS": excl_json,
@@ -192,12 +344,14 @@ def _operator_role_command(job: Job) -> str:
 
 def _manager_needs_llm(job: Job) -> bool:
     """True when the manager bookend must run as an LLM (replan / steer)."""
-    brief = f"{job.title or ''}\n{job.description or ''}".upper()
-    if "REPLAN" in brief:
-        return True
-    if JobDirective.objects.filter(job_id=job.id, consumed_at__isnull=True).exists():
-        return True
-    return False
+    from peon.projects.db import project_alias_or_default
+
+    alias = project_alias_or_default(job.project_id)
+    return (
+        JobDirective.objects.using(alias)
+        .filter(job_id=job.id, consumed_at__isnull=True)
+        .exists()
+    )
 
 
 def _run_manager_dispatch(job: Job, *, role_id: str = "") -> Job:
@@ -210,11 +364,15 @@ def _run_manager_dispatch(job: Job, *, role_id: str = "") -> Job:
     stopped = _steer_stop(job, [])
     if stopped is not None:
         return stopped
-    rid = (role_id or "").strip() or _bookend_ids()[0] or "project-manager"
+    rid = (
+        (role_id or "").strip()
+        or RoleRegistry.shared().engagement_bookends()[0]
+        or "project-manager"
+    )
     note = "Manager bookend: dispatch next ready objective (deterministic, no LLM)"
-    _emit(job, "status", note, role_id=rid)
-    _emit(job, "result", note, role_id=rid)
-    return _finish(
+    emit(job, "status", note, role_id=rid)
+    emit(job, "result", note, role_id=rid)
+    return finish_job(
         job,
         status=JobStatus.COMPLETED,
         error="",
@@ -222,43 +380,138 @@ def _run_manager_dispatch(job: Job, *, role_id: str = "") -> Job:
     )
 
 
+def _job_skill_ids(job: Job) -> list[str]:
+    skills = [
+        str(s).strip()
+        for s in (getattr(job, "skill_ids", None) or [])
+        if str(s).strip()
+    ]
+    if not skills and job.objective_id and job.objective is not None:
+        skills = [
+            str(s).strip()
+            for s in (getattr(job.objective, "skill_ids", None) or [])
+            if str(s).strip()
+        ]
+    return skills
+
+
+# Crew / capability names that execute inside the bound project sandbox.
+_SANDBOX_COMMAND_TOOLS = frozenset(
+    {
+        "bash",
+        "run_skill_script",
+        "run_periodic",
+        "sandbox_status",
+        "provision_cli",
+        "load_skill",
+        "read_skill_resource",
+    }
+)
+
+
+def _job_needs_sandbox(role_ids: list[str], skill_ids: list[str] | None = None) -> bool:
+    """True when this job will run commands. Those run only in its sandbox.
+
+    Technical and manager agents receive Claude ``bash``. Skill packs may add
+    ``run_skill_script`` / progressive tools. Any of those require the worker
+    to bind the project sandbox before the agent starts.
+    """
+    from orchestrator.skills.bind import (
+        effective_tools,
+        progressive_tool_names,
+        resolve_skill_ids,
+    )
+
+    requested = list(skill_ids or [])
+    reg = RoleRegistry.shared()
+    for rid in role_ids:
+        role = reg.get(rid)
+        if role is None:
+            return True
+        if role.is_technical or role.is_manager:
+            return True
+        if role.allow_binaries:
+            return True
+        selected = resolve_skill_ids(role, requested or None)
+        if progressive_tool_names(selected, role_id=rid):
+            return True
+        surface = set(role.tools or ()) | set(effective_tools(role, selected))
+        if _SANDBOX_COMMAND_TOOLS.intersection(surface):
+            return True
+    return False
+
+
+def _defer_for_objective_dependencies(job: Job) -> Job:
+    """Return a claimed job to PENDING and retry after its objective gates."""
+    from peon.projects.db import project_alias_or_default, using_project
+
+    alias = project_alias_or_default(job.project_id)
+    with using_project(job.project_id):
+        Job.objects.using(alias).filter(pk=job.pk, status=JobStatus.RUNNING).update(
+            status=JobStatus.PENDING,
+            started_at=None,
+            error="",
+        )
+        job = Job.objects.using(alias).get(pk=job.pk)
+    emit(
+        job,
+        "status",
+        "Waiting for objective dependencies",
+        job_status=JobStatus.PENDING,
+    )
+    try:
+        from peon.projects.tasks import process_job
+
+        process_job.send_with_options(args=(str(job.id),), delay=5_000)
+    except Exception:
+        # Poll workers may still claim the PENDING row when Dramatiq is off.
+        pass
+    return job
+
+
 def run_job(job: Job) -> Job:
     """Provision sandbox, then run the Job agent (single executor)."""
-    block = _roe_blocks(job)
-    if block:
-        return _finish(job, status=JobStatus.FAILED, error=block, result="")
-
     names = [str(n).strip() for n in (job.role_ids or []) if str(n).strip()]
     if not names and job.objective_id and job.objective:
         names = ObjectiveScheduler().roles_for(job.objective)
         job.role_ids = names
         job.save(update_fields=["role_ids", "updated_at"])
     if not names:
-        return _finish(job, status=JobStatus.FAILED, error="No role_ids on Job")
+        return finish_job(job, status=JobStatus.FAILED, error="No role_ids on Job")
 
     if job.objective_id and job.objective is not None:
         obj = job.objective
         if obj.status == ObjectiveStatus.CANCELLED:
-            return _finish(
+            return finish_job(
                 job,
                 status=JobStatus.CANCELLED,
                 error="Objective cancelled",
                 result="",
             )
+        if obj.status == ObjectiveStatus.COMPLETED:
+            return finish_job(
+                job,
+                status=JobStatus.CANCELLED,
+                error="Objective already completed",
+                result="",
+            )
         if not ObjectiveScheduler().dependencies_met(obj):
-            why = f"OBJ-{obj.seq} dependencies not met"
-            ObjectiveScheduler().mark(obj, ObjectiveStatus.BLOCKED, reason=why)
-            return _finish(job, status=JobStatus.FAILED, error=why, result="")
-        ObjectiveScheduler().mark(obj, ObjectiveStatus.IN_PROGRESS)
+            return _defer_for_objective_dependencies(job)
+        if obj.status != ObjectiveStatus.IN_PROGRESS:
+            ObjectiveScheduler().mark(obj, ObjectiveStatus.IN_PROGRESS)
 
-    _emit(
+    block = _roe_blocks(job)
+    if block:
+        return finish_job(job, status=JobStatus.FAILED, error=block, result="")
+
+    emit(
         job,
         "status",
         f"Running roles: {', '.join(names)}",
         job_status=JobStatus.RUNNING,
     )
 
-    manager_id, _analyzer_id = _bookend_ids()
+    manager_id, _analyzer_id = RoleRegistry.shared().engagement_bookends()
     resume = bool(getattr(job, "resume_from_checkpoint", False))
     if resume:
         job.resume_from_checkpoint = False
@@ -276,46 +529,64 @@ def run_job(job: Job) -> Job:
     ):
         return _run_manager_dispatch(job, role_id=manager_id)
 
-    ws = resolve_job_workspace(job)
+    ws = WorkspaceStore.for_job(job)
     token = _bind_job_env(job, ws)
     try:
-        try:
-            project_id = str(job.project_id or "")
-            sb = ProjectSandbox.provision(
-                project_id,
-                workspace=ws,
-                roles_dir=Path(settings.ROLES_DIR),
-                helpers_dir=Path(settings.HELPERS_DIR),
-                tools_dir=Path(settings.TOOLS_CATALOG_DIR),
-            )
-            _emit(
-                job,
-                "log",
-                f"sandbox {sb.mode}:{sb.name} ({sb.action})"
-                + (f" base_cmds={len(sb.base_commands)}" if sb.base_commands else ""),
-            )
-            cli_names: list[str] = []
-            reg = RoleRegistry.shared()
-            for rid in names:
-                role = reg.get(rid)
-                if role is None:
-                    continue
-                for cli in role.allow_binaries:
-                    if cli not in cli_names:
-                        cli_names.append(cli)
-            # Role allow_binaries drive catalog installs; skips CLIs already on PATH.
-            if cli_names:
-                provision = CatalogProvisioner.shared().provision(
-                    cli_names, workspace=ws
+        if _job_needs_sandbox(names, _job_skill_ids(job)):
+            try:
+                project_id = str(job.project_id or "")
+                sb = ProjectSandbox.provision(
+                    project_id,
+                    workspace=ws,
+                    skills_dir=Path(settings.SKILLS_DIR),
+                    helpers_dir=Path(settings.HELPERS_DIR),
+                    tools_dir=Path(settings.TOOLS_CATALOG_DIR),
                 )
-                if provision.installed:
-                    _emit(job, "log", "provisioned: " + ", ".join(provision.installed))
-                if provision.verified:
-                    _emit(job, "log", "verified CLIs: " + ", ".join(provision.verified))
-                if provision.errors:
-                    _emit(job, "error", "CLI provision: " + "; ".join(provision.errors))
-        except Exception as exc:
-            _emit(job, "error", f"sandbox/provision error: {exc}")
+                emit(
+                    job,
+                    "log",
+                    f"sandbox {sb.mode}:{sb.name} ({sb.action})"
+                    + (
+                        f" base_cmds={len(sb.base_commands)}"
+                        if sb.base_commands
+                        else ""
+                    ),
+                )
+                cli_names: list[str] = []
+                reg = RoleRegistry.shared()
+                for rid in names:
+                    role = reg.get(rid)
+                    if role is None:
+                        continue
+                    for cli in role.allow_binaries:
+                        if cli not in cli_names:
+                            cli_names.append(cli)
+                if cli_names:
+                    provision = CatalogProvisioner.shared().provision(
+                        cli_names, workspace=ws
+                    )
+                    if provision.installed:
+                        emit(
+                            job,
+                            "log",
+                            "provisioned: " + ", ".join(provision.installed),
+                        )
+                    if provision.verified:
+                        emit(
+                            job,
+                            "log",
+                            "verified CLIs: " + ", ".join(provision.verified),
+                        )
+                    if provision.errors:
+                        emit(
+                            job,
+                            "error",
+                            "CLI provision: " + "; ".join(provision.errors),
+                        )
+            except Exception as exc:
+                emit(job, "error", f"sandbox/provision error: {exc}")
+        else:
+            emit(job, "log", "sandbox skipped (report/bridge-only role tools)")
 
         stopped = _steer_stop(job, [])
         if stopped is not None:
@@ -348,13 +619,16 @@ def run_job_via_agent(
     names = list(role_ids)
     if names:
         extras["role_id"] = str(names[0])
+    skills = _job_skill_ids(job)
+    if skills:
+        extras["skill_ids"] = skills
     if job.project_id:
         project = job.project
         if getattr(project, "crew_flow_id", ""):
             extras["crew_flow_id"] = str(project.crew_flow_id)
         # Objective-backed projects use one Job per objective. Only a manager
         # Job outside that graph requests an all-in-one crew flow.
-        manager_id, _ = _bookend_ids()
+        manager_id, _ = RoleRegistry.shared().engagement_bookends()
         if (
             manager_id
             and extras.get("role_id") == manager_id
@@ -364,11 +638,17 @@ def run_job_via_agent(
 
     bridge = JobAgentBridge(job)
     steer_bits = bridge.drain_operator_guidance()
+    if resume:
+        try:
+            from peon.projects.checkpoints import resume_context_text
+
+            ckpt_text = resume_context_text(job)
+            if ckpt_text:
+                steer_bits.insert(0, ckpt_text)
+        except Exception:
+            pass
     steer = "\n\n".join(steer_bits).strip()
-    if any(b.startswith("OPERATOR") and "REPLAN" in b.upper() for b in steer_bits):
-        extras["replan"] = True
-    # Directives that literally start with REPLAN: mark crew replan.
-    if "REPLAN:" in steer.upper():
+    if bridge.replan_requested:
         extras["replan"] = True
 
     scope = JobScope(
@@ -382,7 +662,7 @@ def run_job_via_agent(
         bridge=bridge,
         extras=extras,
     )
-    _emit(
+    emit(
         job,
         "status",
         f"Agent runtime (max_iter={cfg.max_iterations}"
@@ -393,13 +673,13 @@ def run_job_via_agent(
     )
     if job.project_id and extras.get("crew_mode") == "project":
         try:
-            set_crew_status(job.project, "running")
+            CrewControl.set_status(job.project, "running")
         except Exception:
             pass
     result = run_agent(scope, cfg, resume=resume, steer=steer)
     if job.project_id and extras.get("crew_mode") == "project":
         try:
-            set_crew_status(
+            CrewControl.set_status(
                 job.project,
                 "done" if result.ok else "stopped",
                 flow_id=str(scope.extras.get("crew_flow_id") or ""),
@@ -409,18 +689,18 @@ def run_job_via_agent(
     try:
         n = ingest_workspace_findings(job, Path(workspace))
         if n:
-            _emit(job, "log", f"ingested {n} finding(s) from queue")
+            emit(job, "log", f"ingested {n} finding(s) from queue")
     except Exception as exc:
-        _emit(job, "error", f"finding ingest: {exc}")
+        emit(job, "error", f"finding ingest: {exc}")
 
     if result.ok:
-        return _finish(
+        return finish_job(
             job,
             status=JobStatus.COMPLETED,
             error="",
             result=result.output or "",
         )
-    return _finish(
+    return finish_job(
         job,
         status=JobStatus.FAILED,
         error=(result.error or "agent failed")[:2000],
@@ -436,4 +716,13 @@ def process_one() -> Job | None:
     try:
         return run_job(job)
     except Exception as exc:
-        return _finish(job, status=JobStatus.FAILED, error=str(exc))
+        return finish_job(job, status=JobStatus.FAILED, error=str(exc))
+
+
+class JobExecutionService:
+    """Cohesive entry point for claiming, running, and settling jobs."""
+
+    finish = staticmethod(finish_job)
+    run = staticmethod(run_job)
+    run_via_agent = staticmethod(run_job_via_agent)
+    process_one = staticmethod(process_one)

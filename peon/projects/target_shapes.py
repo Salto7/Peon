@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from dataclasses import dataclass
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
@@ -26,9 +27,14 @@ _IP_RE = re.compile(
 )
 _ASN_RE = re.compile(r"^AS(\d{1,10})$", re.I)
 _SERVICE_RE = re.compile(
-    r"^((?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)"
-    r"|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})"
-    r":(\d{1,5})$",
+    r"^(?:\[(?P<bracket_host>[^\]\s]+)\]|(?P<host>[^:/\s]+))"
+    r":(?P<port>\d{1,5})(?:/(?P<protocol>[a-z][a-z0-9_-]{0,15}))?$",
+    re.I,
+)
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}\.?$)"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$",
     re.I,
 )
 # Digest lengths only (md5/sha1/sha256/sha512) — standards, not file extensions.
@@ -88,6 +94,50 @@ def normalize_ip(value: str) -> str | None:
         return None
 
 
+def _as_network(value: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        if "/" in raw:
+            return ipaddress.ip_network(raw, strict=False)
+        return ipaddress.ip_network(f"{ipaddress.ip_address(raw)}/32", strict=False)
+    except ValueError:
+        return None
+
+
+def target_authorized_by_scope(target: str, scope_values: Iterable[str]) -> bool:
+    """True when ``target`` equals / is covered by an authorized scope entry.
+
+    CIDR/IP: a narrower netblock or host inside an authorized supernet is allowed
+    (``192.168.10.64/26`` under ``192.168.10.0/24``). Hostnames/URLs keep
+    exact/substring match for non-IP targets.
+    """
+    needle = (target or "").strip().lower()
+    if not needle:
+        return False
+    scope = [str(s or "").strip().lower() for s in scope_values if str(s or "").strip()]
+    if not scope:
+        return False
+    if any(needle == s or needle in s or s in needle for s in scope):
+        return True
+    want = _as_network(needle)
+    if want is None:
+        return False
+    for s in scope:
+        auth = _as_network(s)
+        if auth is None:
+            continue
+        try:
+            if want.version != auth.version:
+                continue
+            if want.subnet_of(auth) or want == auth:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 def url_host(raw: str) -> str:
     """Hostname from a URL-ish string, or empty on failure."""
     try:
@@ -96,9 +146,61 @@ def url_host(raw: str) -> str:
         return ""
 
 
+@dataclass(frozen=True)
+class ServiceEndpoint:
+    """Parsed structured service asset (``host:port[/protocol]``)."""
+
+    host: str
+    port: int
+    protocol: str = ""
+
+    @property
+    def value(self) -> str:
+        rendered_host = f"[{self.host}]" if ":" in self.host else self.host
+        base = f"{rendered_host}:{self.port}"
+        return f"{base}/{self.protocol}" if self.protocol else base
+
+
+def parse_service(value: str) -> ServiceEndpoint | None:
+    """Parse and normalize the service asset contract."""
+    raw = (value or "").strip().rstrip(".,;")
+    match = _SERVICE_RE.fullmatch(raw)
+    if not match:
+        return None
+    port = int(match.group("port"))
+    if not 1 <= port <= 65535:
+        return None
+    raw_host = match.group("bracket_host") or match.group("host") or ""
+    host = normalize_ip(raw_host)
+    if host is None:
+        if match.group("bracket_host") or not _HOSTNAME_RE.fullmatch(raw_host):
+            return None
+        host = raw_host.lower().rstrip(".")
+    protocol = (match.group("protocol") or "").lower()
+    return ServiceEndpoint(host=host, port=port, protocol=protocol)
+
+
+def format_service(host: str, port: int, protocol: str = "") -> str | None:
+    """Build the canonical service value from structured fields."""
+    raw_host = (host or "").strip()
+    normalized_host = normalize_ip(raw_host)
+    if normalized_host is None:
+        if not _HOSTNAME_RE.fullmatch(raw_host):
+            return None
+        normalized_host = raw_host.lower().rstrip(".")
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= port_i <= 65535:
+        return None
+    protocol_s = sanitize_label(protocol, default="", max_len=16)
+    return ServiceEndpoint(normalized_host, port_i, protocol_s).value
+
+
 def detect_shape(value: str) -> str:
     """Standards shape of a bare value: ip|netblock|url|email|asn|service|hash|''."""
-    v = (value or "").strip().rstrip(".,;:")
+    v = (value or "").strip().rstrip(".,;")
     if not v:
         return ""
     if _URL_RE.match(v):
@@ -113,16 +215,13 @@ def detect_shape(value: str) -> str:
         return "netblock"
     if normalize_ip(v):
         return "ip"
-    svc = _SERVICE_RE.fullmatch(v)
-    if svc:
-        port = int(svc.group(2))
-        if 1 <= port <= 65535:
-            return "service"
+    if parse_service(v):
+        return "service"
     return ""
 
 
 def _clean_value(value: str) -> str | None:
-    v = (value or "").strip().rstrip(".,;:")
+    v = (value or "").strip().rstrip(".,;")
     if not v or len(v) < 1:
         return None
     if v.lower() in _STOP:
@@ -133,11 +232,10 @@ def _clean_value(value: str) -> str | None:
 
 
 def accept_asset(value: str, typ: str = "") -> dict[str, str] | None:
-    """Accept a producer asset: trust ``typ`` when set; else standards shape only.
+    """Accept and canonicalize a producer asset.
 
-    This replaces a central type oracle. Unknown producer types are kept.
-    Untyped free text is only accepted when IP / CIDR / URL / email / ASN /
-    service / hash is unambiguous.
+    Intrinsic shapes are authoritative; producer types remain available for
+    values without an unambiguous standards shape.
     """
     v = _clean_value(value)
     if not v:
@@ -149,32 +247,43 @@ def accept_asset(value: str, typ: str = "") -> dict[str, str] | None:
     if shape == "netblock":
         canon = normalize_netblock(v)
         if canon:
-            return {"type": hint or "netblock", "value": canon}
+            return {"type": "netblock", "value": canon}
     if shape == "ip":
         canon = normalize_ip(v) or v.split("/")[0]
-        return {"type": hint or "ip", "value": canon[:128]}
+        return {"type": "ip", "value": canon[:128]}
     if shape == "url":
-        return {"type": hint or "url", "value": v}
+        return {"type": "url", "value": v}
     if shape == "email":
-        return {"type": hint or "email", "value": v[:320]}
+        return {"type": "email", "value": v[:320]}
     if shape == "asn":
         m = _ASN_RE.fullmatch(v)
-        return {"type": hint or "asn", "value": f"AS{m.group(1)}" if m else v}
+        return {"type": "asn", "value": f"AS{m.group(1)}" if m else v}
     if shape == "service":
-        m = _SERVICE_RE.fullmatch(v)
-        if m:
-            return {
-                "type": hint or "service",
-                "value": f"{m.group(1).lower()}:{int(m.group(2))}",
-            }
+        endpoint = parse_service(v)
+        if endpoint:
+            return {"type": "service", "value": endpoint.value}
     if shape == "hash":
-        return {"type": hint or "hash", "value": v.lower()}
+        return {"type": "hash", "value": v.lower()}
 
     # Producer supplied a type — trust it (Amass: type comes from the plugin).
     if hint:
         return {"type": hint, "value": v}
 
     return None
+
+
+def canonical_asset_key(typ: str, value: str) -> str:
+    """Stable identity shared by RoE, findings, and the graph."""
+    accepted = accept_asset(value, typ)
+    if accepted is None:
+        family = sanitize_label(typ, default="other") or "other"
+        clean = (value or "").strip().lower()
+    else:
+        family = accepted["type"]
+        clean = accepted["value"].lower()
+    if family in {"host", "fqdn", "domain", "hostname"}:
+        family = "host"
+    return f"{family}:{clean}"[:400]
 
 
 def coerce_target(raw: Any) -> dict[str, str] | None:
@@ -222,14 +331,14 @@ def coerce_target(raw: Any) -> dict[str, str] | None:
 
 
 def coerce_targets(raw: Iterable[Any] | None) -> list[dict[str, str]]:
-    """Normalize targets; one entry per value. Prefer explicit type over ``other``."""
+    """Normalize targets and de-duplicate by canonical identity."""
     by_value: dict[str, dict[str, str]] = {}
     order: list[str] = []
     for item in raw or []:
         target = coerce_target(item)
         if target is None:
             continue
-        key = target["value"].lower()
+        key = canonical_asset_key(target.get("type", ""), target["value"])
         prev = by_value.get(key)
         if prev is None:
             by_value[key] = target

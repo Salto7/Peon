@@ -1,4 +1,4 @@
-"""Resolve missing CLI installs: tools/catalog YAML → planner."""
+"""Resolve missing CLI installs: Kali PATH → tools/catalog → LLM."""
 
 from __future__ import annotations
 
@@ -18,13 +18,16 @@ logger = logging.getLogger(__name__)
 
 
 def cli_on_path(binary: str) -> bool:
-    """True when the bound sandbox has ``binary`` on PATH (pre-install gate)."""
+    """True when the bound sandbox has ``binary`` on PATH (Kali / prior install)."""
     name = (binary or "").strip()
     return bool(name and Session.current().which(name))
 
 
 class InstallResolver(SharedServiceBase):
-    """Cascade install instructions until the binary is on PATH."""
+    """Provision until the binary is on PATH.
+
+    Order: (1) already on Kali PATH → (2) Peon ``tools/catalog`` → (3) LLM.
+    """
 
     def resolve(
         self,
@@ -36,19 +39,20 @@ class InstallResolver(SharedServiceBase):
         if not name:
             return True, "no binary to provision"
 
+        # 1) Already present in the Kali sandbox (or prior provision).
         if cli_on_path(name):
-            return True, f"{name} already installed"
+            return True, f"{name} already installed (Kali PATH)"
 
         errors: list[str] = []
 
-        # 1) tools/catalog YAML
+        # 2) Peon tools/catalog registry.
         cat = self._from_catalog(name)
         if cat is not None:
             if cat[0]:
                 return cat
             errors.append(cat[1])
 
-        # Explicit package from caller — only after catalog miss/fail.
+        # Optional explicit apt package from the caller (still before LLM).
         pkg = (package or "").strip()
         if pkg:
             ok, msg = self._apt([pkg], binary=name)
@@ -56,7 +60,7 @@ class InstallResolver(SharedServiceBase):
                 return True, msg
             errors.append(msg)
 
-        # 2) planner (LLM) — last resort
+        # 3) LLM planner — last resort.
         plan = self._from_planner(name, prior_error="; ".join(errors))
         if plan is not None:
             return plan

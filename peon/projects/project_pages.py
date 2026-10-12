@@ -18,8 +18,10 @@ from django.urls import reverse
 from django.views.decorators.http import require_GET, require_http_methods
 
 from peon.projects.findings import FindingStore
-from peon.projects.asset_graph import engagement_graph
+from peon.projects.asset_graph import AssetGraphEngine
 from peon.projects.http_helpers import (
+    scoped_get_or_404,
+    with_project_context,
     wants_json as request_wants_json,
 )
 from orchestrator.utils.llm import llm_configured
@@ -29,13 +31,15 @@ from peon.projects.models import (
     Job,
     JobStatus,
     Project,
+    ProjectKind,
     ProjectStatus,
     StreamMessage,
     StreamMessageType,
 )
+from peon.projects.plan_graph import plan_graph_payload
 from peon.projects.objectives import ObjectiveScheduler
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.planning_persist import PlanningService
+from peon.projects.planning import PlanningService
 from peon.projects.streaming import project_message_dicts
 from peon.projects.roe_ops import roe_add_path
 from peon.projects.target_shapes import (
@@ -52,7 +56,7 @@ from peon.projects.project_status import ProjectOpsPayload
 from peon.projects.catalog_cards.role import RoleCards
 from peon.projects.runtime_settings import PeonSettings
 from peon.projects.llm_proxy import LlmProxy
-from peon.projects.crew_control import set_crew_status
+from peon.projects.crew_control import CrewControl
 from peon.projects.role_job_tree import RoleJobTree
 
 PROJECT_LIST_LIMIT = 50
@@ -81,20 +85,37 @@ def home(request: HttpRequest) -> HttpResponse:
         }
         for p in projects
     ]
+    from django.db.models import Sum
+
+    from peon.projects.db import iter_project_aliases
+
     active_n = Project.objects.filter(status=ProjectStatus.ACTIVE).count()
     paused_n = Project.objects.filter(status=ProjectStatus.PAUSED).count()
-    running_jobs = Job.objects.filter(status=JobStatus.RUNNING).count()
-    failed_jobs = Job.objects.filter(status=JobStatus.FAILED).count()
-    failed_recent = list(
-        Job.objects.filter(status=JobStatus.FAILED)
-        .exclude(error="")
-        .select_related("project")[:HOME_ALERT_LIMIT]
+    agg = Project.objects.aggregate(
+        running=Sum("running_jobs"), failed=Sum("failed_jobs")
     )
-    stream_errors = list(
-        StreamMessage.objects.filter(message_type=StreamMessageType.ERROR)
-        .select_related("job", "job__project")
-        .order_by("-created_at")[:HOME_ALERT_LIMIT]
-    )
+    running_jobs = int(agg.get("running") or 0)
+    failed_jobs = int(agg.get("failed") or 0)
+    failed_recent = []
+    stream_errors = []
+    for pid, alias in iter_project_aliases():
+        if len(failed_recent) < HOME_ALERT_LIMIT:
+            for job in (
+                Job.objects.using(alias)
+                .filter(status=JobStatus.FAILED)
+                .exclude(error="")
+                .order_by("-updated_at")[: HOME_ALERT_LIMIT - len(failed_recent)]
+            ):
+                job.project = Project.objects.filter(pk=pid).first()
+                failed_recent.append(job)
+        if len(stream_errors) < HOME_ALERT_LIMIT:
+            for msg in (
+                StreamMessage.objects.using(alias)
+                .filter(message_type=StreamMessageType.ERROR)
+                .select_related("job")
+                .order_by("-created_at")[: HOME_ALERT_LIMIT - len(stream_errors)]
+            ):
+                stream_errors.append(msg)
     notices: list[str] = []
     if not llm_configured():
         notices.append("LLM API key is not configured — planning and Toolsmith are limited.")
@@ -131,13 +152,21 @@ def settings_page(request: HttpRequest) -> HttpResponse:
                 continue
             updates[key] = request.POST.get(key)
         prev_proxy = PeonSettings.get_bool("LLM_PROXY_ENABLED", False)
-        _values, restart_changed = PeonSettings.update(updates)
+        try:
+            _values, restart_changed = PeonSettings.update(updates)
+        except ValueError as exc:
+            messages.error(request, str(exc))
+            return redirect("settings_page")
         new_proxy = PeonSettings.get_bool("LLM_PROXY_ENABLED", False)
         if restart_changed:
             restart_needed = True
+            keys = ", ".join(restart_changed[:8])
+            more = f" (+{len(restart_changed) - 8} more)" if len(restart_changed) > 8 else ""
             messages.warning(
                 request,
-                "Saved. Restart the worker service for Dramatiq thread changes to apply.",
+                f"Saved. Restart Peon for these settings to apply: {keys}{more}. "
+                "Typically: docker compose restart web worker "
+                "(recreate cognee/edge if you changed their ports or compose env).",
             )
         else:
             messages.success(request, "Settings saved.")
@@ -163,6 +192,7 @@ def settings_page(request: HttpRequest) -> HttpResponse:
         "projects/settings.html",
         {
             "fields": PeonSettings.field_meta(),
+            "categories": PeonSettings.categorized_fields(),
             "restart_needed": restart_needed,
             "nav": "settings",
         },
@@ -221,6 +251,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
     operator_scope = bool((request.POST.get("in_scope") or "").strip())
     in_scope = parse_target_lines(request.POST.get("in_scope") or "")
     sandbox_runtime = (request.POST.get("sandbox_runtime") or "").strip()
+    kind = ProjectKind.resolve(request.POST.get("kind") or "")
     flashes: list[tuple[str, str]] = []
 
     # Uploads need a project id — create shell first without paths, then attach.
@@ -231,6 +262,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
         path_values=[],
         operator_supplied_scope=operator_scope,
         sandbox_runtime=sandbox_runtime,
+        kind=kind,
     )
     stage("create", "Created project", "done", project.title)
 
@@ -316,24 +348,50 @@ def _create_project_from_post(request: HttpRequest) -> dict:
                 "status": "done",
                 "detail": f"{n_obj} objective(s)",
             }
-            stage(
-                "start",
-                "Queued first agent",
-                "done",
-                job_title if result.job else "waiting for a ready objective",
-            )
-            msg = (
-                f"Created {project.title} — queued {job_title} ({n_obj} objectives)"
-            )
-            flashes.append(("success", msg))
-            out.update(
-                {
-                    "objectives": n_obj,
-                    "job_title": job_title if result.job else "",
-                    "plan_ok": True,
-                    "message": msg,
-                }
-            )
+            if project.kind == ProjectKind.DURABLE:
+                stage(
+                    "start",
+                    "Review durable plan",
+                    "done",
+                    "accept agent graph before start",
+                )
+                redirect_url = reverse("project_plan", kwargs={"pk": project.pk})
+                msg = (
+                    f"Created durable project {project.title} — "
+                    f"review {n_obj} planned agent(s)"
+                )
+                flashes.append(("success", msg))
+                out.update(
+                    {
+                        "objectives": n_obj,
+                        "job_title": "",
+                        "plan_ok": True,
+                        "message": msg,
+                        "redirect": redirect_url,
+                        "kind": project.kind,
+                        "needs_plan_review": True,
+                    }
+                )
+            else:
+                stage(
+                    "start",
+                    "Queued first agent",
+                    "done",
+                    job_title if result.job else "waiting for a ready objective",
+                )
+                msg = (
+                    f"Created {project.title} — queued {job_title} ({n_obj} objectives)"
+                )
+                flashes.append(("success", msg))
+                out.update(
+                    {
+                        "objectives": n_obj,
+                        "job_title": job_title if result.job else "",
+                        "plan_ok": True,
+                        "message": msg,
+                        "kind": project.kind,
+                    }
+                )
         except Exception as exc:
             stages[-1] = {
                 "key": "plan",
@@ -344,9 +402,17 @@ def _create_project_from_post(request: HttpRequest) -> dict:
             stage("start", "Open war room to retry", "done", "plan can be retried from chat")
             msg = f"Created {project.title} but plan failed: {exc}"
 
-            set_crew_status(project, "awaiting_feedback")
+            CrewControl.set_status(project, "awaiting_feedback")
             flashes.append(("error", msg))
-            out.update({"ok": False, "message": msg, "error": str(exc), "plan_ok": False})
+            # Project exists — keep ok=True so the UI redirects; plan can retry from chat.
+            out.update(
+                {
+                    "ok": True,
+                    "message": msg,
+                    "error": str(exc)[:500],
+                    "plan_ok": False,
+                }
+            )
     else:
         if not llm_configured():
             stage(
@@ -369,12 +435,41 @@ def _create_project_from_post(request: HttpRequest) -> dict:
 
     out["stages"] = stages
     out["flashes"] = flashes
+    out.setdefault("kind", project.kind)
+    # Durable always lands on the plan graph (even when auto-plan was skipped).
+    if project.kind == ProjectKind.DURABLE:
+        plan_url = reverse("project_plan", kwargs={"pk": project.pk})
+        out["redirect"] = plan_url
+        out["needs_plan_review"] = True
     return out
 
 
 @require_GET
+@with_project_context
+def project_plan(request: HttpRequest, pk) -> HttpResponse:
+    """Durable plan review: editable agent graph before start."""
+    project = get_object_or_404(Project, pk=pk)
+    if project.kind != ProjectKind.DURABLE:
+        return redirect("project_detail", pk=project.pk)
+    payload = plan_graph_payload(project)
+    return render(
+        request,
+        "projects/plan.html",
+        {
+            "nav": "projects",
+            "project": project,
+            "plan_graph": payload,
+            "available_roles": RoleCards.picker(),
+        },
+    )
+
+
+@require_GET
+@with_project_context
 def project_detail(request: HttpRequest, pk) -> HttpResponse:
-    project = get_object_or_404(Project.objects.select_related("roe"), pk=pk)
+    project = get_object_or_404(Project, pk=pk)
+    if project.kind == ProjectKind.DURABLE and not project.plan_accepted:
+        return redirect("project_plan", pk=project.pk)
     ops = ProjectOpsPayload.for_project(project, jobs_limit=PROJECT_JOBS_LIMIT)
     objectives = list(project.objectives.all())
     roe = getattr(project, "roe", None)
@@ -391,7 +486,10 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
     project_inputs = list_project_inputs(str(project.id))
     # Full finding set for the asset graph (board may be status-filtered).
     graph_findings = list(project.findings.order_by("seq", "created_at")[:300])
-    attack_surface = engagement_graph(project, findings=graph_findings)
+    attack_surface = AssetGraphEngine(project).engagement(
+        findings=graph_findings,
+        rebuild=True,
+    )
     try:
         org_chart = RoleJobTree.org_nodes_for_project(project)
     except Exception:
@@ -422,9 +520,10 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
 
 
 @require_GET
+@with_project_context
 def job_live(request: HttpRequest, pk, job_id) -> HttpResponse:
     project = get_object_or_404(Project, pk=pk)
-    job = get_object_or_404(Job, pk=job_id, project=project)
+    job = scoped_get_or_404(Job, project, pk=job_id)
     return render(
         request,
         "projects/job_live.html",
@@ -433,6 +532,7 @@ def job_live(request: HttpRequest, pk, job_id) -> HttpResponse:
 
 
 @require_GET
+@with_project_context
 def project_report_view(request: HttpRequest, pk, file_path: str) -> HttpResponse:
     """In-browser report viewer (Markdown rendered client-side; other text as pre)."""
     project = get_object_or_404(Project, pk=pk)
@@ -459,6 +559,7 @@ def project_report_view(request: HttpRequest, pk, file_path: str) -> HttpRespons
 
 
 @require_GET
+@with_project_context
 def project_report_file(request: HttpRequest, pk, file_path: str) -> HttpResponse:
     """Download (or inline view) a report file from the project workspace."""
     project = get_object_or_404(Project, pk=pk)

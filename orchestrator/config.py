@@ -13,17 +13,18 @@ from orchestrator.prompts import FINDINGS_GUIDANCE, INSTALL_CASCADE
 
 # Peon engagement default; host may override via configure(...).
 _DEFAULT_SYSTEM_PREAMBLE = (
-    "You are a Peon CrewAI role agent for an authorized engagement.\n"
-    "Use only bound tools for your role.\n"
+    "You are a Peon CrewAI agent for an authorized engagement.\n"
+    "Execute selected skills from your role's skill group; skills do not spawn agents.\n"
+    "Use only bound tools. Technical and engagement-pm agents may spawn_work.\n"
     f"Call provision_cli before missing CLIs ({INSTALL_CASCADE}).\n"
-    "Use run_cli for sandbox shell; never expand Rules of Engagement.\n"
+    "Use bash for sandbox shell; never expand Rules of Engagement.\n"
     "Stay in-scope; call assert_in_scope before networked probes.\n"
     "Obey OPERATOR INSTRUCTION / FOLLOW-UP messages when they appear.\n"
     f"{FINDINGS_GUIDANCE}"
 )
 _DEFAULT_LLM_PROVIDER = "openrouter"
 _DEFAULT_LLM_MODULE = "litellm"
-_DEFAULT_LITELLM_MODEL = "openrouter/openai/gpt-4o-mini"
+_DEFAULT_LITELLM_MODEL = "openrouter/openai/gpt-5.6-luna"
 _DEFAULT_LLM_PROXY_URL = "http://litellm:4000/v1"
 # Public SoT for upstream provider → env var (also used by peon apps bootstrap).
 LLM_PROVIDER_KEY_ENV = {
@@ -55,6 +56,9 @@ class RuntimeConfig:
     tools_catalog_dir: Path = field(default_factory=lambda: Path("tools/catalog").resolve())
     helpers_dir: Path = field(default_factory=lambda: Path("helpers").resolve())
     workspaces_dir: Path = field(default_factory=lambda: Path("workspaces").resolve())
+    platform_workspace_dir: Path = field(
+        default_factory=lambda: Path("workspaces/platform").resolve()
+    )
 
     llm_provider: str = _DEFAULT_LLM_PROVIDER
     llm_module: str = _DEFAULT_LLM_MODULE
@@ -69,14 +73,20 @@ class RuntimeConfig:
 
     agent_max_iterations: int = 40
     agent_max_failure_replans: int = 2
-    agent_max_subagents: int = 4
+    agent_max_subagents: int = 8
     agent_max_subagent_depth: int = 2
     agent_runtime_enabled: bool = True
+    # When RoleSpec.reasoning is true — CrewAI PlanningConfig knobs.
+    crew_reasoning_effort: str = "low"
+    crew_reasoning_max_attempts: int = 1
     # Job/crew orchestration module (crewai only on Peon-crewAI).
     agent_module: str = "crewai"
-    roles_dir: Path = field(default_factory=lambda: Path("roles").resolve())
+    skills_dir: Path = field(default_factory=lambda: Path("skills").resolve())
+    skills_imported_dir: Path = field(
+        default_factory=lambda: Path("skills_imported").resolve()
+    )
+    skills_extra_dirs: tuple[Path, ...] = ()
 
-    sandbox_enabled: bool = True
     sandbox_image: str = "peon-sandbox:local"
     sandbox_prefix: str = "peon-project"
     sandbox_remove_on_exit: bool = False
@@ -84,17 +94,24 @@ class RuntimeConfig:
     system_preamble: str = _DEFAULT_SYSTEM_PREAMBLE
 
     def ensure_dirs(self) -> None:
-        self.roles_dir.mkdir(parents=True, exist_ok=True)
+        self.skills_dir.mkdir(parents=True, exist_ok=True)
+        self.skills_imported_dir.mkdir(parents=True, exist_ok=True)
         self.tools_catalog_dir.mkdir(parents=True, exist_ok=True)
         self.helpers_dir.mkdir(parents=True, exist_ok=True)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
+        self.platform_workspace_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_env(self) -> None:
         """Export path hints used by catalog / docker exec helpers."""
-        os.environ["ROLES_DIR"] = str(self.roles_dir)
+        os.environ["SKILLS_DIR"] = str(self.skills_dir)
+        os.environ["SKILLS_IMPORTED_DIR"] = str(self.skills_imported_dir)
+        os.environ["SKILLS_EXTRA_DIRS"] = ":".join(
+            str(path) for path in self.skills_extra_dirs
+        )
         os.environ["HELPERS_DIR"] = str(self.helpers_dir)
         os.environ["TOOLS_CATALOG_DIR"] = str(self.tools_catalog_dir)
         os.environ["PROJECT_WORKSPACES_DIR"] = str(self.workspaces_dir)
+        os.environ["PLATFORM_WORKSPACE_DIR"] = str(self.platform_workspace_dir)
         os.environ["AGENT_MODULE"] = (self.agent_module or "crewai").strip().lower()
         if self.litellm_api_key:
             provider = (self.llm_provider or "").strip().lower()
@@ -116,10 +133,20 @@ class RuntimeConfig:
         max_tokens_raw = _env("LLM_MAX_TOKENS")
         max_tokens = int(max_tokens_raw) if max_tokens_raw.isdigit() else None
         return cls(
-            roles_dir=_env_path("ROLES_DIR", base / "roles"),
+            skills_dir=_env_path("SKILLS_DIR", base / "skills"),
+            skills_imported_dir=_env_path(
+                "SKILLS_IMPORTED_DIR", base / "skills_imported"
+            ),
+            skills_extra_dirs=tuple(
+                Path(value).expanduser().resolve() for value in _env_list("SKILLS_EXTRA_DIRS")
+            ),
             helpers_dir=_env_path("HELPERS_DIR", base / "helpers"),
             tools_catalog_dir=_env_path("TOOLS_CATALOG_DIR", base / "tools" / "catalog"),
             workspaces_dir=_env_path("PROJECT_WORKSPACES_DIR", base / "workspaces"),
+            platform_workspace_dir=(
+                _env_path("PROJECT_WORKSPACES_DIR", base / "workspaces")
+                / "platform"
+            ).resolve(),
             llm_provider=provider,
             llm_module=_env("LLM_MODULE", _DEFAULT_LLM_MODULE) or _DEFAULT_LLM_MODULE,
             litellm_model=_env("LITELLM_MODEL")
@@ -134,11 +161,16 @@ class RuntimeConfig:
             or _DEFAULT_LLM_PROXY_URL,
             agent_max_iterations=int(_env("AGENT_MAX_ITERATIONS", "40") or 40),
             agent_max_failure_replans=int(_env("AGENT_MAX_FAILURE_REPLANS", "2") or 2),
-            agent_max_subagents=int(_env("AGENT_MAX_SUBAGENTS", "4") or 4),
+            agent_max_subagents=int(_env("AGENT_MAX_SUBAGENTS", "8") or 8),
             agent_max_subagent_depth=int(_env("AGENT_MAX_SUBAGENT_DEPTH", "2") or 2),
             agent_runtime_enabled=as_bool(_env("AGENT_RUNTIME_ENABLED", "true"), default=True),
+            crew_reasoning_effort=(
+                _env("CREW_REASONING_EFFORT", "low") or "low"
+            ).strip().lower(),
+            crew_reasoning_max_attempts=int(
+                _env("CREW_REASONING_MAX_ATTEMPTS", "1") or 1
+            ),
             agent_module=_env("AGENT_MODULE", "crewai") or "crewai",
-            sandbox_enabled=as_bool(_env("SANDBOX_ENABLED", "true"), default=True),
             sandbox_image=_env("SANDBOX_IMAGE", "peon-sandbox:local"),
             sandbox_prefix=_env("PROJECT_SANDBOX_PREFIX")
             or _env("SANDBOX_PREFIX", "peon-project"),
@@ -153,7 +185,7 @@ class RuntimeConfig:
 
 
 def discover_root(start: Path | str | None = None) -> Path:
-    """Find a project root that contains ``roles/`` and ``tools/catalog/``."""
+    """Find a project root that contains ``skills/`` and ``tools/catalog/``."""
     here = Path(start or Path.cwd()).resolve()
     candidates = [here, *here.parents]
     try:
@@ -164,7 +196,7 @@ def discover_root(start: Path | str | None = None) -> Path:
     except Exception:
         pass
     for path in candidates:
-        if (path / "roles").is_dir() and (path / "tools" / "catalog").is_dir():
+        if (path / "skills").is_dir() and (path / "tools" / "catalog").is_dir():
             return path
     return here
 
@@ -193,11 +225,13 @@ def configure(cfg: RuntimeConfig | None = None, **overrides: object) -> RuntimeC
         # circular: llm / ToolCatalog → get_config
         from orchestrator.crew.roles.registry import RoleRegistry
         from orchestrator.llm import reset_llm_provider
+        from orchestrator.skills.registry import SkillRegistry
         from orchestrator.tools.catalog.catalog import ToolCatalog
 
         reset_llm_provider()
         RoleRegistry.reset_shared()
         ToolCatalog.reset_shared()
+        SkillRegistry.reset_shared()
     except Exception:
         pass
     return _config

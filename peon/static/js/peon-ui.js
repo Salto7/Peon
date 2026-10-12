@@ -104,7 +104,7 @@
       }
       if (!self.dialog.open) return;
       if (ev.key === "Escape") {
-        self.dialog.close();
+        self.closeAnimated();
       } else if (ev.key === "ArrowDown") {
         ev.preventDefault();
         self.move(1);
@@ -132,11 +132,23 @@
   Palette.prototype.open = function () {
     const self = this;
     this.load("").then(function () {
+      self.dialog.classList.remove("is-closing");
+      self.dialog.classList.add("is-open");
       self.dialog.showModal();
       self.input.value = "";
       self.render("");
       self.input.focus();
     });
+  };
+
+  Palette.prototype.closeAnimated = function () {
+    var dlg = this.dialog;
+    if (!dlg || !dlg.open) return;
+    dlg.classList.add("is-closing");
+    window.setTimeout(function () {
+      dlg.classList.remove("is-open", "is-closing");
+      if (dlg.open) dlg.close();
+    }, 220);
   };
 
   Palette.prototype.load = function (query) {
@@ -225,7 +237,7 @@
 
   Palette.prototype.go = function (href) {
     if (!href) return;
-    this.dialog.close();
+    this.closeAnimated();
     if (href.charAt(0) === "#") {
       const target = document.querySelector(href);
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -517,6 +529,35 @@
     return inp ? inp.value : "";
   }
 
+  function postJson(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-CSRFToken": csrfToken(),
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: JSON.stringify(body || {}),
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        return { ok: res.ok, status: res.status, data: data };
+      });
+    });
+  }
+
+  function getJson(url) {
+    return fetch(url, { headers: { Accept: "application/json" } }).then(
+      function (res) {
+        return res.ok
+          ? res.json().then(function (data) {
+              return { ok: true, status: res.status, data: data };
+            })
+          : { ok: false, status: res.status, data: null };
+      }
+    );
+  }
+
   var THEME_KEY = "peon-theme";
 
   function normalizeTheme(value) {
@@ -531,15 +572,26 @@
     }
   }
 
+  function syncThemeSlides(theme) {
+    var dark = theme !== "light";
+    document.querySelectorAll("[data-theme-slide]").forEach(function (btn) {
+      btn.classList.toggle("is-dark", dark);
+      btn.classList.toggle("is-light", !dark);
+      btn.setAttribute("aria-checked", dark ? "true" : "false");
+      btn.setAttribute(
+        "aria-label",
+        dark ? "Dark theme on — click for light" : "Light theme on — click for dark"
+      );
+    });
+  }
+
   function applyTheme(theme) {
     var next = normalizeTheme(theme);
     document.documentElement.setAttribute("data-theme", next);
     try {
       localStorage.setItem(THEME_KEY, next);
     } catch (_) {}
-    document.querySelectorAll("[data-theme-select]").forEach(function (el) {
-      if (el.value !== next) el.value = next;
-    });
+    syncThemeSlides(next);
     window.dispatchEvent(
       new CustomEvent("peon:themechange", { detail: { theme: next } })
     );
@@ -547,14 +599,14 @@
   }
 
   function bindThemeControls() {
-    document.querySelectorAll("[data-theme-select]").forEach(function (el) {
-      if (el.dataset.themeBound === "1") return;
-      el.dataset.themeBound = "1";
-      el.value = getTheme();
-      el.addEventListener("change", function () {
-        applyTheme(el.value);
+    document.querySelectorAll("[data-theme-slide]").forEach(function (btn) {
+      if (btn.dataset.themeBound === "1") return;
+      btn.dataset.themeBound = "1";
+      btn.addEventListener("click", function () {
+        applyTheme(getTheme() === "dark" ? "light" : "dark");
       });
     });
+    syncThemeSlides(getTheme());
   }
 
   var APP_SIDE_KEY = "peon-app-side-collapsed";
@@ -608,6 +660,8 @@
     statusPill: statusPill,
     formatIsoTime: formatIsoTime,
     csrfToken: csrfToken,
+    postJson: postJson,
+    getJson: getJson,
     getTheme: getTheme,
     setTheme: applyTheme,
   };

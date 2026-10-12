@@ -7,8 +7,8 @@ import re
 import shlex
 import time
 
-from orchestrator.prompts import INSTALL_MISSING_HINT
 from agent_runtime.api import Session
+from orchestrator.prompts import INSTALL_MISSING_HINT
 from orchestrator.tools.install import InstallResolver, cli_on_path
 from orchestrator.utils.service import SharedServiceBase
 from orchestrator.utils.stream import StreamEmitter
@@ -98,10 +98,9 @@ class ProvisionService(SharedServiceBase):
             return True, ""
         if binary in _SHELL_BUILTINS:
             return True, ""
+        # Cascade: Kali PATH → tools/catalog → LLM (see InstallResolver).
         if cli_on_path(binary):
-            return True, f"{binary} already installed"
-        if binary in Session.current().base_commands() and not package:
-            return False, f"image base binary {binary!r} missing from PATH"
+            return True, f"{binary} already installed (Kali PATH)"
 
         ok, msg = InstallResolver.shared().resolve(binary, package=package)
         if not ok and INSTALL_MISSING_HINT not in msg:

@@ -1,10 +1,10 @@
-"""Learn page — suggest / edit / save tools & roles; isolated install lab."""
+"""Learn page — suggest / edit / save tools & skills; isolated install lab."""
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any, Callable
 
 import yaml
 from django.conf import settings
@@ -13,18 +13,15 @@ from django.shortcuts import render
 from django.urls import path
 from django.views.decorators.http import require_GET, require_http_methods
 
-from orchestrator.crew.roles.registry import RoleRegistry
-from orchestrator.learn.role_draft import lint_role_pack
 from orchestrator.tools.catalog import ToolCatalog
-from orchestrator.utils.llm import LLM_NOT_CONFIGURED, llm_configured
-from orchestrator.utils.paths import write_rel_files
-from orchestrator.utils.strings import require_kebab_slug
 from peon.projects.catalog_cards.tool import ToolCards
 from peon.projects.http_helpers import parse_json_body, split_csv
 from peon.projects.learn_lab import LearnLab
 from peon.projects.llm_proxy import LlmProxy
-from peon.projects.role_authoring import PROXY_REQUIRED_MSG, RoleAuthoring
-from peon.projects.tasks import enqueue_learn_lab_cleanup
+from peon.projects.opencode import PROXY_REQUIRED_MSG, OpenCodeAuthoring
+from orchestrator.utils.llm import LLM_NOT_CONFIGURED, llm_configured
+
+_SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def _parse_body(request: HttpRequest) -> dict:
@@ -36,117 +33,122 @@ def _parse_body(request: HttpRequest) -> dict:
     }
 
 
+def _safe_slug(value: str, *, kind: str = "id") -> str:
+    text = (value or "").strip().lower()
+    if not text or not _SLUG.match(text):
+        raise ValueError(f"invalid {kind} {value!r}")
+    return text
+
+
 def _proxy_gate() -> JsonResponse | None:
+    """Block skill/tool creation when LiteLLM proxy intent is off."""
     if LlmProxy.intent_enabled():
         return None
     return JsonResponse(
-        {"ok": False, "error": PROXY_REQUIRED_MSG, "llm_proxy_enabled": False},
+        {
+            "ok": False,
+            "error": PROXY_REQUIRED_MSG,
+            "llm_proxy_enabled": False,
+        },
         status=403,
     )
 
 
-def _roles_dir() -> Path:
-    return Path(getattr(settings, "ROLES_DIR", settings.BASE_DIR / "roles")).resolve()
-
-
-def _files_map(body: dict) -> dict[str, str]:
-    files = body.get("files") or {}
-    if isinstance(files, str):
-        files = json.loads(files or "{}")
-    if not isinstance(files, dict):
-        raise ValueError("files must be an object")
-    return {str(k): str(v) for k, v in files.items()}
-
-
-def _lint_payload(checked: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "compatible": bool(checked.get("compatible")),
-        "errors": checked.get("errors") or [],
-        "warnings": checked.get("warnings") or [],
-    }
-
-
-def _json_try(fn: Callable[[], JsonResponse]) -> JsonResponse:
-    try:
-        return fn()
-    except ValueError as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
-    except Exception as exc:  # noqa: BLE001
-        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
-
-
-def _require_llm_proxy() -> JsonResponse | None:
-    if not llm_configured():
-        return JsonResponse({"ok": False, "error": LLM_NOT_CONFIGURED}, status=503)
-    return _proxy_gate()
-
-
 @require_GET
 def learn_page(request: HttpRequest) -> HttpResponse:
+    from django.conf import settings as dj_settings
+
     proxy = LlmProxy.shared().snapshot()
+    authoring_ready = bool(llm_configured() and proxy["enabled"])
+    base = "/lab/toolsmith"
     return render(
         request,
         "learn/index.html",
         {
-            "nav": "learn",
+            "nav": "lab",
+            "lab_section": "toolsmith",
             "llm_ready": llm_configured(),
-            "llm_module": str(getattr(settings, "LLM_MODULE", "litellm") or "litellm"),
+            "llm_module": str(getattr(dj_settings, "LLM_MODULE", "litellm") or "litellm"),
             "llm_proxy_enabled": proxy["enabled"],
             "llm_proxy_running": proxy["running"],
             "llm_proxy_url": proxy["url"],
-            "authoring_ready": bool(llm_configured() and proxy["enabled"]),
+            "authoring_ready": authoring_ready,
             "tools": ToolCards.summaries(),
             "lab": LearnLab.shared().status(),
+            "urls": {
+                "suggest_tool": f"{base}/api/tool/",
+                "suggest_skill": f"{base}/api/skill/",
+                "save_tool": f"{base}/api/tool/save/",
+                "test_tool": f"{base}/api/tool/test/",
+                "replan_tool": f"{base}/api/tool/replan/",
+                "lab_create": f"{base}/api/lab/create/",
+                "lab_delete": f"{base}/api/lab/delete/",
+                "lab_status": f"{base}/api/lab/",
+                "lint_skill": f"{base}/api/skill/lint/",
+                "save_skill": f"{base}/api/skill/save/",
+            },
         },
     )
 
 
 @require_http_methods(["POST"])
 def learn_suggest_tool(request: HttpRequest) -> JsonResponse:
-    gated = _require_llm_proxy()
+    if not llm_configured():
+        return JsonResponse(
+            {"ok": False, "error": LLM_NOT_CONFIGURED},
+            status=503,
+        )
+    gated = _proxy_gate()
     if gated is not None:
         return gated
-
-    def _run() -> JsonResponse:
+    try:
         body = _parse_body(request)
-        result = RoleAuthoring.shared().suggest_tool(str(body.get("prompt") or ""))
-        return JsonResponse(
-            {
-                "ok": True,
-                "mode": "tool",
-                "id": result["id"],
-                "yaml": result["yaml"],
-                "install_script": result.get("install_script") or "",
-                "notes": result.get("notes") or "",
-                "author": result.get("author") or "opencode",
-            }
-        )
-
-    return _json_try(_run)
+        result = OpenCodeAuthoring.shared().suggest_tool(str(body.get("prompt") or ""))
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
+    return JsonResponse(
+        {
+            "ok": True,
+            "mode": "tool",
+            "id": result["id"],
+            "yaml": result["yaml"],
+            "install_script": result.get("install_script") or "",
+            "notes": result.get("notes") or "",
+            "author": result.get("author") or "opencode",
+        }
+    )
 
 
 @require_http_methods(["POST"])
-def learn_write_role(request: HttpRequest) -> JsonResponse:
-    gated = _require_llm_proxy()
+def learn_write_skill(request: HttpRequest) -> JsonResponse:
+    if not llm_configured():
+        return JsonResponse(
+            {"ok": False, "error": LLM_NOT_CONFIGURED},
+            status=503,
+        )
+    gated = _proxy_gate()
     if gated is not None:
         return gated
-
-    def _run() -> JsonResponse:
+    try:
         body = _parse_body(request)
         tools = body.get("tools") or []
         if isinstance(tools, str):
             tools = split_csv(tools)
-        result = RoleAuthoring.shared().write_role(
+        result = OpenCodeAuthoring.shared().write_skill(
             str(body.get("prompt") or ""), tools=list(tools)
         )
-        return JsonResponse({"ok": True, "mode": "role", **result})
-
-    return _json_try(_run)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
+    return JsonResponse({"ok": True, "mode": "skill", **result})
 
 
 @require_http_methods(["POST"])
 def learn_save_tool(request: HttpRequest) -> JsonResponse:
-    def _run() -> JsonResponse:
+    try:
         body = _parse_body(request)
         yaml_text = str(body.get("yaml") or "").strip()
         script = str(body.get("install_script") or "").strip()
@@ -155,7 +157,7 @@ def learn_save_tool(request: HttpRequest) -> JsonResponse:
         raw = yaml.safe_load(yaml_text)
         if not isinstance(raw, dict):
             raise ValueError("tool YAML must be a mapping")
-        tid = require_kebab_slug(str(raw.get("id") or body.get("id") or ""), kind="tool id")
+        tid = _safe_slug(str(raw.get("id") or body.get("id") or ""), kind="tool id")
         catalog = Path(settings.TOOLS_CATALOG_DIR)
         catalog.mkdir(parents=True, exist_ok=True)
         path = catalog / f"{tid}.yaml"
@@ -174,13 +176,15 @@ def learn_save_tool(request: HttpRequest) -> JsonResponse:
                 "id": tid,
             }
         )
-
-    return _json_try(_run)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
 
 
 @require_http_methods(["POST"])
 def learn_test_tool(request: HttpRequest) -> JsonResponse:
-    def _run() -> JsonResponse:
+    try:
         body = _parse_body(request)
         result = LearnLab.shared().test_tool_install(
             yaml_text=str(body.get("yaml") or ""),
@@ -199,19 +203,25 @@ def learn_test_tool(request: HttpRequest) -> JsonResponse:
                 "tool_id": result.get("tool_id") or "",
             }
         )
-
-    return _json_try(_run)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
 
 
 @require_http_methods(["POST"])
 def learn_replan_tool(request: HttpRequest) -> JsonResponse:
-    gated = _require_llm_proxy()
+    if not llm_configured():
+        return JsonResponse(
+            {"ok": False, "error": LLM_NOT_CONFIGURED},
+            status=503,
+        )
+    gated = _proxy_gate()
     if gated is not None:
         return gated
-
-    def _run() -> JsonResponse:
+    try:
         body = _parse_body(request)
-        result = RoleAuthoring.shared().replan_tool(
+        result = OpenCodeAuthoring.shared().replan_tool(
             prompt=str(body.get("prompt") or ""),
             yaml_text=str(body.get("yaml") or ""),
             install_script=str(body.get("install_script") or ""),
@@ -227,8 +237,10 @@ def learn_replan_tool(request: HttpRequest) -> JsonResponse:
                 "author": result.get("author") or "opencode",
             }
         )
-
-    return _json_try(_run)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
 
 
 @require_GET
@@ -238,98 +250,126 @@ def learn_lab_status(request: HttpRequest) -> JsonResponse:
 
 @require_http_methods(["POST"])
 def learn_lab_create(request: HttpRequest) -> JsonResponse:
-    def _run() -> JsonResponse:
-        return JsonResponse(LearnLab.shared().create())
-
-    return _json_try(_run)
-
-
-@require_http_methods(["POST"])
-def learn_lab_delete(request: HttpRequest) -> JsonResponse:
-    """Queue Learn-lab removal on the worker (avoids web docker-rm flaps)."""
-
-    def _run() -> JsonResponse:
-
-        result = enqueue_learn_lab_cleanup()
-        if "lab" not in result:
-            result["lab"] = LearnLab.shared().status()
-        return JsonResponse(result)
-
     try:
-        return _run()
+        result = LearnLab.shared().create()
+        return JsonResponse(result)
     except Exception as exc:  # noqa: BLE001
         return JsonResponse(
-            {"ok": False, "error": str(exc), "lab": LearnLab.shared().status()},
+            {
+                "ok": False,
+                "error": str(exc),
+                "lab": LearnLab.shared().status(),
+            },
             status=500,
         )
 
 
 @require_http_methods(["POST"])
-def learn_lint_role(request: HttpRequest) -> JsonResponse:
+def learn_lab_delete(request: HttpRequest) -> JsonResponse:
+    """Queue Learn-lab removal on the worker (avoids web docker-rm flaps)."""
+    try:
+        from peon.projects.tasks import enqueue_learn_lab_cleanup
 
-    def _run() -> JsonResponse:
-        body = _parse_body(request)
-        files = _files_map(body)
-        name = str(body.get("name") or "").strip()
-        role_yaml = str(body.get("role_yaml") or "").strip()
-        checked = lint_role_pack(name=name, role_yaml=role_yaml, files=files)
+        result = enqueue_learn_lab_cleanup()
+        if "lab" not in result:
+            result["lab"] = LearnLab.shared().status()
+        return JsonResponse(result)
+    except Exception as exc:  # noqa: BLE001
         return JsonResponse(
-            {"ok": True, "compatible": bool(checked.get("compatible")), "lint": _lint_payload(checked)}
+            {
+                "ok": False,
+                "error": str(exc),
+                "lab": LearnLab.shared().status(),
+            },
+            status=500,
         )
 
-    return _json_try(_run)
 
 
 @require_http_methods(["POST"])
-def learn_save_role(request: HttpRequest) -> JsonResponse:
-
-    def _run() -> JsonResponse:
+def learn_lint_skill(request: HttpRequest) -> JsonResponse:
+    try:
         body = _parse_body(request)
-        name = require_kebab_slug(str(body.get("name") or ""), kind="role name")
-        role_yaml = str(body.get("role_yaml") or "").strip()
-        files = _files_map(body)
-        if not role_yaml:
-            raise ValueError("role_yaml is required")
-        checked = lint_role_pack(name=name, role_yaml=role_yaml, files=files)
-        if not checked.get("compatible"):
-            return JsonResponse(
-                {
-                    "ok": False,
-                    "error": "Role failed lint — fix issues before saving.",
-                    "lint": _lint_payload(checked),
-                },
-                status=400,
-            )
-        root = _roles_dir() / name
-        root.mkdir(parents=True, exist_ok=True)
-        (root / "ROLE.yaml").write_text(role_yaml.rstrip() + "\n", encoding="utf-8")
-        written = ["ROLE.yaml", *write_rel_files(root, files, skip={"ROLE.yaml", "ROLE.yml"})]
-        try:
-            RoleRegistry.shared().invalidate()
-        except Exception:  # noqa: BLE001
-            pass
+        files = body.get("files") or {}
+        if isinstance(files, str):
+            files = json.loads(files or "{}")
+        if not isinstance(files, dict):
+            raise ValueError("files must be an object")
+        name = str(body.get("name") or "").strip()
+        from orchestrator.learn.draft import draft_binary
+        from orchestrator.skills.author import prepare_claude_skill
+
+        raw_md = str(body.get("skill_md") or "")
+        prepared = prepare_claude_skill(
+            name=name,
+            skill_md=raw_md,
+            files={str(k): str(v) for k, v in files.items()},
+            binary=draft_binary(raw_md),
+        )
+        skill_md = str(prepared["skill_md"])
+        file_map = dict(prepared["files"])
+        checked = dict(prepared["lint"])
         return JsonResponse(
             {
                 "ok": True,
-                "path": str(root),
-                "name": name,
-                "files": written,
-                "lint": _lint_payload({**checked, "errors": []}),
+                "compatible": bool(checked.get("compatible")),
+                "name": name.lower(),
+                "skill_md": skill_md,
+                "files": file_map,
+                "lint": {
+                    "compatible": bool(checked.get("compatible")),
+                    "errors": checked.get("errors") or [],
+                    "warnings": checked.get("warnings") or [],
+                },
             }
         )
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
 
-    return _json_try(_run)
+
+@require_http_methods(["POST"])
+def learn_save_skill(request: HttpRequest) -> JsonResponse:
+    from orchestrator.skills.author import save_claude_skill
+
+    try:
+        body = _parse_body(request)
+        name = _safe_slug(str(body.get("name") or ""), kind="skill name")
+        skill_md = str(body.get("skill_md") or "").strip()
+        files = body.get("files") or {}
+        if isinstance(files, str):
+            files = json.loads(files or "{}")
+        if not isinstance(files, dict):
+            raise ValueError("files must be an object")
+        if not skill_md:
+            raise ValueError("skill_md is required")
+        from orchestrator.learn.draft import draft_binary
+
+        saved = save_claude_skill(
+            name=name,
+            skill_md=skill_md,
+            files={str(k): str(v) for k, v in files.items()},
+            source="toolsmith",
+            binary=draft_binary(skill_md),
+        )
+        status = 200 if saved.get("ok") else 400
+        return JsonResponse(saved, status=status)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
 
 
 urlpatterns = [
-    path("", learn_page, name="learn"),
+    path("", learn_page, name="lab_toolsmith"),
     path("api/tool/", learn_suggest_tool, name="learn_api_tool"),
     path("api/tool/save/", learn_save_tool, name="learn_api_tool_save"),
     path("api/tool/test/", learn_test_tool, name="learn_api_tool_test"),
     path("api/tool/replan/", learn_replan_tool, name="learn_api_tool_replan"),
-    path("api/role/", learn_write_role, name="learn_api_role"),
-    path("api/role/lint/", learn_lint_role, name="learn_api_role_lint"),
-    path("api/role/save/", learn_save_role, name="learn_api_role_save"),
+    path("api/skill/", learn_write_skill, name="learn_api_skill"),
+    path("api/skill/lint/", learn_lint_skill, name="learn_api_skill_lint"),
+    path("api/skill/save/", learn_save_skill, name="learn_api_skill_save"),
     path("api/lab/", learn_lab_status, name="learn_api_lab"),
     path("api/lab/create/", learn_lab_create, name="learn_api_lab_create"),
     path("api/lab/delete/", learn_lab_delete, name="learn_api_lab_delete"),

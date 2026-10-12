@@ -3,12 +3,16 @@
 from django.contrib import admin
 
 from peon.projects.models import (
+    EngagementRole,
     Finding,
     Job,
+    JobCheckpoint,
     JobDirective,
     Objective,
     OperatorPrompt,
     Project,
+    ProjectSchedule,
+    RoleSkillMemory,
     RulesOfEngagement,
     RuntimeSettings,
     StreamMessage,
@@ -37,11 +41,29 @@ class FindingInline(admin.TabularInline):
 
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
-    list_display = ("title", "status", "sandbox_runtime", "created_at")
-    list_filter = ("status", "sandbox_runtime")
+    list_display = (
+        "title",
+        "kind",
+        "status",
+        "plan_accepted",
+        "sandbox_runtime",
+        "created_at",
+    )
+    list_filter = ("kind", "status", "plan_accepted", "sandbox_runtime")
     search_fields = ("title", "summary")
     inlines = [RulesOfEngagementInline, ObjectiveInline, FindingInline]
     readonly_fields = ("id", "created_at", "updated_at")
+
+    def delete_model(self, request, obj) -> None:
+        from peon.projects.lifecycle import ProjectLifecycle
+
+        ProjectLifecycle.delete_project(obj)
+
+    def delete_queryset(self, request, queryset) -> None:
+        from peon.projects.lifecycle import ProjectLifecycle
+
+        for project in queryset.iterator():
+            ProjectLifecycle.delete_project(project)
 
 
 @admin.register(Objective)
@@ -81,6 +103,21 @@ class RuntimeSettingsAdmin(admin.ModelAdmin):
     readonly_fields = ("id", "updated_at")
 
 
+@admin.register(EngagementRole)
+class EngagementRoleAdmin(admin.ModelAdmin):
+    list_display = ("role_id", "kind", "protected", "updated_at")
+    list_filter = ("kind", "protected")
+    search_fields = ("role_id",)
+    readonly_fields = ("updated_at",)
+
+
+@admin.register(RoleSkillMemory)
+class RoleSkillMemoryAdmin(admin.ModelAdmin):
+    list_display = ("role_id", "last_source", "last_project_id", "updated_at")
+    search_fields = ("role_id",)
+    readonly_fields = ("updated_at",)
+
+
 @admin.register(JobDirective)
 class JobDirectiveAdmin(admin.ModelAdmin):
     list_display = ("id", "job", "kind", "created_at", "consumed_at")
@@ -92,11 +129,28 @@ class JobDirectiveAdmin(admin.ModelAdmin):
 
 @admin.register(OperatorPrompt)
 class OperatorPromptAdmin(admin.ModelAdmin):
-    list_display = ("id", "project", "job", "resolved_at", "created_at")
-    list_filter = ("resolved_at",)
+    list_display = ("id", "kind", "project", "job", "resolved_at", "created_at")
+    list_filter = ("kind", "resolved_at")
     search_fields = ("question", "reply")
     raw_id_fields = ("project", "job")
     readonly_fields = ("id", "created_at", "resolved_at")
+
+
+@admin.register(ProjectSchedule)
+class ProjectScheduleAdmin(admin.ModelAdmin):
+    list_display = (
+        "title",
+        "project",
+        "kind",
+        "enabled",
+        "next_run_at",
+        "last_run_at",
+        "role_id",
+    )
+    list_filter = ("kind", "enabled")
+    search_fields = ("title", "role_id", "cron", "brief")
+    raw_id_fields = ("project", "objective", "last_job")
+    readonly_fields = ("id", "created_at", "updated_at")
 
 
 @admin.register(StreamMessage)
@@ -106,3 +160,12 @@ class StreamMessageAdmin(admin.ModelAdmin):
     search_fields = ("content",)
     raw_id_fields = ("job",)
     readonly_fields = ("created_at",)
+
+
+@admin.register(JobCheckpoint)
+class JobCheckpointAdmin(admin.ModelAdmin):
+    list_display = ("seq", "job", "project", "reason", "created_at")
+    list_filter = ("reason",)
+    search_fields = ("transcript_digest",)
+    raw_id_fields = ("job", "project", "objective")
+    readonly_fields = ("id", "created_at")

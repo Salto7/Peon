@@ -88,7 +88,3 @@ def install_steps_from_fences(text: str) -> list[dict[str, Any]]:
         if isinstance(raw, dict) and isinstance(raw.get("install"), list):
             steps.extend(s for s in raw["install"] if isinstance(s, dict))
     return steps
-
-
-def has_install_fence(text: str) -> bool:
-    return bool(install_steps_from_fences(text))

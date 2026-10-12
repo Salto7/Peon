@@ -1,12 +1,71 @@
-"""Named CrewAI tools selectable by ROLE.yaml ``tools:`` lists."""
+"""Named CrewAI tools selectable from role/skill tool lists."""
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 ToolFactory = Callable[[], Any]
 
 _FACTORIES: dict[str, ToolFactory] = {}
+
+# Engagement roles get these without listing them on every skill pack.
+COLLAB_TOOLS: tuple[str, ...] = (
+    "list_roles",
+    "spawn_work",
+    "wait_for_work",
+    "list_work",
+    "propose_work",
+    "send_agent_message",
+    "ask_operator",
+)
+MANAGER_COLLAB_TOOLS: tuple[str, ...] = (*COLLAB_TOOLS, "list_delegations")
+
+# CrewAI sandbox / findings surface (skills often declare OpenCode-only names).
+SANDBOX_RUNTIME_TOOLS: tuple[str, ...] = (
+    "sandbox_status",
+    "provision_cli",
+    "bash",
+    "run_periodic",
+    "roe_status",
+    "assert_in_scope",
+)
+FINDINGS_RUNTIME_TOOLS: tuple[str, ...] = (
+    "record_finding",
+    "record_findings",
+    "list_findings",
+)
+OBJECTIVE_RUNTIME_TOOLS: tuple[str, ...] = (
+    "list_objectives",
+    "update_objective_status",
+)
+ANALYZER_RUNTIME_TOOLS: tuple[str, ...] = (
+    *OBJECTIVE_RUNTIME_TOOLS,
+    *FINDINGS_RUNTIME_TOOLS,
+    "list_workspace_artifacts",
+    "read_workspace_artifact",
+    "write_report_note",
+)
+TECHNICAL_RUNTIME_TOOLS: tuple[str, ...] = (
+    *SANDBOX_RUNTIME_TOOLS,
+    *OBJECTIVE_RUNTIME_TOOLS,
+    *FINDINGS_RUNTIME_TOOLS,
+)
+MANAGER_RUNTIME_TOOLS: tuple[str, ...] = (
+    *SANDBOX_RUNTIME_TOOLS,
+    *OBJECTIVE_RUNTIME_TOOLS,
+    "list_findings",
+)
+
+# Older skill-runtime names → CrewAI catalog names. ``None`` drops the token.
+SKILL_TOOL_ALIASES: dict[str, str | None] = {
+    "spawn_agent": "spawn_work",
+    "wait_for_agents": "wait_for_work",
+    "propose_agents": "propose_work",
+    "list_agents": "list_work",
+    "sandbox_setup": "sandbox_status",
+    "skills_list": None,
+    "skill_view": None,
+}
 
 
 def register_tool(name: str, factory: ToolFactory) -> ToolFactory:
@@ -53,18 +112,103 @@ def known_tool_names() -> list[str]:
     return sorted(_FACTORIES)
 
 
-def build_tools(names: tuple[str, ...] | list[str]) -> list[Any]:
-    """Instantiate allowlisted tools; unknown names raise."""
-    _ensure()
-    out: list[Any] = []
+def canonicalize_crew_tools(names: Iterable[str] | None) -> tuple[str, ...]:
+    """Map skill OpenCode tool names onto CrewAI tools; drop non-crew names."""
+    seen: set[str] = set()
+    out: list[str] = []
     for raw in names or ():
         name = str(raw or "").strip()
         if not name:
             continue
-        factory = _FACTORIES.get(name)
+        if name in SKILL_TOOL_ALIASES:
+            mapped = SKILL_TOOL_ALIASES[name]
+            if mapped is None:
+                continue
+            name = mapped
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return tuple(out)
+
+
+def _extend(base: list[str], seen: set[str], extra: Iterable[str]) -> None:
+    for name in extra:
+        if name not in seen:
+            base.append(name)
+            seen.add(name)
+
+
+def with_collab_tools(
+    role: Any,
+    *,
+    tool_names: Iterable[str] | None = None,
+) -> tuple[str, ...]:
+    """Role/skill tools plus Peon runtime + lane-orchestration tools.
+
+    Skills often list OpenCode-only names; Peon injects the CrewAI sandbox /
+    findings / objective surface so specialists can actually execute.
+    """
+    raw = tool_names if tool_names is not None else getattr(role, "tools", ()) or ()
+    base = list(canonicalize_crew_tools(raw))
+    seen = set(base)
+
+    if getattr(role, "is_analyzer", False) or getattr(role, "kind", "") == "analyzer":
+        _extend(base, seen, ANALYZER_RUNTIME_TOOLS)
+        return tuple(base)
+
+    if getattr(role, "is_manager", False) or getattr(role, "kind", "") == "engagement-pm":
+        _extend(base, seen, MANAGER_RUNTIME_TOOLS)
+        _extend(base, seen, MANAGER_COLLAB_TOOLS)
+        return tuple(base)
+
+    if getattr(role, "is_technical", False) or getattr(role, "kind", "") == "technical":
+        _extend(base, seen, TECHNICAL_RUNTIME_TOOLS)
+        _extend(base, seen, COLLAB_TOOLS)
+        return tuple(base)
+
+    return tuple(base)
+
+
+# Real progressive tools. They are not OpenCode aliases and must not be remapped.
+PROGRESSIVE_DIRECT_TOOLS = frozenset(
+    {"load_skill", "read_skill_resource", "run_skill_script"}
+)
+
+
+def partition_tool_names(
+    names: Iterable[str] | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Keep progressive tools intact; alias the rest through the OpenCode map."""
+    direct: list[str] = []
+    rest: list[str] = []
+    seen_direct: set[str] = set()
+    for raw in names or ():
+        name = str(raw or "").strip()
+        if not name:
+            continue
+        if name in PROGRESSIVE_DIRECT_TOOLS:
+            if name not in seen_direct:
+                seen_direct.add(name)
+                direct.append(name)
+            continue
+        rest.append(name)
+    return tuple(direct), canonicalize_crew_tools(rest)
+
+
+def build_tools(names: Iterable[str]) -> list[Any]:
+    """Instantiate allowlisted tools; unknown names raise."""
+    _ensure()
+    direct, aliased = partition_tool_names(names)
+    out: list[Any] = []
+    seen: set[str] = set()
+    for raw in (*aliased, *direct):
+        if raw in seen:
+            continue
+        seen.add(raw)
+        factory = _FACTORIES.get(raw)
         if factory is None:
             known = ", ".join(known_tool_names()) or "(none)"
-            raise KeyError(f"unknown role tool {name!r}; known: {known}")
+            raise KeyError(f"unknown role tool {raw!r}; known: {known}")
         out.append(factory())
     return out
 

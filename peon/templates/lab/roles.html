@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Roles — Lab — Peon{% endblock %}
+{% block content %}
+{% include "lab/_crumb.html" with lab_crumb="Roles" %}
+<header class="page-header">
+  <div>
+    <h1>Roles</h1>
+    <p class="lead">Engagement roles live in the platform database. Skill membership comes from affinity sidecars — edit identity here, not skill lists.</p>
+  </div>
+</header>
+
+<section class="catalog-section" aria-labelledby="role-add-heading">
+  <div class="catalog-section-head">
+    <h2 id="role-add-heading">Add role</h2>
+  </div>
+  <form method="post" action="{% url 'lab_roles_save' %}" class="role-edit-form">
+    {% csrf_token %}
+    <label for="new-role-id">Id</label>
+    <input id="new-role-id" name="role_id" type="text" required placeholder="web-expert" pattern="[a-z0-9]+(-[a-z0-9]+)*">
+    <label for="new-role-kind">Kind</label>
+    <select id="new-role-kind" name="kind" required>
+      {% for kind in kinds %}
+      <option value="{{ kind }}"{% if kind == "technical" %} selected{% endif %}>{{ kind }}</option>
+      {% endfor %}
+    </select>
+    <label for="new-role-aliases">Aliases</label>
+    <input id="new-role-aliases" name="aliases" type="text" placeholder="legacy-id, other-alias">
+    <button type="submit" class="btn">Add</button>
+  </form>
+</section>
+
+<section class="catalog-section" aria-labelledby="role-list-heading">
+  <div class="catalog-section-head">
+    <h2 id="role-list-heading">Current roles</h2>
+  </div>
+  {% if roles %}
+  <ul class="role-edit-list">
+    {% for role in roles %}
+    <li>
+      <form method="post" action="{% url 'lab_roles_save' %}" class="role-edit-form">
+        {% csrf_token %}
+        <h3><code>{{ role.id }}</code>{% if role.protected %} <span class="meta">protected</span>{% endif %}</h3>
+        <input type="hidden" name="role_id" value="{{ role.id }}">
+        <label for="kind-{{ role.id }}">Kind</label>
+        <select id="kind-{{ role.id }}" name="kind" required{% if role.protected %} disabled{% endif %}>
+          {% for kind in kinds %}
+          <option value="{{ kind }}"{% if kind == role.kind %} selected{% endif %}>{{ kind }}</option>
+          {% endfor %}
+        </select>
+        {% if role.protected %}
+        <input type="hidden" name="kind" value="{{ role.kind }}">
+        {% endif %}
+        <label for="aliases-{{ role.id }}">Aliases</label>
+        <input id="aliases-{{ role.id }}" name="aliases" type="text" value="{{ role.aliases|join:", " }}">
+        <p class="meta">Bound skills: {% if role.skills %}{{ role.skills|join:", " }}{% else %}(none yet — affinity){% endif %}</p>
+        <button type="submit" class="btn secondary">Save</button>
+      </form>
+      {% if not role.protected %}
+      <form method="post" action="{% url 'lab_roles_delete' role.id %}" class="role-delete-form" onsubmit="return confirm('Delete role {{ role.id }}?');">
+        {% csrf_token %}
+        <button type="submit" class="btn danger">Delete</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="meta">No roles in the platform database yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

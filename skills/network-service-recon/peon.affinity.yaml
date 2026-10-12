@@ -1,0 +1,5 @@
+bindings:
+- role_id: recon-specialist
+  score: 0.95
+  lead: false
+source: seed

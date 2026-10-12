@@ -2,7 +2,7 @@
 (function () {
   var _el = function (id) { return document.getElementById(id); };
   var _csrf = function () {
-    return (window.PeonUI && window.PeonUI.csrfToken && window.PeonUI.csrfToken()) || "";
+    return window.PeonUI.csrfToken();
   };
   var _append = null;
 
@@ -203,7 +203,7 @@
     let selectedJobId = "";
 
     const modeHints = {
-      chat: "Ask about the project, or describe work to replan…",
+      chat: "Ask about the project…",
       instruct: "Force-steer running agents only…",
       replan: "Force a full replan from this prompt…",
       stop: "Optional note, then send to pause…",

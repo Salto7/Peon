@@ -5,12 +5,13 @@
 <header class="page-header">
   <div>
     <h1>Catalog</h1>
-    <p class="lead">Roles from <code>roles/</code> and sandbox tools from <code>tools/catalog</code>.</p>
+    <p class="lead">Roles, skills, and sandbox tools — view and edit shared catalogs.</p>
   </div>
 </header>
 
 <nav class="catalog-jump bar" aria-label="Catalog sections">
   <a class="btn secondary" href="#roles">Roles ({{ roles|length }})</a>
+  <a class="btn secondary" href="#skills">Skills ({{ skills|length }})</a>
   <a class="btn secondary" href="#tools">Tools ({{ tools|length }})</a>
 </nav>
 
@@ -24,6 +25,7 @@
       {% else %}
         <a class="btn secondary" href="{% url 'catalog' %}?all=1#roles">Show all</a>
       {% endif %}
+      <a class="btn" href="{% url 'lab_roles' %}">Edit roles in Lab</a>
       <form method="post" action="{{ roles_reload.url }}" class="catalog-reload-form">
         {% csrf_token %}
         {% if show_all %}<input type="hidden" name="all" value="1">{% endif %}
@@ -38,8 +40,14 @@
       <div class="catalog-card-name">
         <a href="{% url 'catalog_api_role' s.name %}"><code>{{ s.name }}</code></a>
       </div>
-      {% if s.category %}<div class="catalog-card-cat">{{ s.category }}</div>{% endif %}
+      {% if s.kind %}<div class="catalog-card-cat">{{ s.kind }}</div>{% elif s.category %}<div class="catalog-card-cat">{{ s.category }}</div>{% endif %}
       <div class="catalog-card-desc">{{ s.description|default:"(no description)" }}</div>
+      {% if s.skills %}
+      <div class="meta catalog-card-aliases">skills: {{ s.skills|join:", " }}</div>
+      {% endif %}
+      {% if s.aliases %}
+      <div class="meta catalog-card-aliases">aliases: {{ s.aliases|join:", " }}</div>
+      {% endif %}
       {% if s.tags %}
       <div class="catalog-card-tags" aria-label="Tags">
         {% for t in s.tags %}<span class="chip">{{ t }}</span>{% endfor %}
@@ -47,7 +55,42 @@
       {% endif %}
     </article>
     {% empty %}
-    <p class="meta">No roles found under ROLES_DIR.</p>
+    <p class="meta">No roles found. Add some in <a href="{% url 'lab_roles' %}">Lab → Roles</a>.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="catalog-section" id="skills" aria-labelledby="skills-heading">
+  <div class="catalog-section-head">
+    <h2 id="skills-heading">Skills</h2>
+    <div class="bar catalog-section-actions">
+      <span class="meta">{{ skills|length }} skill{{ skills|length|pluralize }}</span>
+      <form method="post" action="{{ skills_reload.url }}" class="catalog-reload-form">
+        {% csrf_token %}
+        <button type="submit" class="btn secondary" title="{{ skills_reload.title }}">{{ skills_reload.label }}</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="catalog-grid catalog-card-grid">
+    {% for s in skills %}
+    <article class="catalog-card" id="skill-{{ s.id }}">
+      <div class="catalog-card-name">
+        <a href="{% url 'catalog_api_skill' s.id %}"><code>{{ s.id }}</code></a>
+        <button type="button" class="btn secondary catalog-card-edit" data-catalog-edit="skill" data-id="{{ s.id }}">Edit</button>
+      </div>
+      <div class="catalog-card-desc">{{ s.description|default:"(no description)" }}</div>
+      {% if s.tools %}
+      <div class="meta">tools: {% for t in s.tools %}<code>{{ t }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}</div>
+      {% endif %}
+      {% if s.tags %}
+      <div class="catalog-card-tags" aria-label="Tags">
+        {% for t in s.tags %}<span class="chip">{{ t }}</span>{% endfor %}
+      </div>
+      {% endif %}
+    </article>
+    {% empty %}
+    <p class="meta">No skills found under <code>skills/</code> or <code>skills_imported/</code>.</p>
     {% endfor %}
   </div>
 </section>
@@ -69,6 +112,7 @@
     <article class="catalog-card catalog-card-tool" id="tool-{{ t.id }}">
       <div class="catalog-card-name">
         <a href="{% url 'catalog_api_tool' t.id %}"><code>{{ t.id }}</code></a>
+        <button type="button" class="btn secondary catalog-card-edit" data-catalog-edit="tool" data-id="{{ t.id }}">Edit</button>
       </div>
       {% if t.tier %}<div class="catalog-card-cat">tier {{ t.tier }}</div>{% endif %}
       {% if t.binary %}<div class="meta catalog-card-life">binary <code>{{ t.binary }}</code></div>{% endif %}
@@ -88,7 +132,31 @@
   </div>
 </section>
 
+<dialog id="catalog-edit-dialog" class="catalog-edit-dialog peon-overlay" aria-labelledby="catalog-edit-title">
+  <form id="catalog-edit-form" class="peon-dialog-card catalog-edit-card" method="dialog">
+    {% csrf_token %}
+    <h3 id="catalog-edit-title">Edit catalog item</h3>
+    <p class="meta" id="catalog-edit-path"></p>
+    <p class="msg warning" id="catalog-edit-error" hidden></p>
+    <label class="meta" for="catalog-edit-main" id="catalog-edit-main-label">Source</label>
+    <textarea id="catalog-edit-main" class="learn-edit catalog-edit-ta" rows="18" spellcheck="false"></textarea>
+    <div id="catalog-edit-script-wrap" hidden>
+      <label class="meta" for="catalog-edit-script">Install script (<code>{id}.sh</code>, optional)</label>
+      <textarea id="catalog-edit-script" class="learn-edit catalog-edit-ta" rows="8" spellcheck="false"></textarea>
+    </div>
+    <div id="catalog-edit-files" class="catalog-edit-files" hidden></div>
+    <div class="bar catalog-edit-actions">
+      <button type="button" class="btn" id="catalog-edit-save">Save</button>
+      <button type="button" class="btn secondary" id="catalog-edit-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
 <p class="meta catalog-foot">
   Resolve roles for a Job: <code>GET/POST /catalog/api/resolve/?brief=…</code>
 </p>
+<script>
+  window.PEON_CATALOG_EDIT = { urls: {{ catalog_edit_urls_json|safe }} };
+</script>
+<script src="{% static 'js/catalog-edit.js' %}?v=20261011a"></script>
 {% endblock %}

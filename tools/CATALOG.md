@@ -36,7 +36,6 @@ install:
     packages: [nmap]
 verify:
   - command: "nmap --version"
-roles: [network-scanner]
 tags: [recon]
 ```
 
@@ -50,8 +49,11 @@ tags: [recon]
 | `binaries` | no | Extra CLI names this entry provides. |
 | `install` | yes* | List of install steps (*empty only for `tier: image`). |
 | `verify` | yes | Shell checks that must succeed after install. |
-| `roles` | no | Role ids associated with this tool (metadata). |
 | `tags` | no | Free-form labels for UI/search. |
+
+Roles are **not** listed on tool YAML. Peon deduces which roles use a tool
+from affinity-bound skill packs (`allow_binaries` / compatibility matching
+the tool id or binary).
 
 ## Install priority
 
@@ -94,7 +96,7 @@ install:
 ```yaml
 install:
   - type: custom
-    command: "curl -fsSL https://example.com/install.sh | bash"
+    command: "curl -fsSL https://acme.com/install.sh | bash"
     # timeout: 600
   - type: apt
     packages: [curl]                     # fallback if custom does not verify
@@ -165,7 +167,6 @@ verify:
   - command: "dnsx -version"
     # must_match: "dnsx"                 # optional regex on stdout/stderr
     # must_not_match: "not found"
-roles: [domain-enum]
 tags: [recon, osint]
 ```
 

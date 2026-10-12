@@ -9,7 +9,7 @@ from peon.projects.models import Job, Project
 
 
 class RoleJobTree:
-    """ROLE.yaml ``reports_to`` + Job.parent hierarchy helpers."""
+    """Role ``reports_to`` + Job.parent hierarchy helpers."""
 
     @staticmethod
     def primary_role_id(job: Job) -> str:
@@ -79,7 +79,11 @@ class RoleJobTree:
 
     @classmethod
     def build_job_hierarchy(cls, jobs: list[Job]) -> tuple[list[Job], dict[str, list[Job]]]:
-        """Return (roots, children_by_parent_id) using reports_to then Job.parent."""
+        """Return (roots, children_by_parent_id).
+
+        ``Job.parent`` is the execution tree (spawn_work). ``reports_to`` only
+        places root objective Jobs under their catalog supervisor.
+        """
         by_id = {str(j.id): j for j in jobs}
         by_role = cls.jobs_by_role(jobs)
         children: dict[str, list[Job]] = {str(j.id): [] for j in jobs}
@@ -88,6 +92,11 @@ class RoleJobTree:
 
         for job in jobs:
             jid = str(job.id)
+            # Execution parent wins over org-chart reports_to.
+            if job.parent_id and str(job.parent_id) in by_id:
+                children[str(job.parent_id)].append(job)
+                attached.add(jid)
+                continue
             primary = cls.primary_role_id(job)
             supervisor_role = cls.reports_to(primary)
             supervisor_job = by_role.get(supervisor_role) if supervisor_role else None
@@ -97,10 +106,6 @@ class RoleJobTree:
                 and str(supervisor_job.id) in children
             ):
                 children[str(supervisor_job.id)].append(job)
-                attached.add(jid)
-                continue
-            if job.parent_id and str(job.parent_id) in by_id:
-                children[str(job.parent_id)].append(job)
                 attached.add(jid)
                 continue
             roots.append(job)
@@ -141,7 +146,7 @@ class RoleJobTree:
                 role = parent
 
         if not used:
-            used = [r.id for r in reg.list_roles() if not r.is_authoring]
+            used = [r.id for r in reg.list_roles()]
         return used
 
     @classmethod
@@ -166,9 +171,8 @@ class RoleJobTree:
                 "reports_to": role.reports_to or "",
                 "tools": list(role.tools),
                 "capabilities": list(role.capabilities),
-                "requires_roe": bool(role.requires_roe),
-                "assets": list(role.assets),
-                "mode": role.mode,
+                "kind": role.kind,
+                "skills": list(role.skills),
                 "job_id": str(job.id) if job else "",
                 "job_status": job.status if job else "",
                 "job_title": job.title if job else "",

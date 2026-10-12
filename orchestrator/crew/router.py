@@ -1,31 +1,28 @@
-"""Pick CrewAI roles for a brief via catalog tags + LLM (no regex maps)."""
+"""Pick roles via project-manager skill + platform role store."""
 
 from __future__ import annotations
 
 import json
 
-from orchestrator.crew.roles.registry import engagement_bookends, manager_role
+from orchestrator.crew.roles.catalog import catalog_role_ids, resolve_role_id
 from orchestrator.crew.roles.registry import RoleRegistry
+from orchestrator.skills.registry import SkillRegistry
 from orchestrator.utils.llm import chat_text, llm_configured
 from orchestrator.utils.service import SharedServiceBase
 from orchestrator.utils.strings import extract_json
 
+_PM_SKILL = "project-manager"
+
+
+def _project_manager_prompt() -> str:
+    skill = SkillRegistry.shared().get(_PM_SKILL)
+    if skill is None:
+        return ""
+    return skill.prompt_block()
+
 
 class RoleRouter(SharedServiceBase):
-    """Resolve roles from the live roles/ catalog using tags + AI."""
-
-    SYSTEM = """You pick CrewAI roles for Peon from the catalog below.
-Rules:
-- Only use role ids that appear in the catalog.
-- Prefer the smallest useful set.
-- Match the brief to each role's goal AND capabilities/tags.
-- Use hierarchy: roles with reports_to=<manager> are specialists the manager hires.
-- Engagement briefs: include the manager role (allow_delegation, no reports_to) when
-  multi-step work is needed; include the analyzer (tags include report) when a
-  full project report is expected.
-- Authoring / Learn / draft briefs (mode=authoring): pick authoring roles only —
-  do not hire network/probe specialists.
-Reply ONLY JSON: {"roles":["id",...],"reason":"short"}"""
+    """Resolve role ids using Peon catalog; LLM guided by project-manager skill."""
 
     def resolve(
         self,
@@ -35,97 +32,118 @@ Reply ONLY JSON: {"roles":["id",...],"reason":"short"}"""
         project: bool = True,
     ) -> list[str]:
         catalog = {r.id for r in RoleRegistry.shared().list_roles()}
+        allowed = set(catalog_role_ids()) & catalog
+        if not allowed:
+            allowed = catalog
         out: list[str] = []
         for raw in explicit or []:
-            rid = str(raw or "").strip()
+            rid = resolve_role_id(str(raw or "").strip())
             if rid in catalog and rid not in out:
                 out.append(rid)
         if out:
-            return out
+            return self._bookend(out, project=project) if project else out
 
         text = (description or "").strip()
-        mgr_id, ana_id = engagement_bookends()
-
+        mgr_id, _ana_id = RoleRegistry.shared().engagement_bookends()
         if not text:
             return [mgr_id] if project and mgr_id else []
 
-        if llm_configured() and catalog:
+        system = _project_manager_prompt()
+        learned = ""
+        try:
+            from orchestrator.skills.role_memory import role_skills_prompt_block
+
+            learned = role_skills_prompt_block()
+        except Exception:
+            learned = ""
+        if llm_configured() and allowed and system:
             try:
                 raw = chat_text(
-                    self.SYSTEM,
-                    f"Brief:\n{text[:3000]}\n\nproject={project}\n\n"
-                    f"Roles:\n{self._catalog_prompt_lines()}",
+                    system,
+                    (
+                        "Select engagement role ids for this brief. "
+                        "Never invent ids.\n\n"
+                        f"Brief:\n{text[:3000]}\n\nproject={project}\n"
+                        f"Allowed role ids: {', '.join(sorted(allowed))}\n"
+                        + (f"\n{learned}\n" if learned else "")
+                        + 'Reply ONLY JSON: {"roles":["id",...],"reason":"short"}'
+                    ),
                 )
                 data = json.loads(extract_json(raw))
                 picked = data.get("roles") if isinstance(data, dict) else []
                 for item in picked or []:
-                    rid = str(item or "").strip()
-                    if rid in catalog and rid not in out:
+                    rid = resolve_role_id(str(item or "").strip())
+                    if rid in allowed and rid not in out:
                         out.append(rid)
             except Exception:
                 out = []
 
-        if out:
-            return out
+        if not out and project and mgr_id:
+            out = [mgr_id]
+        return self._bookend(out, project=project) if project else out
 
-        # Offline / LLM failure: manager only for projects; empty for jobs.
-        if project and mgr_id:
-            return [mgr_id]
-        return []
-
-    def _catalog_prompt_lines(self) -> str:
-        lines: list[str] = []
-        for r in RoleRegistry.shared().list_roles():
-            caps = ", ".join(r.capabilities) if r.capabilities else "-"
-            reports = r.reports_to or "(none)"
-            flags: list[str] = [r.mode or "engagement"]
-            if r.is_manager:
-                flags.append("manager")
-            if r.is_analyzer:
-                flags.append("analyzer")
-            if r.requires_roe:
-                flags.append("requires_roe")
-            if r.assets:
-                flags.append(f"assets={len(r.assets)}")
-            lines.append(
-                f"- {r.id} [{'/'.join(flags)}] tags=[{caps}] "
-                f"reports_to={reports}: {r.goal[:160]}"
-            )
-        return "\n".join(lines)
+    @staticmethod
+    def _bookend(roles: list[str], *, project: bool) -> list[str]:
+        if not project:
+            return roles
+        mgr_id, ana_id = RoleRegistry.shared().engagement_bookends()
+        middle = [r for r in roles if r and r not in {mgr_id, ana_id}]
+        out: list[str] = []
+        if mgr_id:
+            out.append(mgr_id)
+        out.extend(middle)
+        if ana_id:
+            out.append(ana_id)
+        return out
 
     def roles_index(self) -> list[dict]:
-        return [
-            {
-                "id": r.id,
-                "label": r.label,
-                "goal": r.goal,
-                "capabilities": list(r.capabilities),
-                "reports_to": r.reports_to,
-                "tools": list(r.tools),
-                "mode": r.mode,
-                "authoring": r.is_authoring,
-                "is_manager": r.is_manager,
-                "is_analyzer": r.is_analyzer,
-                "assets": list(r.assets),
-            }
-            for r in RoleRegistry.shared().list_roles()
-        ]
-
-    def roles_index_text(self) -> str:
-        """Compact catalog text for planner prompts."""
-        mgr = manager_role()
-        lines = [
-            "Available CrewAI roles (assign via role_id on each objective).",
-            "Match role_id using goal text AND capabilities/tags.",
-            "Respect hierarchy.reports_to when sequencing work.",
-        ]
-        if mgr:
-            lines.append(f"Engagement manager id: `{mgr.id}` (hire specialists under it).")
+        known = set(catalog_role_ids())
+        rows = []
         for r in RoleRegistry.shared().list_roles():
-            caps = ", ".join(r.capabilities) if r.capabilities else "-"
-            reports = r.reports_to or "(none)"
-            lines.append(
-                f"- `{r.id}` [{r.mode}] — {r.label}: {r.goal[:180]} "
-                f"tags=[{caps}] reports_to={reports}"
+            rows.append(
+                {
+                    "id": r.id,
+                    "label": r.label,
+                    "goal": r.goal,
+                    "kind": r.kind,
+                    "skills": list(r.skills),
+                    "capabilities": list(r.capabilities),
+                    "allow_binaries": list(r.allow_binaries),
+                    "reports_to": r.reports_to,
+                    "tools": list(r.tools),
+                    "is_manager": r.is_manager,
+                    "is_analyzer": r.is_analyzer,
+                    "in_catalog": r.id in known,
+                }
             )
-        return "\n".join(lines)
+        return rows
+
+    def roles_index_text(self, *, compact: bool = False) -> str:
+        lines: list[str] = []
+        if not compact:
+            mgr = RoleRegistry.shared().manager()
+            lines = [
+                "Roles group skills (platform role store). Assign role_id; "
+                "agent loads role.skills.",
+                "Spawn is a Peon capability on technical / engagement-pm agents.",
+            ]
+            if mgr:
+                lines.append(f"Engagement manager id: `{mgr.id}`.")
+        for r in RoleRegistry.shared().list_roles():
+            skills = ", ".join(r.skills) if r.skills else "-"
+            binaries = ", ".join(r.allow_binaries) if r.allow_binaries else "-"
+            if compact:
+                flags = [r.kind] if r.kind else []
+                flag_s = f" [{', '.join(flags)}]" if flags else ""
+                goal = (r.goal or "").strip().splitlines()
+                goal0 = goal[0][:160] if goal else r.label
+                lines.append(
+                    f"{r.id}{flag_s}: {goal0} | skills={skills} | binaries={binaries}"
+                )
+            else:
+                reports = r.reports_to or "(none)"
+                lines.append(
+                    f"- `{r.id}` [{r.kind}] — {r.label}: {r.goal[:180]} "
+                    f"skills=[{skills}] binaries=[{binaries}] reports_to={reports}"
+                )
+        return "\n".join(lines) if lines else "No roles loaded."

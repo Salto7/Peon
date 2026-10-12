@@ -3,30 +3,26 @@
 ## Paths
 - Scratch → `workspace/`
 - Phase outputs → `findings/<skill-or-phase>.md` (+ structured JSON under `workspace/`)
-- Final `findings/report.md` → **analyzer** (Stop) or an explicit reporting objective
+- Final `findings/report.md` → **analyzer**
 
-## Sequencing & subgraphs
-- Honor each skill’s prerequisites and project-plan `depends_on`
-- Heavy pipelines: `run_skill_script` in **this** job; independent later phases:
-  one `spawn_agent(..., link="child")` each → `wait_for_agents` (pass `skill_name`;
-  never tell a child to skip upstream work)
-- One worker per phase unless the operator asks for corroboration
-- Hand off via `workspace/` JSON the next skill documents — not by parsing `findings/*.md`
-- On failure: re-run the skill workflow; don’t shrink inventories to seed-only
+## Who does what
+- **Engagement PM (this role)** — govern objectives, replan / ask operator, never probe
+- **Technical experts** — catalog roles (network, OSINT, web, SQLi, …); own a skill
+  group; spawn skill workers for parallel work
+- **Skill workers** — child Jobs under an expert; focused brief + one or more skills
+- **Analyzer** — report only after specialists complete
+
+## Sequencing
+- Honor project-plan `depends_on` (scheduler-enforced)
+- Fan-out: `spawn_work(..., link="child")` → `wait_for_work`
+- Hand off via `workspace/` artifacts the next skill documents — not by parsing
+  `findings/*.md`
 
 ## Rules
-1. CLIs from skill `requires_clis` are auto-provisioned from **`tools/catalog`**
-   by the worker. Use the Tools page for catalog entries — never shell `apt-get`
-   inside `run_skill_script` `command=`.
-2. Prefer dedicated skill scripts over ad-hoc install commands.
+1. CLIs come from **`tools/catalog`** via `provision_cli` / worker provision.
+2. Prefer expert skill packs over ad-hoc one-off shells.
 3. Never invent subjects or results when a skill or tool exists.
-4. For investigative work, split the objective into evidence questions, check the catalog
-   for a dedicated skill first, and use independent subagents only for genuinely parallel
-   evidence gathering.
-5. `record_finding` for engagement discoveries about subjects (any asset class) with
-   evidence — free-form `kind` / `asset_type`; not job/objective/agent status. One row
-   per discovery.
-6. Continuous monitoring: use the **`watchdog`** skill (`run_periodic` + tick script),
-   not ad-hoc `while True` loops in this job.
-7. Promote reusable scripts to `findings/code/`; avoid mid-run `skill_manage` when skill
-   learning is enabled.
+4. `record_finding` is for engagement discoveries about subjects with evidence —
+   not job/objective/agent status.
+5. On conflict / block: replan if cheap; otherwise `ask_operator`. Operator
+   guidance is learned experience for later runs.

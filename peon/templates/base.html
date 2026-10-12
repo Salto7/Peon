@@ -26,7 +26,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'css/peon.css' %}?v=20261004b">
+  <link rel="stylesheet" href="{% static 'css/peon.css' %}?v=20261010f">
   <link rel="icon" type="image/png" href="{% static 'img/favicon.png' %}?v=20260925c">
   {% block head %}{% endblock %}
 </head>
@@ -52,17 +52,28 @@
          href="{% url 'project_list' %}" title="Projects">
         <span class="app-side-ico" aria-hidden="true">▣</span>
         <span class="app-side-label">Projects</span>
+        <span class="app-side-badge" id="hitl-global-badge" hidden>0</span>
       </a>
       <a class="app-side-link{% if nav == 'catalog' %} is-active{% endif %}"
          href="{% url 'catalog' %}" title="Shared catalog">
         <span class="app-side-ico" aria-hidden="true">☰</span>
         <span class="app-side-label">Shared catalog</span>
       </a>
-      <a class="app-side-link{% if nav == 'learn' %} is-active{% endif %}"
-         href="{% url 'learn' %}" title="Toolsmith">
-        <span class="app-side-ico" aria-hidden="true">⚒</span>
-        <span class="app-side-label">Toolsmith</span>
-      </a>
+      <div class="app-side-group">
+        <a class="app-side-link{% if nav == 'lab' and not lab_section %} is-active{% endif %}"
+           href="{% url 'lab' %}" title="Lab">
+          <span class="app-side-ico" aria-hidden="true">⚒</span>
+          <span class="app-side-label">Lab</span>
+        </a>
+        <div class="app-side-subnav" aria-label="Lab pages">
+          <a class="app-side-sublink{% if lab_section == 'toolsmith' %} is-active{% endif %}"
+             href="{% url 'lab_toolsmith' %}" title="Toolsmith">Toolsmith</a>
+          <a class="app-side-sublink{% if lab_section == 'skills' %} is-active{% endif %}"
+             href="{% url 'lab_skills' %}" title="Imported skills">Imported skills</a>
+          <a class="app-side-sublink{% if lab_section == 'dream' %} is-active{% endif %}"
+             href="{% url 'lab_dream' %}" title="Dream">Dream</a>
+        </div>
+      </div>
       <a class="app-side-link{% if nav == 'settings' %} is-active{% endif %}"
          href="{% url 'settings_page' %}" title="Peon Settings">
         <span class="app-side-ico" aria-hidden="true">⚙</span>
@@ -87,17 +98,39 @@
 
   <div id="toast-root" class="toast-root" aria-live="polite"></div>
 
-  <dialog id="palette-dialog" class="palette-dialog" aria-label="Command palette">
-    <form method="dialog" class="palette-form" id="palette-form">
+  <dialog id="palette-dialog" class="palette-dialog peon-dialog" aria-label="Command palette">
+    <form method="dialog" class="palette-form peon-dialog-card" id="palette-form">
       <input type="search" id="palette-input" placeholder="Search projects, roles, tools, findings…" autocomplete="off">
       <ul id="palette-results" class="palette-results" role="listbox"></ul>
       <p class="meta palette-hint">↑↓ navigate · Enter open · Esc close · ⇧S open</p>
     </form>
   </dialog>
 
-  <script src="{% static 'js/peon-ui.js' %}?v=20260925l"></script>
+  <dialog id="hitl-global-dialog" class="hitl-global-dialog peon-dialog" aria-labelledby="hitl-global-title">
+    <div class="hitl-global-card peon-dialog-card">
+      <h2 id="hitl-global-title">Operator input needed</h2>
+      <p class="meta">Project: <a href="#" id="hitl-global-project"></a></p>
+      <p class="hitl-global-question" id="hitl-global-question"></p>
+      <label class="meta" for="hitl-global-reply">Reply / edit</label>
+      <textarea id="hitl-global-reply" rows="3" placeholder="Optional reply — required for Edit"></textarea>
+      <div class="bar hitl-global-actions">
+        <button type="button" id="hitl-global-approve">Approve</button>
+        <button type="button" class="secondary" id="hitl-global-edit">Edit &amp; send</button>
+        <button type="button" class="secondary" id="hitl-global-deny">Deny</button>
+        <button type="button" class="secondary" id="hitl-global-open">Open project</button>
+        <button type="button" class="secondary" id="hitl-global-dismiss">Dismiss</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="{% static 'js/peon-ui.js' %}?v=20261010b"></script>
+  <script src="{% static 'js/hitl-global.js' %}?v=20261010b"></script>
   <script>
     PeonUI.init({ searchUrl: "{% url 'search_json' %}" });
+    PeonHitlGlobal.init({
+      listUrl: "{% url 'pending_inputs_global' %}",
+      decideUrl: "{% url 'pending_input_decide' %}",
+    });
   </script>
   {% block scripts %}{% endblock %}
 </body>

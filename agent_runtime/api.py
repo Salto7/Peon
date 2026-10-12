@@ -51,7 +51,10 @@ class RuntimeSpec:
     image: str = ""
     role: str = "project"  # project | shared | learn-lab
     workspace_host: str = ""
-    roles_host: str = ""
+    skills_host: str = ""
+    skills_imported_host: str = ""
+    # Additional trusted skill repositories: (host path, container path).
+    extra_ro_mounts: list[tuple[str, str]] = field(default_factory=list)
     helpers_host: str = ""
     tools_host: str = ""
     socket_dir_host: str = ""
@@ -98,6 +101,7 @@ class RuntimeSession(ABC):
         timeout: float | None = 300,
         shell: bool = False,
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> ExecResult: ...
 
     def which(self, binary: str) -> bool:
@@ -165,8 +169,9 @@ class UnboundSession(RuntimeSession):
         timeout: float | None = 300,
         shell: bool = False,
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> ExecResult:
-        del cmd, timeout, shell, cwd
+        del cmd, timeout, shell, cwd, env
         raise RuntimeError(
             "No agent runtime bound — provision a project runtime before executing"
         )

@@ -1,9 +1,5 @@
-/* New-project create flow: status dialog while planning, then redirect. */
+/* New-project create flow: kind slide + status dialog while planning. */
 (function () {
-  function csrfToken() {
-    return (window.PeonUI && window.PeonUI.csrfToken && window.PeonUI.csrfToken()) || "";
-  }
-
   function setStep(list, key, state, detail) {
     if (!list) return;
     var li = list.querySelector('[data-step="' + key + '"]');
@@ -39,6 +35,49 @@
     });
   }
 
+  function bindKindSlide() {
+    var btn = document.getElementById("kind-toggle");
+    var kindInput = document.getElementById("kind");
+    var label = document.getElementById("kind-label");
+    var startStep = document.querySelector(
+      '#create-status-steps [data-step="start"] .create-step-body strong'
+    );
+    if (!btn || !kindInput) return;
+
+    function apply(kind) {
+      var durable = kind === "durable";
+      kindInput.value = durable ? "durable" : "timed";
+      btn.classList.toggle("is-durable", durable);
+      btn.setAttribute("aria-checked", durable ? "true" : "false");
+      if (label) label.textContent = durable ? "Durable" : "Timed";
+      if (startStep) {
+        startStep.textContent = durable ? "Review plan graph" : "Start agents";
+      }
+    }
+
+    btn.addEventListener("click", function () {
+      apply(kindInput.value === "durable" ? "timed" : "durable");
+    });
+    apply(kindInput.value || "timed");
+  }
+
+  function openDialog(dialog) {
+    dialog.classList.remove("is-closing");
+    dialog.classList.add("is-open");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+
+  function closeDialog(dialog) {
+    if (!dialog.open && !dialog.hasAttribute("open")) return;
+    dialog.classList.add("is-closing");
+    window.setTimeout(function () {
+      dialog.classList.remove("is-open", "is-closing");
+      if (dialog.open) dialog.close();
+      else dialog.removeAttribute("open");
+    }, 220);
+  }
+
   function init(opts) {
     var form = document.getElementById((opts && opts.formId) || "project-create-form");
     var dialog = document.getElementById("project-create-dialog");
@@ -51,10 +90,11 @@
     var submitBtn = document.getElementById("project-create-submit");
     if (!form || !dialog || form.dataset.boundCreate) return;
     form.dataset.boundCreate = "1";
+    bindKindSlide();
 
     if (closeBtn) {
       closeBtn.addEventListener("click", function () {
-        dialog.close();
+        closeDialog(dialog);
       });
     }
 
@@ -71,8 +111,7 @@
       if (actions) actions.hidden = true;
       if (sub) sub.textContent = "Hang on while Peon sets things up…";
       advanceOptimistic(steps, 0);
-      if (typeof dialog.showModal === "function") dialog.showModal();
-      else dialog.setAttribute("open", "");
+      openDialog(dialog);
 
       var tick = 0;
       var timer = window.setInterval(function () {
@@ -88,7 +127,7 @@
         headers: {
           Accept: "application/json",
           "X-Requested-With": "XMLHttpRequest",
-          "X-CSRFToken": csrfToken(),
+          "X-CSRFToken": window.PeonUI.csrfToken(),
         },
         body: new FormData(form),
       })
@@ -122,9 +161,13 @@
             return;
           }
           if (sub) {
-            sub.textContent = data.plan_ok
-              ? "Project is ready — opening war room…"
-              : (data.message || "Project created — opening war room…");
+            if (data.needs_plan_review) {
+              sub.textContent = "Plan ready — opening agent graph editor…";
+            } else {
+              sub.textContent = data.plan_ok
+                ? "Project is ready — opening war room…"
+                : (data.message || "Project created — opening war room…");
+            }
           }
           if (openBtn) openBtn.href = data.redirect;
           window.setTimeout(function () {

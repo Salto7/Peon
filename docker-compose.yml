@@ -39,18 +39,23 @@ services:
       DJANGO_SETTINGS_MODULE: peon.config.settings
       DEBUG: ${DEBUG:-true}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,web,edge}
-      PEON_DATA_DIR: /data
+      PROJECT_WORKSPACES_DIR: /workspaces
+      # Host root is mounted below; the app sees configured child paths.
+      SKILLS_EXTRA_DIRS: ${SKILLS_EXTRA_CONTAINER_DIRS:-}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost:8000}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://localhost:8000,https://127.0.0.1:8000}
       STREAM_SOCKET_PATH: /tmp/peon/stream.sock
-      SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-peon-sandbox:local}
       OPENSHELL_IMAGE: ${OPENSHELL_IMAGE:-peon-sandbox:local}
       PROJECT_SANDBOX_PREFIX: ${PROJECT_SANDBOX_PREFIX:-peon-project}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       DRAMATIQ_ENABLED: ${DRAMATIQ_ENABLED:-true}
+      COGNEE_ENABLED: ${COGNEE_ENABLED:-true}
+      COGNEE_PORT: ${COGNEE_PORT:-8001}
+      PEON_DREAMING_ENABLED: ${PEON_DREAMING_ENABLED:-true}
+      PEON_DREAMING_INTERVAL_S: ${PEON_DREAMING_INTERVAL_S:-900}
     volumes:
-      - peon_data:/data
+      - peon_workspaces:/workspaces
       - peon_sockets:/tmp/peon
       # Learn install-lab create/test/delete (AJAX). Project sandbox cleanup stays on worker.
       - /var/run/docker.sock:/var/run/docker.sock
@@ -60,13 +65,17 @@ services:
       - ./agent_runtime:/app/agent_runtime
       - ./manage.py:/app/manage.py
       - ./helpers:/app/helpers:ro
-      - ./roles:/app/roles:ro
+      - ./skills:/app/skills:ro
+      - ./skills_imported:/app/skills_imported
+      - ${SKILLS_EXTRA_HOST_ROOT:-./skills_imported}:/external-skills:ro
       - ./tools:/app/tools:ro
     expose:
       - "8000"
     depends_on:
       redis:
         condition: service_healthy
+      cognee:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/"]
       interval: 10s
@@ -86,13 +95,14 @@ services:
       DJANGO_SETTINGS_MODULE: peon.config.settings
       DEBUG: ${DEBUG:-true}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,web,edge}
-      PEON_DATA_DIR: /data
+      PROJECT_WORKSPACES_DIR: /workspaces
+      # Must match child paths below the read-only external-root mount.
+      SKILLS_EXTRA_DIRS: ${SKILLS_EXTRA_CONTAINER_DIRS:-}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost:8000}
       STREAM_SOCKET_PATH: /tmp/peon/stream.sock
       ORCHESTRATOR_STREAM_SOCKET: /tmp/peon/stream.sock
       RPC_SOCKET_PATH: /tmp/peon/rpc.sock
       ORCHESTRATOR_RPC_SOCKET: /tmp/peon/rpc.sock
-      SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-peon-sandbox:local}
       OPENSHELL_IMAGE: ${OPENSHELL_IMAGE:-peon-sandbox:local}
       PROJECT_SANDBOX_PREFIX: ${PROJECT_SANDBOX_PREFIX:-peon-project}
@@ -100,15 +110,21 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       DRAMATIQ_ENABLED: ${DRAMATIQ_ENABLED:-true}
       DRAMATIQ_TIME_LIMIT_MS: ${DRAMATIQ_TIME_LIMIT_MS:-21600000}
+      COGNEE_ENABLED: ${COGNEE_ENABLED:-true}
+      COGNEE_PORT: ${COGNEE_PORT:-8001}
+      PEON_DREAMING_ENABLED: ${PEON_DREAMING_ENABLED:-true}
+      PEON_DREAMING_INTERVAL_S: ${PEON_DREAMING_INTERVAL_S:-900}
     volumes:
-      - peon_data:/data
+      - peon_workspaces:/workspaces
       - peon_sockets:/tmp/peon
       - ./peon:/app/peon
       - ./orchestrator:/app/orchestrator
       - ./agent_runtime:/app/agent_runtime
       - ./manage.py:/app/manage.py
       - ./helpers:/app/helpers:ro
-      - ./roles:/app/roles:ro
+      - ./skills:/app/skills:ro
+      - ./skills_imported:/app/skills_imported
+      - ${SKILLS_EXTRA_HOST_ROOT:-./skills_imported}:/external-skills:ro
       - ./tools:/app/tools:ro
       - /var/run/docker.sock:/var/run/docker.sock
     entrypoint: ["/entrypoint-worker.sh"]
@@ -117,6 +133,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      cognee:
+        condition: service_started
     restart: unless-stopped
 
   # HTTPS edge / reverse proxy (Caddy): only host-facing service. Terminates TLS and
@@ -136,33 +154,91 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Optional OpenAI-compatible LiteLLM proxy (off by default).
-  # Prefer: enable LLM_PROXY_ENABLED in Peon Settings (web starts peon-litellm).
-  # Or: COMPOSE_PROFILES=llm-proxy / docker compose --profile llm-proxy up -d
-  # Peon agent traffic stays in-process; gateway is for OpenCode (Toolsmith Learn lab).
+  # Optional OpenAI-compatible LiteLLM proxy (OpenCode / Lab). Off by default.
+  # Prefer: LLM_PROXY_ENABLED in Peon Settings (web starts peon-litellm).
+  # Or: COMPOSE_PROFILES=llm-proxy. Peon agents + Cognee do not need this proxy.
+  # Single model from LITELLM_MODEL — config is generated here (no Docker/litellm/*.yaml).
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     profiles: ["llm-proxy"]
     env_file:
       - .env
     environment:
-      LITELLM_MODEL: ${LITELLM_MODEL:-openrouter/openai/gpt-4o-mini}
+      LITELLM_MODEL: ${LITELLM_MODEL:-openrouter/openai/gpt-5.6-luna}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
-      # Bearer key for /v1 clients; default is for local lab only — override in .env.
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-peon-litellm}
-    volumes:
-      - ./Docker/litellm/config.yaml:/app/config.yaml:ro
-    command: ["--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "4000"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        MODEL="$${LITELLM_MODEL:?LITELLM_MODEL required}"
+        cat >/tmp/config.yaml <<EOF
+        model_list:
+          - model_name: default
+            litellm_params:
+              model: os.environ/LITELLM_MODEL
+              api_key: os.environ/OPENROUTER_API_KEY
+          - model_name: "$${MODEL}"
+            litellm_params:
+              model: os.environ/LITELLM_MODEL
+              api_key: os.environ/OPENROUTER_API_KEY
+          - model_name: openrouter/openai/text-embedding-3-small
+            litellm_params:
+              model: openrouter/openai/text-embedding-3-small
+              api_key: os.environ/OPENROUTER_API_KEY
+        general_settings:
+          master_key: os.environ/LITELLM_MASTER_KEY
+        EOF
+        exec litellm --config /tmp/config.yaml --host 0.0.0.0 --port 4000
     ports:
       - "${LLM_PROXY_PORT:-4000}:4000"
+    networks:
+      default:
+        aliases:
+          - litellm
     restart: unless-stopped
 
+  # Self-hosted Cognee memory sidecar (single writer). Peon → http://cognee:<port>.
+  # Chat LLM = LITELLM_MODEL via OpenRouter (Cognee embeds LiteLLM; no Peon proxy).
+  # Embeddings are separate (required by cognify) — OpenRouter text-embedding-3-small.
+  cognee:
+    image: ${COGNEE_IMAGE:-cognee/cognee:main}
+    restart: unless-stopped
+    environment:
+      HTTP_PORT: ${COGNEE_PORT:-8001}
+      ENABLE_BACKEND_ACCESS_CONTROL: "false"
+      COGNEE_SKIP_CONNECTION_TEST: ${COGNEE_SKIP_CONNECTION_TEST:-true}
+      LLM_PROVIDER: custom
+      LLM_MODEL: ${LITELLM_MODEL:-openrouter/openai/gpt-5.6-luna}
+      LLM_API_KEY: ${OPENROUTER_API_KEY}
+      EMBEDDING_PROVIDER: custom
+      EMBEDDING_MODEL: ${COGNEE_EMBEDDING_MODEL:-openrouter/openai/text-embedding-3-small}
+      EMBEDDING_API_KEY: ${OPENROUTER_API_KEY}
+      EMBEDDING_DIMENSIONS: ${COGNEE_EMBEDDING_DIMENSIONS:-1536}
+    volumes:
+      - peon_cognee:/cognee-storage
+    expose:
+      - "${COGNEE_PORT:-8001}"
+    ports:
+      - "${COGNEE_PORT:-8001}:${COGNEE_PORT:-8001}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${HTTP_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    networks:
+      default:
+        aliases:
+          - cognee
+
 volumes:
-  peon_data:
-    name: peon_data
+  peon_workspaces:
+    name: peon_workspaces
   edge_certs:
     name: peon_edge_certs
   peon_sockets:
     name: peon_sockets
+  peon_cognee:
+    name: peon_cognee

@@ -80,7 +80,12 @@ class OpenShellRuntime(Runtime):
             image=spec.image,
             workdir=spec.container_workdir or "/sandbox",
         )
-        return OpenShellSession(info, cli=self._cli)
+        session = OpenShellSession(info, cli=self._cli)
+        try:
+            session.load_base_commands()
+        except Exception as exc:
+            logger.info("base-command probe skipped for %s: %s", spec.name, exc)
+        return session
 
     def destroy(self, spec: RuntimeSpec) -> dict:
         name = (spec.name or "").strip()

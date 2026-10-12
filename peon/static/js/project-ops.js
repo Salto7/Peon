@@ -5,7 +5,12 @@
   }
 
   function csrfToken() {
-    return (window.PeonUI && window.PeonUI.csrfToken && window.PeonUI.csrfToken()) || "";
+    return (
+      (window.PeonUI &&
+        window.PeonUI.csrfToken &&
+        window.PeonUI.csrfToken()) ||
+      ""
+    );
   }
 
   function postForm(action, fields) {
@@ -42,14 +47,7 @@
   }
 
   function statusPill(status) {
-    if (window.PeonUI && window.PeonUI.statusPill) {
-      return window.PeonUI.statusPill(status);
-    }
-    const pill = document.createElement("span");
-    pill.className = "status-pill";
-    pill.dataset.status = status || "";
-    pill.textContent = status || "";
-    return pill;
+    return window.PeonUI.statusPill(status);
   }
 
   function streamPayload(meta) {
@@ -366,15 +364,16 @@
 
   function agentCommandSeed(agent) {
     if (!agent) return "";
-    const candidates = []
-      .concat(agent.operator_command || "")
-      .concat(agent.last_command || "")
-      .concat(agent.commands || []);
-    for (let i = 0; i < candidates.length; i++) {
-      const c = candidates[i];
+    // Prefer the last executed stream command over planner dry-run seeds.
+    const last = String(agent.last_command || "").trim();
+    if (last) return unwrapAgentCommand(last);
+    const cmds = Array.isArray(agent.commands) ? agent.commands : [];
+    for (let i = 0; i < cmds.length; i++) {
+      const c = cmds[i];
       if (looksLikeAgentCommand(c)) return unwrapAgentCommand(c);
     }
-    return "";
+    const op = String(agent.operator_command || "").trim();
+    return op ? unwrapAgentCommand(op) : "";
   }
 
   function focusCommandEditor(seed) {
@@ -390,9 +389,26 @@
     ta.select();
   }
 
+  function hideOverlayDialog(dlg) {
+    if (!dlg || dlg.hidden) return;
+    dlg.classList.add("is-closing");
+    window.setTimeout(function () {
+      dlg.classList.remove("is-open", "is-closing");
+      dlg.hidden = true;
+    }, 220);
+  }
+
+  function showOverlayDialog(dlg) {
+    if (!dlg) return;
+    dlg.hidden = false;
+    dlg.classList.remove("is-closing");
+    // Force reflow so enter animation plays.
+    void dlg.offsetWidth;
+    dlg.classList.add("is-open");
+  }
+
   function hideCommandEditDialog() {
-    const dlg = el("agent-command-dialog");
-    if (dlg) dlg.hidden = true;
+    hideOverlayDialog(el("agent-command-dialog"));
   }
 
   function openCommandEditDialog(projectPk, agent, onSelect) {
@@ -400,12 +416,12 @@
     if (!dlg) {
       dlg = document.createElement("div");
       dlg.id = "agent-command-dialog";
-      dlg.className = "agent-command-dialog";
+      dlg.className = "agent-command-dialog peon-overlay";
       dlg.setAttribute("role", "dialog");
       dlg.setAttribute("aria-modal", "true");
       dlg.setAttribute("aria-labelledby", "agent-command-dialog-title");
       dlg.innerHTML =
-        '<div class="agent-command-dialog-card">' +
+        '<div class="agent-command-dialog-card peon-dialog-card">' +
         '<h3 id="agent-command-dialog-title">Edit agent command</h3>' +
         '<p class="meta agent-command-dialog-sub"></p>' +
         '<label class="meta" for="agent-command-dialog-input">Emitted command (catalog CLI or tool call)</label>' +
@@ -423,6 +439,7 @@
       document.addEventListener("keydown", function (ev) {
         if (ev.key === "Escape" && dlg && !dlg.hidden) {
           hideCommandEditDialog();
+          hideAddChildDialog();
         }
       });
     }
@@ -458,11 +475,230 @@
         rerunJob(projectPk, agent, cmd);
       });
     });
-    dlg.hidden = false;
+    showOverlayDialog(dlg);
     if (input) {
       input.focus();
       input.select();
     }
+  }
+
+  function hideAddChildDialog() {
+    hideOverlayDialog(el("agent-add-child-dialog"));
+  }
+
+  function openAddChildDialog(projectPk, agent) {
+    let dlg = el("agent-add-child-dialog");
+    if (!dlg) {
+      dlg = document.createElement("div");
+      dlg.id = "agent-add-child-dialog";
+      dlg.className = "agent-command-dialog agent-add-child-dialog peon-overlay";
+      dlg.setAttribute("role", "dialog");
+      dlg.setAttribute("aria-modal", "true");
+      dlg.setAttribute("aria-labelledby", "agent-add-child-title");
+      dlg.innerHTML =
+        '<div class="agent-command-dialog-card peon-dialog-card">' +
+        '<h3 id="agent-add-child-title">Add child agent</h3>' +
+        '<p class="meta agent-command-dialog-sub" id="agent-add-child-sub"></p>' +
+        '<label class="meta" for="agent-add-child-role">Role (inherits parent; editable)</label>' +
+        '<select id="agent-add-child-role"></select>' +
+        '<p class="meta" id="agent-add-child-role-goal"></p>' +
+        '<label class="meta" for="agent-add-child-title-input">Title</label>' +
+        '<input id="agent-add-child-title-input" type="text" placeholder="Follow-up task">' +
+        '<label class="meta" for="agent-add-child-prompt">Task prompt</label>' +
+        '<textarea id="agent-add-child-prompt" rows="5" ' +
+        'placeholder="What should this child agent do?"></textarea>' +
+        '<fieldset class="agent-add-child-skills">' +
+        "<legend class=\"meta\">Skills</legend>" +
+        '<div id="agent-add-child-skills" class="skill-check-list"></div>' +
+        "</fieldset>" +
+        '<div class="agent-command-dialog-actions">' +
+        '<button type="button" class="secondary" data-act="cancel">Cancel</button>' +
+        '<button type="button" data-act="spawn">Add child &amp; queue</button>' +
+        "</div></div>";
+      document.body.appendChild(dlg);
+      dlg.addEventListener("click", function (ev) {
+        if (ev.target === dlg) hideAddChildDialog();
+      });
+    }
+    const sub = el("agent-add-child-sub");
+    const roleSel = el("agent-add-child-role");
+    const goalEl = el("agent-add-child-role-goal");
+    const titleIn = el("agent-add-child-title-input");
+    const promptIn = el("agent-add-child-prompt");
+    const skillsHost = el("agent-add-child-skills");
+    let roleSkillsMap = {};
+    if (sub) sub.textContent = "Under " + (agent.title || agent.id);
+    if (titleIn) titleIn.value = "";
+    if (promptIn) promptIn.value = "";
+    if (skillsHost) skillsHost.replaceChildren();
+    if (roleSel) {
+      roleSel.replaceChildren();
+      const loading = document.createElement("option");
+      loading.value = "";
+      loading.textContent = "Loading roles…";
+      roleSel.appendChild(loading);
+    }
+    const fillSkills = function (roleId, selected) {
+      if (!skillsHost) return;
+      skillsHost.replaceChildren();
+      const skills = (roleSkillsMap[roleId] && roleSkillsMap[roleId].skills) || [];
+      const picked = selected || (roleSkillsMap[roleId] && roleSkillsMap[roleId].selected) || skills;
+      const selSet = {};
+      (picked || []).forEach(function (s) {
+        selSet[s] = true;
+      });
+      if (!skills.length) {
+        const empty = document.createElement("p");
+        empty.className = "meta";
+        empty.textContent = "No skills on this role.";
+        skillsHost.appendChild(empty);
+        return;
+      }
+      skills.forEach(function (sid) {
+        const lab = document.createElement("label");
+        lab.className = "skill-check";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = sid;
+        cb.checked = !!selSet[sid];
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(" " + sid));
+        skillsHost.appendChild(lab);
+      });
+    };
+    const selectedSkills = function () {
+      if (!skillsHost) return [];
+      return Array.prototype.slice
+        .call(skillsHost.querySelectorAll('input[type="checkbox"]:checked'))
+        .map(function (cb) {
+          return cb.value;
+        });
+    };
+    const syncGoal = function () {
+      if (!roleSel || !goalEl) return;
+      const opt = roleSel.options[roleSel.selectedIndex];
+      goalEl.textContent = (opt && opt.dataset.goal) || "";
+      if (titleIn && !titleIn.value.trim() && opt && opt.dataset.label) {
+        titleIn.placeholder = opt.dataset.label + " follow-up";
+      }
+      const rid = (roleSel && roleSel.value) || "";
+      fillSkills(rid);
+    };
+    if (roleSel) roleSel.onchange = syncGoal;
+
+    const cancelBtn = dlg.querySelector('[data-act="cancel"]');
+    const spawnBtn = dlg.querySelector('[data-act="spawn"]');
+    if (cancelBtn) cancelBtn.onclick = hideAddChildDialog;
+    if (spawnBtn) {
+      spawnBtn.onclick = function () {
+        const roleId = (roleSel && roleSel.value) || "";
+        const title = (titleIn && titleIn.value) || "";
+        const prompt = (promptIn && promptIn.value) || "";
+        if (!roleId || !prompt.trim()) {
+          if (window.PeonUI) {
+            window.PeonUI.toast("Pick a role and enter a task prompt", "warn");
+          }
+          return;
+        }
+        spawnBtn.disabled = true;
+        const url =
+          "/projects/" + projectPk + "/jobs/" + agent.id + "/add-child/";
+        fetch(url, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-CSRFToken": csrfToken(),
+          },
+          body: JSON.stringify({
+            role_id: roleId,
+            title: title.trim(),
+            prompt: prompt.trim(),
+            skill_ids: selectedSkills(),
+          }),
+        })
+          .then(function (res) {
+            return res.json().then(function (data) {
+              return { ok: res.ok, data: data };
+            });
+          })
+          .then(function (out) {
+            spawnBtn.disabled = false;
+            if (!out.ok || !out.data || !out.data.ok) {
+              if (window.PeonUI) {
+                window.PeonUI.toast(
+                  (out.data && out.data.error) || "Could not add child",
+                  "error"
+                );
+              }
+              return;
+            }
+            hideAddChildDialog();
+            if (window.PeonUI) {
+              window.PeonUI.toast(
+                "Child queued — analyzer will re-run when artifacts land",
+                "ok"
+              );
+            }
+          })
+          .catch(function () {
+            spawnBtn.disabled = false;
+            if (window.PeonUI) {
+              window.PeonUI.toast("Could not add child", "error");
+            }
+          });
+      };
+    }
+
+    showOverlayDialog(dlg);
+    fetch(
+      "/projects/" +
+        projectPk +
+        "/jobs/" +
+        agent.id +
+        "/suggest-roles.json",
+      {
+        headers: {
+          Accept: "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+      }
+    )
+      .then(function (res) {
+        return res.json();
+      })
+      .then(function (data) {
+        if (!roleSel || !data || !data.ok) return;
+        roleSel.replaceChildren();
+        roleSkillsMap = {};
+        (data.roles || []).forEach(function (r, i) {
+          const opt = document.createElement("option");
+          opt.value = r.id;
+          opt.textContent =
+            (r.label || r.id) +
+            (r.inherit ? " · parent" : r.suggested ? " · suggested" : "");
+          opt.dataset.goal = r.goal || "";
+          opt.dataset.label = r.label || r.id;
+          if (i === 0) opt.selected = true;
+          roleSel.appendChild(opt);
+          roleSkillsMap[r.id] = {
+            skills: r.skills || [],
+            selected: r.selected_skills || r.skills || [],
+          };
+        });
+        syncGoal();
+        if (promptIn) promptIn.focus();
+      })
+      .catch(function () {
+        if (roleSel) {
+          roleSel.replaceChildren();
+          const opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = "Could not load roles";
+          roleSel.appendChild(opt);
+        }
+      });
   }
 
   function fillContextActions(container, agent, projectPk) {
@@ -684,6 +920,10 @@
     mk("Edit command", function () {
       if (onEdit) onEdit(agent);
       openCommandEditDialog(projectPk, agent, onEdit);
+    });
+    mk("Add child", function () {
+      if (onEdit) onEdit(agent);
+      openAddChildDialog(projectPk, agent);
     });
     const status = String(agent.status || "");
     const terminal =
@@ -964,14 +1204,53 @@
     if (!body || !objectives) return;
     const count = el("objectives-count");
     if (count) count.textContent = String(objectives.length);
+    const sig = objectives
+      .map(function (o) {
+        return [o.id, o.status, o.title, o.role_id, o.phase].join(":");
+      })
+      .join("|");
+    if (body.dataset.sig === sig) return;
+    body.dataset.sig = sig;
+    body.replaceChildren();
+    if (!objectives.length) {
+      const empty = document.createElement("p");
+      empty.className = "meta findings-empty";
+      empty.textContent = "No objectives yet.";
+      body.appendChild(empty);
+      return;
+    }
     objectives.forEach(function (o) {
-      const card = body.querySelector('[data-objective-id="' + o.id + '"]');
-      if (!card) return;
-      const cell = card.querySelector("[data-objective-status]");
-      if (cell) {
-        cell.textContent = o.status || "";
-        cell.dataset.status = o.status || "";
-      }
+      const card = document.createElement("article");
+      card.className = "objective-card";
+      card.dataset.objectiveId = o.id;
+      card.dataset.status = o.status || "";
+      const top = document.createElement("div");
+      top.className = "objective-card-top";
+      const seq = document.createElement("span");
+      seq.className = "meta";
+      seq.textContent = "OBJ-" + o.seq;
+      const status = document.createElement("span");
+      status.className = "status-pill";
+      status.dataset.objectiveStatus = "";
+      status.dataset.status = o.status || "";
+      status.textContent = o.status || "";
+      top.appendChild(seq);
+      top.appendChild(status);
+      const title = document.createElement("h3");
+      title.className = "objective-card-title";
+      title.textContent = o.title || "";
+      const meta = document.createElement("div");
+      meta.className = "objective-card-meta";
+      [o.role_id || "unassigned", o.phase || ""].forEach(function (value) {
+        if (!value) return;
+        const code = document.createElement("code");
+        code.textContent = value;
+        meta.appendChild(code);
+      });
+      card.appendChild(top);
+      card.appendChild(title);
+      card.appendChild(meta);
+      body.appendChild(card);
     });
   }
 
@@ -1415,6 +1694,7 @@
         });
       });
     }
+    return reloadFindings;
   }
 
   window.PeonProjectOps = {
@@ -1428,6 +1708,8 @@
       let lastProjectStatus = "";
       let selectedId = "";
       let agentsCache = [];
+      let lastFindingsCount = -1;
+      let reloadFindings = null;
       const knownAgentStatus = {};
       const latestByJob = {};
 
@@ -1561,6 +1843,19 @@
           walkAgents(agents);
 
           const reports = data.reports || [];
+          const findingCounts = data.finding_counts || {};
+          const findingsTotal = Number(findingCounts.all || 0);
+          if (reloadFindings && findingsTotal !== lastFindingsCount) {
+            lastFindingsCount = findingsTotal;
+            reloadFindings();
+          }
+          if (
+            data.attack_surface &&
+            window.PeonAttackSurface &&
+            window.PeonAttackSurface.update
+          ) {
+            window.PeonAttackSurface.update(data.attack_surface);
+          }
           const nextReady = data.next_objective_ready;
           updateRunNext(nextReady);
           // Reports can appear without agent status changes — always sync.
@@ -1629,7 +1924,11 @@
       setInterval(pollJobs, 2000);
       pollMessages();
       pollJobs();
-      bindFindingsBoard(projectPk, opts.findingStatuses || []);
+      reloadFindings = bindFindingsBoard(
+        projectPk,
+        opts.findingStatuses || []
+      );
+      reloadFindings();
       bindProjectChat(projectPk);
       bindProjectFiles(projectPk);
       var ws = el("console-workspace");

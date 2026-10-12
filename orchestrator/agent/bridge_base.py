@@ -27,12 +27,17 @@ class AgentBridgeBase(ABC):
         title: str,
         description: str,
         role_ids: list[str] | None = None,
-        link: AgentLink = "peer",
+        link: AgentLink = "child",
+        scope_slice: dict[str, str] | None = None,
+        skill_ids: list[str] | None = None,
     ) -> str:
         """Enqueue another Job.
 
-        ``peer`` — same objective, focused brief (typical multi-agent).
-        ``child`` — subordinate of this job (depth-limited tree).
+        ``child`` (default) — subordinate of this job (depth-limited tree).
+        ``peer`` — same objective, focused brief.
+        Empty ``role_ids`` inherits this job's role (same-role fan-out).
+        Optional ``skill_ids`` selects a subset of the target role's skill group;
+        empty inherits parent/objective skills (or the full role group).
         """
 
     @abstractmethod
@@ -44,10 +49,19 @@ class AgentBridgeBase(ABC):
     def list_agents(self) -> str:
         return "list_agents bridge not configured."
 
+    def list_delegations(self) -> str:
+        """Spawn tree for manager oversight (project/objective)."""
+        return "list_delegations bridge not configured."
+
     def propose_agents(self, *, context_notes: str = "", max_agents: int = 4) -> str:
-        """Propose (and optionally spawn) context-driven peer Jobs."""
+        """Propose (and optionally spawn) context-driven Jobs."""
         del context_notes, max_agents
         return "propose_agents bridge not configured."
+
+    def append_transcript(self, record: Any) -> None:
+        """Persist a structured transcript record (optional)."""
+        del record
+        return None
 
     def list_objectives(self) -> str:
         return "Objectives bridge not configured."
@@ -55,6 +69,17 @@ class AgentBridgeBase(ABC):
     def update_objective_status(self, seq: int, status: str, note: str = "") -> str:
         del seq, status, note
         return "update_objective_status bridge not configured."
+
+    def ask_operator(
+        self,
+        question: str,
+        *,
+        options: str = "",
+        blocks_job: bool = True,
+    ) -> str:
+        """Request human-in-the-loop input (typed OperatorPrompt)."""
+        del question, options, blocks_job
+        return "ask_operator bridge not configured."
 
     def record_finding(self, **fields: Any) -> str:
         del fields
@@ -102,6 +127,10 @@ class AgentBridgeBase(ABC):
     # --- RoE (CrewAI roles; peon implements against RulesOfEngagement) ---
 
     def roe_summary(self) -> str:
+        return "RoE bridge not configured."
+
+    def roe_probe_block_reason(self) -> str:
+        """Empty when RoE in_scope is usable for probes; else denial reason."""
         return "RoE bridge not configured."
 
     def assert_in_scope(self, target: str) -> str:

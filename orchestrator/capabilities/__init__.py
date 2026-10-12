@@ -1,4 +1,4 @@
-"""Capability registry — LangChain tools bound per Job."""
+"""Capability registry — named callables for authoring and command helpers."""
 
 from orchestrator.capabilities.registry import (
     REGISTRY,

@@ -6,8 +6,8 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
-from peon.projects.http_helpers import split_csv
-from peon.projects.planning_persist import PlanningService
+from orchestrator.utils.strings import as_str_list
+from peon.projects.planning import PlanningService
 from peon.projects.target_shapes import parse_target_lines
 
 
@@ -29,7 +29,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--roles",
             default="",
-            help="Comma-separated CrewAI role ids (roles/)",
+            help="Comma-separated CrewAI role ids (platform role store)",
         )
 
     def handle(self, *args, **options) -> None:
@@ -40,7 +40,7 @@ class Command(BaseCommand):
         if not description:
             raise CommandError("Provide a brief string or --brief-file")
 
-        roles = split_csv(options["roles"])
+        roles = as_str_list(options["roles"])
         try:
             result = PlanningService.run_llm_plan(
                 description=description,

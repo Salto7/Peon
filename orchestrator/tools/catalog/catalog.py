@@ -133,9 +133,23 @@ class ToolCatalog(SharedServiceBase):
             tool.tier,
             tool.binary,
             tuple(tool.binaries or []),
-            tuple(tool.roles or []),
             tuple(tool.tags or []),
         )
+
+    @staticmethod
+    def roles_for(tool: CatalogTool) -> list[str]:
+        """Role ids whose skill allowlists include this tool (id/binary)."""
+        try:
+            from orchestrator.crew.roles.registry import RoleRegistry
+        except Exception:
+            return list(tool.roles or [])
+        out: list[str] = []
+        for role in RoleRegistry.shared().list_roles():
+            for name in role.allow_binaries or ():
+                if tool.provides(str(name)):
+                    out.append(role.id)
+                    break
+        return out
 
     def reload_tools(self) -> dict:
         """Force-rescan ``tools/catalog`` YAML (same path as ``invalidate`` + ``all``)."""
@@ -282,11 +296,8 @@ class ToolCatalog(SharedServiceBase):
             if isinstance(raw.get("install"), list)
             else [],
             verify=normalize_verify(raw.get("verify")),
-            roles=[
-                str(s).strip()
-                for s in (raw.get("roles") or [])
-                if str(s).strip()
-            ],
+            # Roles bind skills through inferred affinity, not tool YAML.
+            roles=[],
             tags=[str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()],
         )
 

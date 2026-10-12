@@ -8,7 +8,7 @@ import time
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from peon.projects.job_run import process_one
+from peon.projects.job_run import JobExecutionService
 from peon.projects.streaming import start_peon_rpc_server, start_stream_server
 
 
@@ -59,7 +59,7 @@ class Command(BaseCommand):
         poll = max(0.2, float(options["poll"]))
         self.stdout.write("worker started")
         while True:
-            job = process_one()
+            job = JobExecutionService.process_one()
             if job is not None:
                 self.stdout.write(
                     self.style.NOTICE(

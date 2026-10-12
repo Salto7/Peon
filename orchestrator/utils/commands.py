@@ -7,7 +7,6 @@ import re
 from functools import lru_cache
 
 from orchestrator.capabilities.registry import ensure_registered
-from orchestrator.crew.tools import known_tool_names
 
 _TOKEN_CLEAN = re.compile(r"[^a-z0-9._+/-]+")
 
@@ -34,13 +33,15 @@ def catalog_cli_names() -> frozenset[str]:
 
 @lru_cache(maxsize=1)
 def capability_tool_names() -> frozenset[str]:
-    """Registered capability + CrewAI tool names (e.g. run_cli, provision_cli)."""
+    """Registered capability + CrewAI tool names (e.g. bash, provision_cli)."""
     names: set[str] = set()
     try:
         names.update(ensure_registered().names())
     except Exception:
         pass
     try:
+        from orchestrator.crew.tools import known_tool_names
+
         names.update(known_tool_names())
     except Exception:
         pass
@@ -49,7 +50,7 @@ def capability_tool_names() -> frozenset[str]:
 
 @lru_cache(maxsize=1)
 def role_allow_binaries() -> frozenset[str]:
-    """Union of ROLE.yaml ``tool_policy.allow_binaries`` across the role catalog."""
+    """Union of skill ``allow_binaries`` across the Peon role catalog."""
     try:
         # circular: RoleRegistry.invalidate → clear_command_caches
         from orchestrator.crew.roles.registry import RoleRegistry
@@ -72,7 +73,7 @@ def clear_command_caches() -> None:
 
 
 def known_cli_names() -> frozenset[str]:
-    """CLIs resolvable from tools/catalog and/or ROLE.yaml allow lists."""
+    """CLIs resolvable from tools/catalog and/or role skill allow lists."""
     return frozenset(catalog_cli_names() | role_allow_binaries())
 
 
@@ -114,7 +115,7 @@ def _shell_from_capability_call(text: str) -> str:
 
     Contract:
     - ``command=`` keyword on any registered capability → that string
-    - else first positional string on the shell-runner capability ``run_cli``
+    - else first positional string on a capability tagged ``shell`` (``bash``)
     """
     raw = (text or "").strip()
     if not raw:
@@ -134,8 +135,8 @@ def _shell_from_capability_call(text: str) -> str:
             val = _str_const(kw.value)
             if val:
                 return val
-    # Positional shell only for the dedicated shell-runner capability.
-    if name == "run_cli" and body.args:
+    entry = ensure_registered().get(name)
+    if entry is not None and "shell" in entry.tags and body.args:
         return _str_const(body.args[0])
     return ""
 
@@ -180,14 +181,6 @@ def looks_like_agent_command(text: str) -> bool:
     return bool(name and name in capability_tool_names())
 
 
-def unwrap_wrapped_command(text: str) -> str:
-    """Shell CLI when present; otherwise the original stripped text."""
-    raw = (text or "").strip()
-    if not raw:
-        return ""
-    return as_shell_cli(raw) or raw
-
-
 def pick_agent_command(*candidates: str) -> str:
     """First candidate that resolves to a catalog/role shell CLI."""
     for raw in candidates:
@@ -202,7 +195,7 @@ def normalize_objective_commands(commands: list | str | None) -> list[str]:
 
     Specialist objectives should store plain shell (``nmap …``). Capability
     hints (``roe_status()``, …) are kept when they are not shell wrappers.
-    Legacy ``run_cli("nmap …")`` forms are coerced to the inner shell CLI.
+    ``bash("nmap …")`` forms are coerced to the inner shell CLI.
     """
     if isinstance(commands, str):
         items = [commands]

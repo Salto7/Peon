@@ -69,15 +69,25 @@ def record_stream_message(
     metadata: dict | None = None,
 ) -> StreamMessage | None:
     """Write a StreamMessage for a Job. Returns None if job missing."""
+    from peon.projects.db import get_job, project_alias_or_default, using_project
+
     jid = _job_id(job_id)
-    row = Job.objects.filter(id=jid).values_list("status", "parent_id", "title", "project_id").first()
-    if row is None:
+    meta: dict[str, Any] = dict(metadata or {})
+    project_hint = str(meta.get("project_id") or "").strip() or None
+    try:
+        # Prefer the payload project id — fan-out get_job hits every project DB.
+        job = get_job(jid, project_id=project_hint) if project_hint else get_job(jid)
+    except Job.DoesNotExist:
         logger.warning("Stream message for unknown job %s", jid)
         return None
-    status, parent_id, title, project_id = row
+    status, parent_id, title, project_id = (
+        job.status,
+        job.parent_id,
+        job.title,
+        job.project_id,
+    )
     project_uuid = str(project_id) if project_id else ""
 
-    meta: dict[str, Any] = dict(metadata or {})
     meta.setdefault("job_id", jid)
     if project_uuid:
         meta.setdefault("project_id", project_uuid)
@@ -86,12 +96,14 @@ def record_stream_message(
     cleaned = scrub_stream_noise(content)
     if not cleaned:
         return None
-    msg = StreamMessage.objects.create(
-        job_id=jid,
-        message_type=mtype,
-        content=cleaned,
-        metadata=meta,
-    )
+    alias = project_alias_or_default(project_id)
+    with using_project(project_id):
+        msg = StreamMessage.objects.using(alias).create(
+            job_id=jid,
+            message_type=mtype,
+            content=cleaned,
+            metadata=meta,
+        )
 
     if parent_id and not meta.get("mirrored"):
         try:
@@ -152,18 +164,53 @@ def stream_meta(
     free-text in ``content``. Consumers should use
     ``orchestrator.utils.stream_events`` getters.
     """
-    meta: dict[str, Any] = {"role": role}
+    from orchestrator.utils.stream_events import envelope
+
+    routing: dict[str, Any] = {"role": role}
     if tag:
-        meta["tag"] = tag
-    if event:
-        meta["event"] = str(event).strip()
-    if payload is not None:
-        meta["payload"] = dict(payload)
+        routing["tag"] = tag
     pid = str(getattr(project, "id", project) or "").strip()
     if pid:
-        meta["project_id"] = pid
-    meta.update(extra)
+        routing["project_id"] = pid
+    routing.update(extra)
+    if event:
+        return envelope(event, payload, **routing)
+    meta = dict(routing)
+    if payload is not None:
+        meta["payload"] = dict(payload)
     return meta
+
+
+def with_stream_reply(
+    result: dict[str, Any],
+    project: Project,
+    reply: str,
+    *,
+    job: Job | None = None,
+    tag: str = "ask",
+    event: str = "console_reply",
+) -> dict[str, Any]:
+    """Attach a chat-visible assistant reply and mirror it into the stream."""
+    text = (reply or "").strip()
+    out = dict(result)
+    out["reply"] = text
+    anchor = job or anchor_job(project)
+    if text and anchor is not None:
+        audit_project_stream(
+            project,
+            text,
+            job=anchor,
+            tag=tag,
+            event=event,
+            role="assistant",
+            message_type="status" if tag in {"need", "stop"} else "log",
+        )
+        out.setdefault("job_ids", [])
+        jid = str(anchor.id)
+        if jid not in out["job_ids"]:
+            out["job_ids"] = list(out.get("job_ids") or []) + [jid]
+        out["primary_job_id"] = out.get("primary_job_id") or jid
+    return out
 
 
 def audit_project_stream(
@@ -203,17 +250,22 @@ def project_message_dicts(
     newest_first: bool = False,
 ) -> list[dict[str, Any]]:
     """Serialize project stream lines for bootstrap or poll."""
-    qs = (
-        StreamMessage.objects.filter(job__project=project)
-        .select_related("job")
-    )
-    if after_id > 0:
-        qs = qs.filter(id__gt=after_id).order_by("id")
-    elif newest_first:
-        qs = qs.order_by("-id")
-    else:
-        qs = qs.order_by("id")
-    rows = list(qs[: max(1, min(limit, 500))])
+    from peon.projects.db import ensure_project_database, using_project
+
+    alias = ensure_project_database(project.pk)
+    with using_project(project.pk):
+        qs = (
+            StreamMessage.objects.using(alias)
+            .filter(job__project_id=project.pk)
+            .select_related("job")
+        )
+        if after_id > 0:
+            qs = qs.filter(id__gt=after_id).order_by("id")
+        elif newest_first:
+            qs = qs.order_by("-id")
+        else:
+            qs = qs.order_by("id")
+        rows = list(qs[: max(1, min(limit, 500))])
     if newest_first:
         rows = list(reversed(rows))
     return [message_to_dict(attach_job_context(m, project)) for m in rows]
@@ -440,4 +492,21 @@ def start_peon_rpc_server():
     server = RpcServer.start(path, token=token)
     logger.info("RPC Unix socket listening on %s", path)
     return server
+
+
+class StreamStore:
+    """Persistence, serialization, and project-level stream querying."""
+
+    anchor_job = staticmethod(anchor_job)
+    has_live_agents = staticmethod(has_live_agents)
+    scrub = staticmethod(scrub_stream_noise)
+    record = staticmethod(record_stream_message)
+    emit = staticmethod(emit_job_stream)
+    metadata = staticmethod(stream_meta)
+    reply = staticmethod(with_stream_reply)
+    audit_project = staticmethod(audit_project_stream)
+    project_messages = staticmethod(project_message_dicts)
+    attach_job_context = staticmethod(attach_job_context)
+    serialize = staticmethod(message_to_dict)
+    ingest = staticmethod(handle_incoming_message)
 

@@ -14,25 +14,23 @@ from orchestrator.agent import (
     AgentRunConfig,
     agent_run_config_from_mapping,
 )
-from orchestrator.agent.propose import propose_agents, specs_as_dicts
+from orchestrator.agent.propose import propose_agents as propose_agent_specs
 from orchestrator.crew.roles.registry import RoleRegistry
-from orchestrator.utils.paths import format_roe_block
-from peon.projects.agent_messaging import DjangoAgentMessaging
-from peon.projects.console_chat import create_operator_prompt
-from peon.projects.findings import FindingStore
 from orchestrator.utils.commands import catalog_cli_in_command
+from orchestrator.utils.paths import format_roe_block, safe_join
 from orchestrator.utils.stream_events import (
     EVENT_RUN_CLI,
     envelope,
     event_of,
     hosts_in_command,
     is_event,
-    legacy_run_cli_command,
     payload_cli,
     payload_command,
     payload_hosts,
 )
-from orchestrator.utils.paths import safe_join
+from peon.projects.agent_messaging import DjangoAgentMessaging
+from peon.projects.hitl import create_operator_prompt
+from peon.projects.findings import FindingStore
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
     Finding,
@@ -69,6 +67,12 @@ def agent_run_config() -> AgentRunConfig:
             "AGENT_RUNTIME_ENABLED": PeonSettings.get_bool(
                 "AGENT_RUNTIME_ENABLED", True
             ),
+            "CREW_REASONING_EFFORT": PeonSettings.get_str(
+                "CREW_REASONING_EFFORT", "low"
+            ),
+            "CREW_REASONING_MAX_ATTEMPTS": PeonSettings.get_int(
+                "CREW_REASONING_MAX_ATTEMPTS", 1
+            ),
         }
     )
 
@@ -78,6 +82,7 @@ class JobAgentBridge(AgentBridgeBase):
 
     def __init__(self, job: Job) -> None:
         self._job = job
+        self.replan_requested = False
 
     def emit(
         self, message_type: str, content: str, *, metadata: dict[str, Any] | None = None
@@ -90,86 +95,336 @@ class JobAgentBridge(AgentBridgeBase):
         title: str,
         description: str,
         role_ids: list[str] | None = None,
-        link: str = "peer",
+        link: str = "child",
+        scope_slice: dict[str, str] | None = None,
+        skill_ids: list[str] | None = None,
     ) -> str:
-        kind = (link or "peer").strip().lower()
-        if kind == "child":
-            return self._spawn_child(
-                title=title, description=description, role_ids=list(role_ids or [])
-            )
-        if kind == "peer":
-            return self._spawn_peer(
-                title=title, description=description, role_ids=role_ids
-            )
-        return "Error: link must be 'peer' or 'child'"
-
-    def _spawn_child(
-        self, *, title: str, description: str, role_ids: list[str]
-    ) -> str:
-        cfg = agent_run_config()
-        active = self._job.children.exclude(
-            status__in=TERMINAL_JOB_STATUSES
-        ).count()
-        if active >= cfg.max_subagents:
-            raise RuntimeError(f"Too many active child agents (max {cfg.max_subagents})")
+        kind = (link or "child").strip().lower() or "child"
+        if kind not in {"peer", "child"}:
+            return "Error: link must be 'peer' or 'child'"
 
         roles = list(role_ids or []) or list(self._job.role_ids or [])
-        child = Job.objects.create(
-            title=(title or "child-agent")[:255],
-            description=description or "",
-            lifecycle=JobLifecycle.LONG,
-            status=JobStatus.PENDING,
-            role_ids=roles,
-            project_id=self._job.project_id,
-            objective_id=self._job.objective_id,
-            parent=self._job,
-            workspace_id=self._job.workspace_id,
-            plan_text=self._job.plan_text or "",
-            plan_path=self._job.plan_path or "",
-        )
-        enqueue_job(child)
-        return str(child.id)
+        roles = [str(r).strip() for r in roles if str(r).strip()]
+        err = self._validate_spawn_roles(roles)
+        if err:
+            return err
 
-    def _spawn_peer(
+        brief = (description or "").strip()
+        if scope_slice:
+            slice_lines = [
+                f"- {k}: {v}" for k, v in scope_slice.items() if str(k).strip()
+            ]
+            if slice_lines:
+                brief = (
+                    f"{brief}\n\n## Scope slice\n" + "\n".join(slice_lines)
+                ).strip()
+                # Scope-slice values must stay inside engagement RoE for
+                # technical roles (PM/analyzer do not probe).
+                for role_id in roles:
+                    role = RoleRegistry.shared().get(role_id)
+                    if role is None or not role.is_technical:
+                        continue
+                    for val in scope_slice.values():
+                        reason = self.assert_in_scope(str(val))
+                        if reason:
+                            return f"Error: scope_slice denied for {val!r}: {reason}"
+
+        return self._spawn_linked(
+            title=title,
+            description=brief,
+            role_ids=roles,
+            link=kind,
+            skill_ids=skill_ids,
+        )
+
+    def _validate_spawn_roles(self, roles: list[str]) -> str:
+        """Fail closed: role must exist; deny manager class."""
+        if not roles:
+            return "Error: no role_ids on this job to inherit for spawn"
+        reg = RoleRegistry.shared()
+        for rid in roles:
+            role = reg.get(rid)
+            if role is None:
+                return f"Error: unknown role_id {rid!r}"
+            if role.is_manager:
+                return f"Error: cannot spawn manager role {rid!r}"
+        return ""
+
+    def _spawn_depth(self) -> int:
+        """1 = root job; +1 per parent hop (matches JobScope.depth)."""
+        depth = 1
+        parent = self._job.parent
+        while parent is not None:
+            depth += 1
+            parent = parent.parent
+            if depth > 64:
+                break
+        return depth
+
+    def _resolve_child_skills(
+        self, roles: list[str], skill_ids: list[str] | None
+    ) -> list[str] | str:
+        """Bind child skills to the target role's group; error string on failure."""
+        from orchestrator.skills.bind import resolve_skill_ids
+
+        primary = roles[0] if roles else ""
+        role = RoleRegistry.shared().get(primary)
+        if role is None:
+            return f"Error: unknown role_id {primary!r}"
+        requested = [str(s).strip() for s in (skill_ids or []) if str(s).strip()]
+        if requested:
+            selected = list(resolve_skill_ids(role, requested))
+            if not selected:
+                return (
+                    f"Error: no valid skill_ids for role {primary!r} "
+                    f"(requested: {', '.join(requested)})"
+                )
+            return selected
+        parent_skills = [
+            str(s).strip()
+            for s in (getattr(self._job, "skill_ids", None) or [])
+            if str(s).strip()
+        ]
+        if not parent_skills and self._job.objective_id and self._job.objective:
+            parent_skills = [
+                str(s).strip()
+                for s in (getattr(self._job.objective, "skill_ids", None) or [])
+                if str(s).strip()
+            ]
+        if parent_skills:
+            inherited = list(resolve_skill_ids(role, parent_skills))
+            if inherited:
+                return inherited
+        return list(role.skills or ())
+
+    def _spawn_linked(
         self,
         *,
         title: str,
         description: str,
-        role_ids: list[str] | None = None,
+        role_ids: list[str],
+        link: str,
+        skill_ids: list[str] | None = None,
     ) -> str:
-        if not self._job.project_id or not self._job.objective_id:
-            return "Error: peer spawn requires project + objective on this job."
         cfg = agent_run_config()
-        active = (
-            Job.objects.filter(objective_id=self._job.objective_id)
-            .exclude(status__in=TERMINAL_JOB_STATUSES)
-            .count()
-        )
-        if active >= max(cfg.max_subagents + 1, 2):
-            return (
-                f"Error: too many active agents on this objective "
-                f"(max {cfg.max_subagents + 1})"
-            )
+        from peon.projects.db import ensure_project_database, using_project
 
-        roles = list(role_ids or []) or list(self._job.role_ids or [])
-        role = roles[0] if roles else ""
-        jobs = ObjectiveScheduler().enqueue_peer_jobs(
-            self._job.project,
-            self._job.objective,
-            [
-                {
-                    "title": (title or "peer")[:255],
-                    "description": description or "",
-                    "role_id": role,
-                }
-            ],
-            plan_text=self._job.plan_text or "",
-            workspace_id=self._job.workspace_id or str(self._job.project_id),
-            parent=self._job,
+        if not self._job.project_id:
+            return "Error: spawn requires a project on this job."
+        alias = ensure_project_database(self._job.project_id)
+        with using_project(self._job.project_id):
+            with transaction.atomic(using=alias):
+                if link == "peer":
+                    if not self._job.objective_id:
+                        return (
+                            "Error: peer spawn requires project + objective "
+                            "on this job."
+                        )
+                    active = (
+                        Job.objects.using(alias)
+                        .filter(objective_id=self._job.objective_id)
+                        .exclude(status__in=TERMINAL_JOB_STATUSES)
+                        .count()
+                    )
+                    if active >= max(cfg.max_subagents + 1, 2):
+                        return (
+                            f"Error: too many active agents on this objective "
+                            f"(max {cfg.max_subagents + 1})"
+                        )
+                else:
+                    depth = self._spawn_depth()
+                    if depth >= cfg.max_subagent_depth:
+                        return (
+                            f"Error: child depth limit ({cfg.max_subagent_depth})"
+                        )
+                    active = self._job.children.exclude(
+                        status__in=TERMINAL_JOB_STATUSES
+                    ).count()
+                    if active >= cfg.max_subagents:
+                        return (
+                            f"Error: too many active child agents "
+                            f"(max {cfg.max_subagents})"
+                        )
+
+                roles = list(role_ids) or list(self._job.role_ids or [])
+                resolved = self._resolve_child_skills(roles, skill_ids)
+                if isinstance(resolved, str):
+                    return resolved
+                if self._job.objective_id:
+                    objective = (
+                        Objective.objects.using(alias)
+                        .select_for_update()
+                        .get(pk=self._job.objective_id)
+                    )
+                    if objective.status in {
+                        ObjectiveStatus.COMPLETED,
+                        ObjectiveStatus.CANCELLED,
+                    }:
+                        return (
+                            "Error: cannot add work to a terminal objective; "
+                            "reopen it through replan or a durable schedule first"
+                        )
+                child = Job.objects.using(alias).create(
+                    title=(title or ("peer" if link == "peer" else "child-agent"))[:255],
+                    description=description or "",
+                    lifecycle=JobLifecycle.LONG,
+                    status=JobStatus.PENDING,
+                    role_ids=roles,
+                    skill_ids=resolved,
+                    project_id=self._job.project_id,
+                    objective_id=self._job.objective_id,
+                    parent=self._job,
+                    workspace_id=self._job.workspace_id,
+                    plan_text=self._job.plan_text or "",
+                    plan_path=self._job.plan_path or "",
+                )
+        enqueue_job(str(child.id))
+        self._record_handoff(
+            child, link=link, title=title, role_ids=roles, skill_ids=resolved
         )
+        return str(child.id)
+
+    def _record_handoff(
+        self,
+        child: Job,
+        *,
+        link: str,
+        title: str,
+        role_ids: list[str],
+        skill_ids: list[str] | None = None,
+    ) -> None:
+        from orchestrator.agent.delegation import SpawnWorkRequest
+        from orchestrator.agent.transcript import record_from_event
+        from orchestrator.utils.stream_events import EVENT_SPAWN_WORK, envelope
+
+        role_id = role_ids[0] if role_ids else ""
+        skills = tuple(
+            str(s).strip()
+            for s in (skill_ids if skill_ids is not None else (child.skill_ids or []))
+            if str(s).strip()
+        )
+        req = SpawnWorkRequest(
+            title=(title or "")[:255],
+            brief="",
+            role_id=role_id,
+            link=link,
+            skill_ids=skills,
+        )
+        payload = req.payload(
+            job_id=str(child.id),
+            parent_job_id=str(self._job.id),
+        )
+        payload["objective_id"] = str(self._job.objective_id or "")
+        self.emit(
+            "log",
+            f"Delegation: spawned {link} {child.id} ({role_id or '-'})",
+            metadata=envelope(EVENT_SPAWN_WORK, payload),
+        )
+        self.append_transcript(
+            record_from_event(
+                category="handoff",
+                summary=f"spawned {link} job for {(title or '')[:120]}",
+                project_id=str(self._job.project_id or ""),
+                objective_id=str(self._job.objective_id or ""),
+                job_id=str(self._job.id),
+                role_id=str((self._job.role_ids or [""])[0] if self._job.role_ids else ""),
+                event=EVENT_SPAWN_WORK,
+                payload=payload,
+            )
+        )
+
+    def append_transcript(self, record: Any) -> None:
+        """Append structured transcript to project workspace jsonl (+ optional memory)."""
+        from orchestrator.agent.transcript import TranscriptRecord, append_jsonl
+
+        if not isinstance(record, TranscriptRecord) or not self._job.project_id:
+            return
+        path = self._transcript_path(create=True)
+        if path is None:
+            return
+        try:
+            append_jsonl(path, record)
+        except Exception:
+            return
+        try:
+            from orchestrator.crew.memory import MemoryService
+
+            MemoryService.remember_transcript(self._job, record)
+        except Exception:
+            pass
+
+    def _transcript_path(self, *, create: bool = False) -> Path | None:
+        from peon.projects.workspaces import project_workspace_dir
+
+        if not self._job.project_id:
+            return None
+        try:
+            ws = project_workspace_dir(str(self._job.project_id), create=create)
+        except Exception:
+            return None
+        return Path(ws) / "transcript.jsonl"
+
+    def _transcript_digest(
+        self,
+        *,
+        categories: tuple[str, ...] = ("error", "handoff", "gap", "replan", "outcome"),
+        limit: int = 80,
+    ) -> str:
+        from orchestrator.agent.transcript import digest_markdown, read_jsonl
+
+        path = self._transcript_path(create=False)
+        if path is None:
+            return ""
+        try:
+            rows = read_jsonl(path, categories=categories, limit=limit)
+        except Exception:
+            return ""
+        oid = str(self._job.objective_id or "")
+        if oid:
+            scoped = [r for r in rows if not r.objective_id or r.objective_id == oid]
+            rows = scoped or rows
+        return digest_markdown(rows, limit=min(limit, 60))
+
+    def list_delegations(self) -> str:
+        """Spawn tree for manager oversight (children under this objective/project)."""
+        from peon.projects.db import project_alias_or_default
+
+        alias = project_alias_or_default(self._job.project_id)
+        if self._job.project_id:
+            qs = Job.objects.using(alias).filter(project_id=self._job.project_id)
+        else:
+            qs = Job.objects.using(alias).filter(pk=self._job.pk)
+        if self._job.objective_id:
+            qs = qs.filter(objective_id=self._job.objective_id)
+        jobs = list(qs.select_related("parent").order_by("created_at")[:80])
         if not jobs:
-            return "Error: peer job not created."
-        return str(jobs[0].id)
+            return "No jobs to show."
+
+        by_id = {str(j.id): j for j in jobs}
+        by_parent: dict[str, list[Job]] = {}
+        for j in jobs:
+            if j.parent_id and str(j.parent_id) in by_id:
+                by_parent.setdefault(str(j.parent_id), []).append(j)
+
+        roots = [j for j in jobs if not j.parent_id or str(j.parent_id) not in by_id]
+        lines: list[str] = []
+        seen: set[str] = set()
+
+        def walk(job: Job, depth: int) -> None:
+            jid = str(job.id)
+            if jid in seen:
+                return
+            seen.add(jid)
+            roles = ",".join(job.role_ids or []) or "-"
+            lines.append(
+                f"{'  ' * depth}- {job.id} [{job.status}] {job.title[:60]} roles={roles}"
+            )
+            for child in by_parent.get(jid, []):
+                walk(child, depth + 1)
+
+        for root in roots:
+            walk(root, 0)
+        return "\n".join(lines) if lines else "No delegation tree."
 
     def wait_agents(
         self, *, job_ids: list[str] | None = None, timeout_seconds: int = 600
@@ -194,7 +449,7 @@ class JobAgentBridge(AgentBridgeBase):
             return f"Parent job {self._job.status}; stop waiting."
         lines = [
             f"{len(done)} finished, {len(pending)} still running "
-            f"(call wait_for_agents again later; do not block):"
+            f"(call wait_for_work again later; do not block):"
         ]
         for k in pending:
             lines.append(f"- {k.title} ({k.id}) → {k.status}")
@@ -205,8 +460,12 @@ class JobAgentBridge(AgentBridgeBase):
     def list_objectives(self) -> str:
         if not self._job.project_id:
             return "No project on this job."
+        from peon.projects.db import qs_using
+
         rows = list(
-            Objective.objects.filter(project_id=self._job.project_id).order_by("seq")
+            qs_using(Objective, self._job.project_id)
+            .filter(project_id=self._job.project_id)
+            .order_by("seq")
         )
         if not rows:
             return "No objectives."
@@ -218,9 +477,13 @@ class JobAgentBridge(AgentBridgeBase):
     def update_objective_status(self, seq: int, status: str, note: str = "") -> str:
         if not self._job.project_id:
             return "No project on this job."
-        obj = Objective.objects.filter(
-            project_id=self._job.project_id, seq=int(seq)
-        ).first()
+        from peon.projects.db import qs_using
+
+        obj = (
+            qs_using(Objective, self._job.project_id)
+            .filter(project_id=self._job.project_id, seq=int(seq))
+            .first()
+        )
         if obj is None:
             return f"Objective OBJ-{seq} not found."
         status = (status or "").strip().lower()
@@ -253,13 +516,25 @@ class JobAgentBridge(AgentBridgeBase):
                 )
             return f"OBJ-{obj.seq} → {obj.status}; queued job {job.id}"
 
+        if (
+            status == ObjectiveStatus.COMPLETED
+            and not sched.all_jobs_terminal(obj)
+        ):
+            active = sched.active_jobs(obj).count()
+            return (
+                f"OBJ-{obj.seq} remains {obj.status}; "
+                f"{active} tagged job(s) still active"
+            )
         sched.mark(obj, status, reason=reason)
         if status == ObjectiveStatus.BLOCKED:
             try:
+                from peon.projects.models import OperatorPromptKind
+
                 create_operator_prompt(
                     project,
                     f"OBJ-{obj.seq} {obj.title}: {reason or obj.blocked_reason or 'Objective blocked'}",
                     job=self._job,
+                    kind=OperatorPromptKind.BLOCKED_OBJECTIVE,
                 )
             except Exception:
                 pass
@@ -268,41 +543,95 @@ class JobAgentBridge(AgentBridgeBase):
         ):
             # Completing a peer objective should advance the plan.
             try:
-                nxt = sched.enqueue_next(project)
-                if nxt is not None:
-                    return f"OBJ-{obj.seq} → {obj.status}; queued job {nxt.id}"
+                queued = sched.enqueue_ready(project)
+                if queued:
+                    ids = ", ".join(str(j.id) for j in queued[:8])
+                    return (
+                        f"OBJ-{obj.seq} → {obj.status}; "
+                        f"queued {len(queued)} ready job(s): {ids}"
+                    )
             except Exception:
                 pass
         return f"OBJ-{obj.seq} → {obj.status}"
 
+    def ask_operator(
+        self,
+        question: str,
+        *,
+        options: str = "",
+        blocks_job: bool = True,
+    ) -> str:
+        """Create a typed OperatorPrompt for the global HITL popup."""
+        from peon.projects.models import OperatorPromptKind, ObjectiveStatus
+
+        text = (question or "").strip()
+        if not text:
+            return "Error: question is required."
+        if not self._job.project_id:
+            return "Error: no project on this job."
+        opts = [
+            o.strip()
+            for o in (options or "").replace(";", ",").split(",")
+            if o.strip()
+        ]
+        try:
+            prompt = create_operator_prompt(
+                self._job.project,
+                text,
+                job=self._job,
+                kind=OperatorPromptKind.AGENT_ASK,
+                options=opts,
+            )
+        except Exception as exc:
+            return f"Error: could not create operator prompt ({exc})"
+        if blocks_job and self._job.objective_id and self._job.objective is not None:
+            try:
+                ObjectiveScheduler().mark(
+                    self._job.objective,
+                    ObjectiveStatus.BLOCKED,
+                    reason=f"Waiting on operator: {text}"[:2000],
+                )
+            except Exception:
+                pass
+        return (
+            f"Operator prompt {prompt.id} created (kind={prompt.kind}). "
+            "Continue other work or wait_for_work / drain guidance after reply."
+        )
+
+    def _finding_payload(self, fields: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "title": str(fields.get("title") or "").strip(),
+            "severity": str(fields.get("severity") or "info"),
+            "kind": str(fields.get("kind") or "observation"),
+            "evidence": str(fields.get("evidence") or ""),
+            "host": str(fields.get("host") or ""),
+            "description": str(
+                fields.get("description") or fields.get("summary") or ""
+            ),
+            "asset_type": str(fields.get("asset_type") or ""),
+            "evidence_path": str(fields.get("evidence_path") or ""),
+            "remediation": str(fields.get("remediation") or ""),
+            "service": str(fields.get("service") or ""),
+            "port": fields.get("port"),
+            "protocol": str(fields.get("protocol") or ""),
+            "cve_id": str(fields.get("cve_id") or ""),
+            "cwe_id": str(fields.get("cwe_id") or ""),
+            "subjects": fields.get("subjects")
+            if isinstance(fields.get("subjects"), list)
+            else None,
+            "metadata": fields.get("metadata")
+            if isinstance(fields.get("metadata"), dict)
+            else {},
+        }
+
     def record_finding(self, **fields: Any) -> str:
         if not self._job.project_id:
             return "No project on this job."
-        title = str(fields.get("title") or "").strip()
-        if not title:
+        if not str(fields.get("title") or "").strip():
             return "Error: title required."
-
-        description = str(fields.get("description") or fields.get("summary") or "")
         row = FindingStore().record(
             self._job.project,
-            {
-                "title": title,
-                "severity": str(fields.get("severity") or "info"),
-                "kind": str(fields.get("kind") or "observation"),
-                "evidence": str(fields.get("evidence") or ""),
-                "host": str(fields.get("host") or ""),
-                "description": description,
-                "asset_type": str(fields.get("asset_type") or ""),
-                "evidence_path": str(fields.get("evidence_path") or ""),
-                "remediation": str(fields.get("remediation") or ""),
-                "service": str(fields.get("service") or ""),
-                "port": fields.get("port"),
-                "cve_id": str(fields.get("cve_id") or ""),
-                "cwe_id": str(fields.get("cwe_id") or ""),
-                "metadata": fields.get("metadata")
-                if isinstance(fields.get("metadata"), dict)
-                else {},
-            },
+            self._finding_payload(fields),
             job=self._job,
             objective=self._job.objective,
         )
@@ -317,18 +646,32 @@ class JobAgentBridge(AgentBridgeBase):
             return f"Invalid JSON: {exc}"
         if not isinstance(rows, list):
             return "Expected a JSON list."
+        if not self._job.project_id:
+            return "No project on this job."
         n = 0
+        store = FindingStore()
         for row in rows:
-            if isinstance(row, dict) and row.get("title"):
-                msg = self.record_finding(**row)
-                if msg.startswith("Recorded"):
-                    n += 1
+            if not isinstance(row, dict) or not str(row.get("title") or "").strip():
+                continue
+            if store.record(
+                self._job.project,
+                self._finding_payload(row),
+                job=self._job,
+                objective=self._job.objective,
+            ):
+                n += 1
         return f"Recorded {n} finding(s)."
 
     def list_findings(self, kind: str = "") -> str:
         if not self._job.project_id:
             return "No project on this job."
-        qs = Finding.objects.filter(project_id=self._job.project_id).order_by("-created_at")
+        from peon.projects.db import qs_using
+
+        qs = (
+            qs_using(Finding, self._job.project_id)
+            .filter(project_id=self._job.project_id)
+            .order_by("-created_at")
+        )
         if kind.strip():
             qs = qs.filter(kind=kind.strip())
         rows = list(qs[:40])
@@ -409,35 +752,53 @@ class JobAgentBridge(AgentBridgeBase):
     def drain_operator_guidance(self) -> list[str]:
         """Consume pending JobDirective rows into agent-facing guidance strings."""
 
-        with transaction.atomic():
-            pending = list(
-                JobDirective.objects.select_for_update()
-                .filter(job_id=self._job.id, consumed_at__isnull=True)
-                .order_by("created_at")
-            )
-            if not pending:
-                return []
-            now = dj_tz.now()
-            out: list[str] = []
-            for d in pending:
-                d.consumed_at = now
-                text = (d.content or "").strip()
-                if not text:
-                    continue
-                if d.kind == JobDirectiveKind.FOLLOWUP:
-                    out.append(
-                        "OPERATOR FOLLOW-UP:\n"
-                        f"{text}\n\n"
-                        "Honor the operator instruction under Rules of Engagement. "
-                        "If they supply an exact command, prefer executing that "
-                        "command (re-scan / re-run when requested)."
-                    )
-                else:
-                    out.append(
-                        "OPERATOR INSTRUCTION — revise your approach and continue "
-                        f"under Rules of Engagement:\n{text}"
-                    )
-            JobDirective.objects.bulk_update(pending, ["consumed_at"])
+        self.replan_requested = False
+        from peon.projects.db import ensure_project_database, using_project
+
+        alias = (
+            ensure_project_database(self._job.project_id)
+            if self._job.project_id
+            else "default"
+        )
+        with using_project(self._job.project_id):
+            with transaction.atomic(using=alias):
+                pending = list(
+                    JobDirective.objects.using(alias)
+                    .select_for_update()
+                    .filter(job_id=self._job.id, consumed_at__isnull=True)
+                    .order_by("created_at")
+                )
+                if not pending:
+                    return []
+                now = dj_tz.now()
+                out: list[str] = []
+                for d in pending:
+                    d.consumed_at = now
+                    text = (d.content or "").strip()
+                    if not text:
+                        continue
+                    if d.kind == JobDirectiveKind.REPLAN:
+                        self.replan_requested = True
+                        out.append(
+                            "OPERATOR REPLAN — revise the engagement plan and "
+                            f"continue under Rules of Engagement:\n{text}"
+                        )
+                    elif d.kind == JobDirectiveKind.FOLLOWUP:
+                        out.append(
+                            "OPERATOR FOLLOW-UP:\n"
+                            f"{text}\n\n"
+                            "Honor the operator instruction under Rules of Engagement. "
+                            "If they supply an exact command, prefer executing that "
+                            "command (re-scan / re-run when requested)."
+                        )
+                    else:
+                        out.append(
+                            "OPERATOR INSTRUCTION — revise your approach and continue "
+                            f"under Rules of Engagement:\n{text}"
+                        )
+                JobDirective.objects.using(alias).bulk_update(
+                    pending, ["consumed_at"]
+                )
         return out
 
     def drain_peer_messages(self) -> list[str]:
@@ -499,37 +860,50 @@ class JobAgentBridge(AgentBridgeBase):
         primary = (obj.role_id or "").strip().split(",")[0].strip()
         if not primary and self._job.role_ids:
             primary = str(self._job.role_ids[0])
+        from orchestrator.crew.roles.catalog import catalog_role_ids
+
+        known = set(catalog_role_ids())
         allowed = [
             r.id
             for r in RoleRegistry.shared().list_roles()
-            if not r.is_manager and not r.is_analyzer and not r.is_authoring
+            if not r.is_manager and (not known or r.id in known)
         ]
         notes = (context_notes or "").strip()
         if not notes:
             notes = f"Current job brief:\n{(self._job.description or '')[:2000]}"
-        specs = propose_agents(
+        digest = self._transcript_digest()
+        try:
+            from orchestrator.skills.role_memory import role_skills_prompt_block
+
+            learned = role_skills_prompt_block()
+            if learned:
+                notes = (notes + "\n\n" + learned).strip()
+        except Exception:
+            pass
+        specs = propose_agent_specs(
             objective_title=obj.title or "",
             objective_description=obj.description or "",
             acceptance=obj.acceptance_criteria or "",
             primary_role=primary,
             allowed_roles=allowed or ([primary] if primary else []),
             context_notes=notes,
+            transcript_digest=digest,
             max_agents=max_agents,
         )
+
         if not specs:
             return "No peer agents proposed (solo work is enough, or LLM unavailable)."
-        jobs = ObjectiveScheduler().enqueue_peer_jobs(
-            self._job.project,
-            obj,
-            specs_as_dicts(specs),
-            plan_text=self._job.plan_text or "",
-            workspace_id=self._job.workspace_id or str(self._job.project_id),
-            parent=self._job,
-        )
-        lines = [f"Spawned {len(jobs)} peer agent(s):"]
-        for j, spec in zip(jobs, specs):
-            lines.append(f"- {j.id} [{spec.role_id or '-'}] {spec.title}")
-        return "\n".join(lines)
+        # Prefer child spawn for agent-driven fan-out (same objective, parent link).
+        created: list[str] = []
+        for spec in specs:
+            msg = self.spawn_agent(
+                title=spec.title,
+                description=spec.description,
+                role_ids=[spec.role_id] if spec.role_id else None,
+                link="child",
+            )
+            created.append(f"- {msg} [{spec.role_id or primary}] {spec.title}")
+        return "Spawned proposed work:\n" + "\n".join(created)
 
     def _roe(self):
         if not self._job.project_id:
@@ -543,6 +917,17 @@ class JobAgentBridge(AgentBridgeBase):
             return "No Rules of Engagement on this project."
         return format_roe_block(roe)
 
+    def roe_probe_block_reason(self) -> str:
+        """Empty when in_scope is usable for networked probes; else deny reason."""
+        roe = self._roe()
+        if roe is None:
+            return "No Rules of Engagement on this project."
+        if not any(
+            (t.get("value") or "").strip() for t in coerce_targets(roe.in_scope)
+        ):
+            return "in_scope is empty — promote targets before active probing"
+        return ""
+
     def assert_in_scope(self, target: str) -> str:
         """Empty string = allowed; otherwise denial reason."""
 
@@ -552,13 +937,15 @@ class JobAgentBridge(AgentBridgeBase):
         roe = self._roe()
         if roe is None:
             return "no RoE on project"
-        exclusions = {
+        from peon.projects.target_shapes import target_authorized_by_scope
+
+        exclusions = [
             (t.get("value") or "").strip().lower()
             for t in coerce_targets(roe.exclusions)
             if t.get("value")
-        }
+        ]
         needle = value.lower()
-        if needle in exclusions or any(needle in e or e in needle for e in exclusions if e):
+        if target_authorized_by_scope(needle, exclusions):
             return f"{value!r} is excluded by RoE"
         scope_vals = [
             (t.get("value") or "").strip().lower()
@@ -566,8 +953,10 @@ class JobAgentBridge(AgentBridgeBase):
             if t.get("value")
         ]
         if not scope_vals:
-            return "in_scope is empty — promote targets before active probing"
-        if any(needle == s or needle in s or s in needle for s in scope_vals):
+            return self.roe_probe_block_reason() or (
+                "in_scope is empty — promote targets before active probing"
+            )
+        if target_authorized_by_scope(needle, scope_vals):
             return ""
         return f"{value!r} is not in authorized RoE scope"
 
@@ -580,8 +969,12 @@ class JobAgentBridge(AgentBridgeBase):
         hosts = set(hosts_in_command(cmd))
         if not hosts:
             return ""
+        from peon.projects.db import project_alias_or_default
+
+        alias = project_alias_or_default(self._job.project_id)
         prior = (
-            StreamMessage.objects.filter(
+            StreamMessage.objects.using(alias)
+            .filter(
                 job_id=self._job.id,
                 message_type=StreamMessageType.TOOL,
             )
@@ -592,10 +985,7 @@ class JobAgentBridge(AgentBridgeBase):
             meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
             if event_of(meta) and not is_event(meta, EVENT_RUN_CLI):
                 continue
-            prev_cmd = (
-                payload_command(meta)
-                or legacy_run_cli_command(str(row.get("content") or ""))
-            )
+            prev_cmd = payload_command(meta)
             if not prev_cmd:
                 continue
             prev_cli = payload_cli(meta) or catalog_cli_in_command(prev_cmd)

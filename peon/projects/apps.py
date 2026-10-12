@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import dramatiq
@@ -13,9 +12,9 @@ from django.core.checks import Error, register
 from dramatiq.brokers.redis import RedisBroker
 from dramatiq.brokers.stub import StubBroker
 
-from agent_runtime.registry import register_builtin
+from agent_runtime.registry import RuntimeRegistry
 from orchestrator.config import LLM_PROVIDER_KEY_ENV, RuntimeConfig, configure
-from orchestrator.crew.roles.registry import RoleRegistry, analyzer_role, manager_role
+from orchestrator.crew.roles.registry import RoleRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -35,38 +34,34 @@ def crewai_roles_check(app_configs, **kwargs):
         return [
             Error(
                 f"Could not load CrewAI roles: {exc}",
-                hint="Check ROLES_DIR and every roles/*/ROLE.yaml file.",
+                hint="Check Lab → Roles / peon.projects.role_store.",
                 id="projects.E001",
             )
         ]
 
     errors = []
-    roles_dir = registry.roles_dir()
     if not roles:
         errors.append(
             Error(
-                f"No CrewAI roles found in {roles_dir}.",
-                hint="Package or mount roles/ into both the web and worker services.",
+                "No engagement roles found in the platform database.",
+                hint="Open Lab → Roles or run ensure_seeded().",
                 id="projects.E002",
             )
         )
         return errors
-    if manager_role(registry) is None:
+    if registry.manager() is None:
         errors.append(
             Error(
-                "CrewAI role catalog has no engagement manager.",
-                hint=(
-                    "Add a non-authoring role with allow_delegation: true "
-                    "and an empty hierarchy.reports_to."
-                ),
+                "No engagement manager role.",
+                hint="Add a role with kind engagement-pm in Lab → Roles.",
                 id="projects.E003",
             )
         )
-    if analyzer_role(registry) is None:
+    if registry.analyzer() is None:
         errors.append(
             Error(
-                "CrewAI role catalog has no analyzer.",
-                hint="Add a role whose capabilities include report or analyzer.",
+                "No analyzer role.",
+                hint="Add a role with kind analyzer in Lab → Roles.",
                 id="projects.E004",
             )
         )
@@ -86,10 +81,18 @@ def configure_orchestrator() -> None:
     )
     configure(
         RuntimeConfig(
-            roles_dir=Path(settings.ROLES_DIR).resolve(),
+            skills_dir=Path(settings.SKILLS_DIR).resolve(),
+            skills_imported_dir=Path(settings.SKILLS_IMPORTED_DIR).resolve(),
+            skills_extra_dirs=tuple(
+                Path(path).resolve()
+                for path in getattr(settings, "SKILLS_EXTRA_DIRS", ())
+            ),
             helpers_dir=Path(settings.HELPERS_DIR).resolve(),
             tools_catalog_dir=Path(settings.TOOLS_CATALOG_DIR).resolve(),
             workspaces_dir=Path(settings.PROJECT_WORKSPACES_DIR).resolve(),
+            platform_workspace_dir=Path(
+                settings.PLATFORM_WORKSPACE_DIR
+            ).resolve(),
             llm_provider=provider,
             llm_module=str(
                 getattr(settings, "LLM_MODULE", None) or "litellm"
@@ -98,7 +101,7 @@ def configure_orchestrator() -> None:
             litellm_model=str(
                 getattr(settings, "LITELLM_MODEL", None)
                 or getattr(settings, "LLM_MODEL", None)
-                or "openrouter/openai/gpt-4o-mini"
+                or "openrouter/openai/gpt-5.6-luna"
             ),
             litellm_api_key=api_key,
             litellm_api_base=getattr(settings, "LITELLM_API_BASE", None) or None,
@@ -118,11 +121,18 @@ def configure_orchestrator() -> None:
                 getattr(settings, "AGENT_MAX_SUBAGENT_DEPTH", 2) or 2
             ),
             agent_runtime_enabled=bool(getattr(settings, "AGENT_RUNTIME_ENABLED", True)),
+            crew_reasoning_effort=str(
+                getattr(settings, "CREW_REASONING_EFFORT", "low") or "low"
+            )
+            .strip()
+            .lower(),
+            crew_reasoning_max_attempts=int(
+                getattr(settings, "CREW_REASONING_MAX_ATTEMPTS", 1) or 1
+            ),
             agent_module=str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai")
             .strip()
             .lower()
             or "crewai",
-            sandbox_enabled=bool(getattr(settings, "SANDBOX_ENABLED", True)),
             sandbox_image=str(getattr(settings, "SANDBOX_IMAGE", "peon-sandbox:local")),
             sandbox_prefix=str(
                 getattr(settings, "PROJECT_SANDBOX_PREFIX", "peon-project")
@@ -171,11 +181,74 @@ class ProjectsConfig(AppConfig):
     def ready(self) -> None:
         # Broker only — do not import tasks here (dramatiq worker imports tasks
         # which may call django.setup(); nested populate() would fail).
+        from peon.projects.db import configure_sqlite_concurrency
+
+        configure_sqlite_concurrency()
         configure_orchestrator()
         configure_broker()
+        import sys
 
-        register_builtin()
+        argv = " ".join(sys.argv).lower()
+        if not any(x in argv for x in ("migrate", "makemigrations", "test", "check")):
+            try:
+                from peon.projects.role_store import ensure_seeded
+
+                ensure_seeded()
+            except Exception:
+                pass
+        RuntimeRegistry.shared().register_builtin()
         self._warm_crewai()
+        self._kick_llm_proxy()
+        self._kick_durable_scheduler()
+        self._kick_dream_scheduler()
+
+    @staticmethod
+    def _kick_llm_proxy() -> None:
+        """Ensure LiteLLM gateway matches Settings intent (needed for Cognee)."""
+        import sys
+
+        argv = " ".join(sys.argv).lower()
+        if any(x in argv for x in ("migrate", "makemigrations", "test", "check")):
+            return
+        try:
+            from peon.projects.llm_proxy import LlmProxy
+            from peon.projects.runtime_settings import PeonSettings
+
+            if PeonSettings.get_bool("LLM_PROXY_ENABLED", True):
+                LlmProxy.shared().ensure()
+        except Exception as exc:
+            logger.debug("llm proxy kick skipped: %s", exc)
+
+    @staticmethod
+    def _kick_durable_scheduler() -> None:
+        """Start the durable schedule scanner (skipped during migrate/test)."""
+        import sys
+
+        argv = " ".join(sys.argv).lower()
+        if any(x in argv for x in ("migrate", "makemigrations", "test", "check")):
+            return
+        try:
+            # deferred: avoid importing tasks during nested django.setup
+            from peon.projects.tasks import ensure_durable_scheduler
+
+            ensure_durable_scheduler()
+        except Exception as exc:
+            logger.debug("durable scheduler kick skipped: %s", exc)
+
+    @staticmethod
+    def _kick_dream_scheduler() -> None:
+        """Start Cognee background dreaming (skipped during migrate/test)."""
+        import sys
+
+        argv = " ".join(sys.argv).lower()
+        if any(x in argv for x in ("migrate", "makemigrations", "test", "check")):
+            return
+        try:
+            from peon.projects.tasks import ensure_dream_scheduler
+
+            ensure_dream_scheduler()
+        except Exception as exc:
+            logger.debug("dream scheduler kick skipped: %s", exc)
 
     @staticmethod
     def _warm_crewai() -> None:

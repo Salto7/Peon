@@ -91,44 +91,212 @@
     return hub || nodes[0] || null;
   }
 
-  /** Fixed circular layout: project seed (hub) at center, spokes on rings. */
+  var NODE_R = 18;
+  var NODE_GAP = 28;
+  var MIN_ORBIT = 72;
+
+  function nodeRadius(node) {
+    if (!node) return NODE_R;
+    if (node.kind === "hub") return 22;
+    if (node.finding_count) return 18;
+    return 16;
+  }
+
+  /**
+   * Hierarchical circle layout: each parent is surrounded by its children on a
+   * full circle. Orbit radius grows with subtree size so siblings never overlap.
+   */
   function layout(nodes, edges, w, h) {
     var n = nodes.length;
     if (!n) return;
     var cx = w / 2;
     var cy = h / 2;
-    var hub = pickCenter(nodes);
-    if (hub) {
-      hub.kind = "hub";
-      hub.x = cx;
-      hub.y = cy;
+    var byId = {};
+    var children = {};
+    nodes.forEach(function (node) {
+      byId[node.id] = node;
+      node._laid = false;
+    });
+    nodes.forEach(function (node) {
+      var pid = String(node.parent_id || "");
+      if (!pid || !byId[pid] || pid === String(node.id)) return;
+      if (!children[pid]) children[pid] = [];
+      children[pid].push(node);
+    });
+
+    function kidsOf(node) {
+      return children[node.id] || [];
     }
-    var rings = {};
+
+    /** Bounding radius of a node's subtree (center → farthest leaf extent). */
+    function subtreeRadius(node) {
+      var kids = kidsOf(node);
+      var selfR = nodeRadius(node);
+      if (!kids.length) return selfR;
+      var childRs = kids.map(subtreeRadius);
+      var orbit = orbitFor(childRs, selfR);
+      var maxChild = 0;
+      for (var i = 0; i < childRs.length; i++) {
+        if (childRs[i] > maxChild) maxChild = childRs[i];
+      }
+      return orbit + maxChild;
+    }
+
+    /** Orbit so adjacent sibling subtrees do not collide. */
+    function orbitFor(childRs, parentR) {
+      var count = childRs.length;
+      if (!count) return 0;
+      if (count === 1) {
+        return Math.max(MIN_ORBIT, parentR + childRs[0] + NODE_GAP);
+      }
+      var half = Math.PI / count;
+      var sin = Math.sin(half);
+      if (sin < 1e-6) sin = 1e-6;
+      var orbit = MIN_ORBIT;
+      for (var i = 0; i < count; i++) {
+        var a = childRs[i];
+        var b = childRs[(i + 1) % count];
+        var need = (a + b + NODE_GAP) / (2 * sin);
+        if (need > orbit) orbit = need;
+      }
+      var maxChild = 0;
+      for (i = 0; i < count; i++) {
+        if (childRs[i] > maxChild) maxChild = childRs[i];
+      }
+      return Math.max(orbit, parentR + maxChild + NODE_GAP);
+    }
+
+    function placeTree(node, x, y, depth) {
+      if (!node || node._laid || depth > 12) return;
+      node._laid = true;
+      node.x = x;
+      node.y = y;
+      var kids = kidsOf(node);
+      if (!kids.length) return;
+      var childRs = kids.map(subtreeRadius);
+      var orbit = orbitFor(childRs, nodeRadius(node));
+      var step = (Math.PI * 2) / kids.length;
+      kids.forEach(function (kid, i) {
+        var angle = -Math.PI / 2 + i * step;
+        placeTree(
+          kid,
+          x + Math.cos(angle) * orbit,
+          y + Math.sin(angle) * orbit,
+          depth + 1
+        );
+      });
+    }
+
+    var hub = pickCenter(nodes);
+    if (hub) hub.kind = "hub";
+
+    // Roots = no parent in the graph (plus orphans). Hub first, then other roots
+    // on a circle around the hub so top-level buckets stay separated.
+    var roots = [];
     nodes.forEach(function (node) {
       if (hub && node.id === hub.id) return;
-      var ri = RING_ORDER.hasOwnProperty(node.bucket)
-        ? RING_ORDER[node.bucket]
-        : 1;
-      if (!rings[ri]) rings[ri] = [];
-      rings[ri].push(node);
+      if (node.parent_id && byId[node.parent_id]) return;
+      roots.push(node);
     });
-    var ringKeys = Object.keys(rings)
-      .map(Number)
-      .sort(function (a, b) {
-        return a - b;
+    // Stable order: bucket ring preference then label.
+    roots.sort(function (a, b) {
+      var ra = RING_ORDER.hasOwnProperty(a.bucket) ? RING_ORDER[a.bucket] : 1;
+      var rb = RING_ORDER.hasOwnProperty(b.bucket) ? RING_ORDER[b.bucket] : 1;
+      if (ra !== rb) return ra - rb;
+      return String(a.label || a.id).localeCompare(String(b.label || b.id));
+    });
+
+    if (hub) {
+      placeTree(hub, cx, cy, 0);
+      // Attach root trees that are not descendants of hub as satellites.
+      var satellites = roots.filter(function (r) {
+        return !r._laid;
       });
-    var maxR = Math.min(w, h) * 0.42;
-    var minR = Math.min(w, h) * 0.22;
-    ringKeys.forEach(function (ri, idx) {
-      var group = rings[ri];
-      var t = ringKeys.length <= 1 ? 0.55 : idx / Math.max(ringKeys.length - 1, 1);
-      var radius = minR + (maxR - minR) * t;
-      if (ringKeys.length === 1) radius = (minR + maxR) / 2;
-      group.forEach(function (node, i) {
-        var angle = (i / group.length) * Math.PI * 2 - Math.PI / 2;
-        node.x = cx + Math.cos(angle) * radius;
-        node.y = cy + Math.sin(angle) * radius;
+      if (satellites.length) {
+        var satRs = satellites.map(subtreeRadius);
+        var hubR = subtreeRadius(hub);
+        var orbit = orbitFor(satRs, hubR);
+        // Keep satellites outside the hub's own subtree footprint.
+        orbit = Math.max(orbit, hubR + Math.max.apply(null, satRs.concat([NODE_R])) + NODE_GAP);
+        var step = (Math.PI * 2) / satellites.length;
+        satellites.forEach(function (node, i) {
+          var angle = -Math.PI / 2 + i * step;
+          placeTree(
+            node,
+            cx + Math.cos(angle) * orbit,
+            cy + Math.sin(angle) * orbit,
+            0
+          );
+        });
+      }
+    } else if (roots.length) {
+      if (roots.length === 1) {
+        placeTree(roots[0], cx, cy, 0);
+      } else {
+        var rootRs = roots.map(subtreeRadius);
+        var rootOrbit = orbitFor(rootRs, NODE_R);
+        var rootStep = (Math.PI * 2) / roots.length;
+        roots.forEach(function (node, i) {
+          var angle = -Math.PI / 2 + i * rootStep;
+          placeTree(
+            node,
+            cx + Math.cos(angle) * rootOrbit,
+            cy + Math.sin(angle) * rootOrbit,
+            0
+          );
+        });
+      }
+    }
+
+    // Any remaining disconnected nodes (cycles / bad parents) — own circle.
+    var leftovers = nodes.filter(function (node) {
+      return !node._laid;
+    });
+    if (leftovers.length) {
+      var leftRs = leftovers.map(function () {
+        return NODE_R;
       });
+      var leftOrbit = Math.max(
+        MIN_ORBIT * 1.4,
+        orbitFor(leftRs, NODE_R)
+      );
+      var leftStep = (Math.PI * 2) / leftovers.length;
+      leftovers.forEach(function (node, i) {
+        var angle = -Math.PI / 2 + i * leftStep;
+        placeTree(
+          node,
+          cx + Math.cos(angle) * leftOrbit,
+          cy + Math.sin(angle) * leftOrbit,
+          0
+        );
+      });
+    }
+
+    nodes.forEach(function (node) {
+      delete node._laid;
+    });
+
+    // Fit content into the viewport with padding (uniform scale + recenter).
+    var minX = Infinity;
+    var maxX = -Infinity;
+    var minY = Infinity;
+    var maxY = -Infinity;
+    nodes.forEach(function (node) {
+      var r = nodeRadius(node) + 36; // label / type chip room
+      if (node.x - r < minX) minX = node.x - r;
+      if (node.x + r > maxX) maxX = node.x + r;
+      if (node.y - r < minY) minY = node.y - r;
+      if (node.y + r > maxY) maxY = node.y + r;
+    });
+    var bw = Math.max(1, maxX - minX);
+    var bh = Math.max(1, maxY - minY);
+    var pad = 28;
+    var scale = Math.min((w - pad * 2) / bw, (h - pad * 2) / bh, 1);
+    var midX = (minX + maxX) / 2;
+    var midY = (minY + maxY) / 2;
+    nodes.forEach(function (node) {
+      node.x = cx + (node.x - midX) * scale;
+      node.y = cy + (node.y - midY) * scale;
     });
   }
 
@@ -533,6 +701,15 @@
       }
       g.appendChild(circle);
 
+      var typeChip = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      typeChip.setAttribute("y", String(-(r + 6)));
+      typeChip.setAttribute("text-anchor", "middle");
+      typeChip.setAttribute("class", "as-type-chip");
+      typeChip.style.pointerEvents = "none";
+      typeChip.setAttribute("fill", slugColor(n.type || "asset", 38, 62));
+      typeChip.textContent = String(n.type || "asset").toLowerCase();
+      g.appendChild(typeChip);
+
       var label = document.createElementNS("http://www.w3.org/2000/svg", "text");
       label.setAttribute("y", String(r + 14));
       label.setAttribute("text-anchor", "middle");
@@ -581,6 +758,15 @@
     paint();
   }
 
+  function update(data) {
+    var next = data || { nodes: [], edges: [], legend: {} };
+    var currentSig = JSON.stringify(_data);
+    var nextSig = JSON.stringify(next);
+    if (currentSig === nextSig) return;
+    _data = next;
+    rebuild(true);
+  }
+
   function mount(opts) {
     _host = document.getElementById((opts && opts.hostId) || "attack-surface-host");
     if (!_host) return;
@@ -608,13 +794,21 @@
       _ro.observe(_host);
     }
     window.addEventListener("peon:war-pane", function (ev) {
-      if (ev.detail && ev.detail.pane === "attack") fit();
+      if (ev.detail && ev.detail.pane === "attack") {
+        // Pane may still be 0×0 for a frame after unhide — fit twice.
+        fit();
+        window.requestAnimationFrame(function () {
+          fit();
+          window.setTimeout(fit, 50);
+        });
+      }
     });
   }
 
   global.PeonAttackSurface = {
     mount: mount,
     fit: fit,
+    update: update,
     resetZoom: resetZoom,
   };
 })(window);

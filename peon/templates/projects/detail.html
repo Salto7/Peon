@@ -62,11 +62,15 @@
 <section class="war-zone war-dash" id="project-status-line" aria-labelledby="mission-heading">
   <header class="mission-banner war-hud">
     <div class="mission-banner-main">
-      <p class="mission-eyebrow">War room · engagement</p>
+      <p class="mission-eyebrow">War room · {% if project.kind == "durable" %}durable{% else %}timed{% endif %} engagement</p>
       <h1 id="mission-heading">{{ project.title }}</h1>
       <p class="lead">{{ project.summary|default:"(no summary)" }}</p>
       <div class="mission-meta">
         <span class="status-pill" id="project-status" data-status="{{ project.status }}">{{ project.status }}</span>
+        <span class="kind-pill" data-kind="{{ project.kind }}">{{ project.get_kind_display }}</span>
+        {% if project.kind == "durable" %}
+        <a class="meta" href="{% url 'project_plan' project.pk %}">Plan graph</a>
+        {% endif %}
         <span class="meta">Runtime <code>{{ project.get_sandbox_runtime_display }}</code></span>
         <span class="meta" id="project-phase-wrap">Phase <code id="project-phase">{{ ops.project.phase|default:"—" }}</code></span>
         {% if org_chart.crew_status %}
@@ -143,12 +147,6 @@
         Run next objective
       </button>
     </form>
-    <button type="button" class="secondary" data-chat-open-mode="replan">
-      Replan in chat
-    </button>
-    <button type="button" class="secondary" data-chat-open-mode="instruct">
-      Instruct crew
-    </button>
     {% endif %}
     <form method="post" action="{% url 'project_control' project.pk %}"
           onsubmit="return confirm('Delete this project and its Docker sandbox (if any)?');">
@@ -231,7 +229,7 @@
     </div>
 
     <div id="chat-thread" class="chat-thread" aria-live="polite">
-      <p class="chat-thread-empty meta">Ask anything about the project — Chat routes answers, instructions, replans, or stop.</p>
+      <p class="chat-thread-empty meta">Ask anything about the project.</p>
     </div>
 
     {% if project.status != "cancelled" %}
@@ -239,12 +237,6 @@
           data-chat-url="{% url 'project_chat' project.pk %}"
           data-inputs-url="{% url 'project_inputs' project.pk %}"
           {% if project.status == "paused" %}data-disabled="1"{% endif %}>
-      <div class="chat-mode-row" role="group" aria-label="Operator actions">
-        <button type="button" class="chat-mode is-active" data-chat-mode="chat">Chat</button>
-        <button type="button" class="chat-mode" data-chat-mode="instruct">Instruct</button>
-        <button type="button" class="chat-mode" data-chat-mode="replan">Replan</button>
-        <button type="button" class="chat-mode chat-mode-stop" data-chat-mode="stop">Stop</button>
-      </div>
       <div class="project-chat-shell">
         <button type="button" class="project-chat-plus" id="project-chat-plus"
                 title="Attach file" aria-label="Attach file">
@@ -253,7 +245,7 @@
         <input type="file" id="project-chat-file" name="uploads" multiple class="visually-hidden"
                tabindex="-1" aria-hidden="true">
         <textarea id="project-chat-input" rows="1"
-                  placeholder="Ask about the project, or tell agents what to do…"
+                  placeholder="Ask about the project…"
                   aria-label="Chat message"
                   {% if project.status == "paused" %}disabled{% endif %}></textarea>
         <button type="submit" class="secondary project-chat-send" id="project-chat-send"
@@ -293,10 +285,37 @@
       <div class="war-room-shell">
         <header class="page-header tight war-pane-intro">
           <div>
-            <h1>Findings</h1>
-            <p class="lead">Triage security discoveries (ports, vulns, assets). Objective details live on agent nodes.</p>
+            <h1>Objectives &amp; findings</h1>
+            <p class="lead">Live objective progress and triageable security discoveries.</p>
           </div>
         </header>
+
+        <section class="war-zone objectives-panel" id="objectives"
+                 aria-labelledby="objectives-heading">
+          <div class="workspace-header">
+            <h2 id="objectives-heading">Objectives</h2>
+            <span class="panel-hint"><span id="objectives-count">{{ ops.objectives|length }}</span> total</span>
+          </div>
+          <div class="objectives-board" id="objectives-body">
+          {% for o in ops.objectives %}
+            <article class="objective-card" data-objective-id="{{ o.id }}"
+                     data-status="{{ o.status }}">
+              <div class="objective-card-top">
+                <span class="meta">OBJ-{{ o.seq }}</span>
+                <span class="status-pill" data-objective-status
+                      data-status="{{ o.status }}">{{ o.status }}</span>
+              </div>
+              <h3 class="objective-card-title">{{ o.title }}</h3>
+              <div class="objective-card-meta">
+                <code>{{ o.role_id|default:"unassigned" }}</code>
+                <code>{{ o.phase }}</code>
+              </div>
+            </article>
+          {% empty %}
+            <p class="meta findings-empty">No objectives yet.</p>
+          {% endfor %}
+          </div>
+        </section>
 
         <section class="war-zone findings-panel" id="findings"
                  data-findings-url="{% url 'project_findings_json' project.pk %}"
@@ -437,7 +456,7 @@
         </header>
         <section class="war-zone attack-surface-card" aria-labelledby="attack-heading">
           <div class="workspace-header">
-            <h2 id="attack-heading">Asset graph</h2>
+            <h2 id="attack-heading">Open graph</h2>
             <div id="attack-legend" class="attack-legend meta" aria-live="polite"></div>
           </div>
           <div id="attack-surface-host" class="attack-surface-host" role="img"
@@ -573,11 +592,11 @@
 <script src="{% static 'vendor/xterm/xterm.min.js' %}?v=5.5.0"></script>
 <script src="{% static 'vendor/xterm/addon-fit.min.js' %}?v=0.10.0"></script>
 <script src="{% static 'js/war-nav.js' %}?v=20260925d"></script>
-<script src="{% static 'js/attack-surface.js' %}?v=20260925j"></script>
-<script src="{% static 'js/agent-graph.js' %}?v=20261004b"></script>
-<script src="{% static 'js/project-console-chat.js' %}?v=20261004a"></script>
-<script src="{% static 'js/project-ops.js' %}?v=20261004c"></script>
-<script src="{% static 'js/terminal.js' %}?v=20260925q"></script>
+<script src="{% static 'js/attack-surface.js' %}?v=20261011a"></script>
+<script src="{% static 'js/agent-graph.js' %}?v=20261010j"></script>
+<script src="{% static 'js/project-console-chat.js' %}?v=20261010a"></script>
+<script src="{% static 'js/project-ops.js' %}?v=20261010e"></script>
+<script src="{% static 'js/terminal.js' %}?v=20261010a"></script>
 <script>
   PeonProjectOps.init({
     projectPk: "{{ project.pk }}",

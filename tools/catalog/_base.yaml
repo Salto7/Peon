@@ -16,5 +16,4 @@ binary: ""
 #       repo: org/tool
 install: []
 verify: []
-roles: []
 tags: [base]

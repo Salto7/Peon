@@ -9,7 +9,7 @@ from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpRe
 from django.shortcuts import get_object_or_404
 from django.views.decorators.http import require_GET, require_http_methods
 
-from peon.projects.http_helpers import parse_json_body
+from peon.projects.http_helpers import parse_json_body, with_project_context
 from peon.projects.models import Project
 from peon.projects.streaming import audit_project_stream
 from peon.projects.terminal_session import get_registry
@@ -37,6 +37,7 @@ def _session_or_404(project: Project, session_id: str):
 
 
 @require_http_methods(["POST"])
+@with_project_context
 def project_terminal_open(request: HttpRequest, pk) -> JsonResponse:
     project = get_object_or_404(Project, pk=pk)
     body = parse_json_body(request)
@@ -64,6 +65,7 @@ def project_terminal_open(request: HttpRequest, pk) -> JsonResponse:
 
 
 @require_GET
+@with_project_context
 def project_terminal_stream(request: HttpRequest, pk, session_id: str) -> HttpResponse:
     project = get_object_or_404(Project, pk=pk)
     sess, err = _session_or_404(project, session_id)
@@ -93,6 +95,7 @@ def project_terminal_stream(request: HttpRequest, pk, session_id: str) -> HttpRe
 
 
 @require_http_methods(["POST"])
+@with_project_context
 def project_terminal_input(request: HttpRequest, pk, session_id: str) -> JsonResponse:
     project = get_object_or_404(Project, pk=pk)
     sess, err = _session_or_404(project, session_id)
@@ -119,6 +122,7 @@ def project_terminal_input(request: HttpRequest, pk, session_id: str) -> JsonRes
 
 
 @require_http_methods(["POST"])
+@with_project_context
 def project_terminal_resize(request: HttpRequest, pk, session_id: str) -> JsonResponse:
     project = get_object_or_404(Project, pk=pk)
     sess, err = _session_or_404(project, session_id)
@@ -132,6 +136,7 @@ def project_terminal_resize(request: HttpRequest, pk, session_id: str) -> JsonRe
 
 
 @require_http_methods(["POST"])
+@with_project_context
 def project_terminal_close(request: HttpRequest, pk, session_id: str) -> JsonResponse:
     project = get_object_or_404(Project, pk=pk)
     ok = get_registry().close(session_id, str(project.id))

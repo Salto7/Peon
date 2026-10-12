@@ -12,8 +12,7 @@ import yaml
 
 from agent_runtime.api import RuntimeSpec, Session, SessionInfo
 from agent_runtime.docker.cli import DockerCli
-from agent_runtime.registry import get as get_runtime
-from agent_runtime.registry import register_builtin
+from agent_runtime.registry import RuntimeRegistry
 from orchestrator.tools.catalog import ToolCatalog
 from orchestrator.tools.catalog.catalog import CatalogProvisioner
 from orchestrator.utils.service import SharedServiceBase
@@ -42,13 +41,17 @@ class LearnLab(SharedServiceBase):
         ).strip()
 
     def staging_root(self) -> Path:
-        root = Path(getattr(settings, "PROJECT_WORKSPACES_DIR")).resolve().parent / "learn_lab"
+        root = (
+            Path(getattr(settings, "PLATFORM_WORKSPACE_DIR")).resolve()
+            / "learn_lab"
+        )
         root.mkdir(parents=True, exist_ok=True)
         return root
 
     def _runtime(self):
-        register_builtin()
-        return get_runtime("sandbox")
+        registry = RuntimeRegistry.shared()
+        registry.register_builtin()
+        return registry.get("sandbox")
 
     def _compose_network(self) -> str:
         """Attach lab to the Peon Compose network so it can reach litellm."""

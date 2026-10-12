@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from orchestrator.tools.catalog import CatalogTool, ToolCatalog
-from peon.projects.catalog_cards_base import CatalogCardsBase
+from peon.projects.catalog_cards.base import CatalogCardsBase
 
 
 class ToolCards(CatalogCardsBase):
@@ -77,7 +77,7 @@ class ToolCards(CatalogCardsBase):
             tier=tool.tier or "",
             binary=tool.binary or "",
             binaries=list(tool.binaries or []),
-            roles=list(tool.roles or []),
+            roles=ToolCatalog.roles_for(tool),
             tags=list(tool.tags or []),
             install=list(tool.install or []),
         )

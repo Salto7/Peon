@@ -1,0 +1,8 @@
+bindings:
+- role_id: recon-specialist
+  score: 0.95
+  lead: false
+- role_id: web-crawler-expert
+  score: 1.0
+  lead: true
+source: seed

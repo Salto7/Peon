@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from collections.abc import Callable
 
@@ -76,10 +77,10 @@ class SkillContext:
         return preferred or [t["value"] for t in assets]
 
     def explicit_command(self) -> str:
-        command = (os.environ.get("ORCHESTRATOR_SKILL_COMMAND") or "").strip()
-        if not command and len(sys.argv) > 1:
-            command = " ".join(sys.argv[1:]).strip()
-        return command
+        if len(sys.argv) > 1:
+            # shlex.join keeps quoted arguments that a space-join would split.
+            return shlex.join(sys.argv[1:]).strip()
+        return ""
 
     def resolve_command(
         self,

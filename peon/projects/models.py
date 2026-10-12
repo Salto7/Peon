@@ -1,6 +1,7 @@
 """Project control plane: Project, RoE, Objective, Job, Finding.
 
-Engagement agents are CrewAI roles (``roles/``). Job.role_ids holds role catalog ids.
+Engagement agents are CrewAI roles from the platform role store + skill affinity.
+Job.role_ids holds role catalog ids; skills are the execution units.
 """
 
 from __future__ import annotations
@@ -8,6 +9,65 @@ from __future__ import annotations
 import uuid
 
 from django.db import models
+
+
+class ProjectScopedModel(models.Model):
+    """Mixin: persist engagement rows into /workspaces/<project>/db.sqlite3."""
+
+    class Meta:
+        abstract = True
+
+    def _project_scope_id(self):
+        pid = getattr(self, "project_id", None)
+        if pid:
+            return pid
+        job = getattr(self, "job", None)
+        if job is not None and getattr(job, "project_id", None):
+            return job.project_id
+        return getattr(self, "job_id", None) and None
+
+    def save(self, *args, **kwargs):
+        pid = getattr(self, "project_id", None)
+        if not pid:
+            # Prefer the related Job instance (create(job=…)) before fan-out get_job.
+            job = getattr(self, "job", None)
+            if job is not None and getattr(job, "project_id", None):
+                pid = job.project_id
+            else:
+                job_id = getattr(self, "job_id", None)
+                if job_id:
+                    from peon.projects.db import get_job
+
+                    try:
+                        pid = get_job(job_id).project_id
+                    except Exception:
+                        pid = None
+            if pid:
+                from peon.projects.db import ensure_project_database, using_project
+
+                alias = ensure_project_database(pid)
+                # Force: Manager.create() passes using=router.db (often default).
+                kwargs["using"] = alias
+                with using_project(pid):
+                    return super().save(*args, **kwargs)
+            return super().save(*args, **kwargs)
+        from peon.projects.db import ensure_project_database, using_project
+
+        alias = ensure_project_database(pid)
+        kwargs["using"] = alias
+        with using_project(pid):
+            return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        pid = getattr(self, "project_id", None)
+        if pid:
+            from peon.projects.db import ensure_project_database, using_project
+
+            alias = ensure_project_database(pid)
+            kwargs["using"] = alias
+            with using_project(pid):
+                return super().delete(*args, **kwargs)
+        return super().delete(*args, **kwargs)
 
 
 class ProjectStatus(models.TextChoices):
@@ -30,6 +90,20 @@ class SandboxRuntime(models.TextChoices):
         if value in cls.values:
             return value
         return cls.SANDBOX
+
+
+class ProjectKind(models.TextChoices):
+    """Engagement duration model."""
+
+    TIMED = "timed", "Timed"
+    DURABLE = "durable", "Durable"
+
+    @classmethod
+    def resolve(cls, raw: str | None) -> str:
+        value = (raw or "").strip().lower()
+        if value in cls.values:
+            return value
+        return cls.TIMED
 
 
 class KillChainPhase(models.TextChoices):
@@ -64,7 +138,11 @@ class FindingStatus(models.TextChoices):
 
 
 class Project(models.Model):
-    """Engagement container: RoE, objectives, findings, jobs."""
+    """Platform registry row for an engagement (not the project SQLite file).
+
+    Engagement data (RoE, jobs, findings, …) lives in
+    ``/workspaces/<id>/db.sqlite3``. Peon list/home/status use this row only.
+    """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
@@ -83,6 +161,16 @@ class Project(models.Model):
         default=SandboxRuntime.SANDBOX,
         help_text="Chosen at project create. Sandbox is Docker; OpenShell is the locked runtime.",
     )
+    kind = models.CharField(
+        max_length=16,
+        choices=ProjectKind.choices,
+        default=ProjectKind.TIMED,
+        help_text="timed = finite engagement; durable = 24/7 continuous project.",
+    )
+    plan_accepted = models.BooleanField(
+        default=True,
+        help_text="False until operator accepts the durable plan graph (timed defaults True).",
+    )
     focus_tags = models.JSONField(
         default=list,
         blank=True,
@@ -100,6 +188,11 @@ class Project(models.Model):
         default="",
         help_text="Crew run status: running|paused|awaiting_feedback|stopped|done.",
     )
+    # Denormalized from project DB so Peon chrome never opens project SQLite.
+    running_jobs = models.PositiveIntegerField(default=0)
+    failed_jobs = models.PositiveIntegerField(default=0)
+    open_prompts = models.PositiveIntegerField(default=0)
+    last_error_summary = models.CharField(max_length=500, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -111,15 +204,148 @@ class Project(models.Model):
     def __str__(self) -> str:
         return f"{self.title} ({self.status})"
 
+    def save(self, *args, **kwargs):
+        # Registry writes always go to platform unless explicitly using=project_*.
+        using = kwargs.get("using")
+        if using is None and not str(getattr(self._state, "db", "") or "").startswith(
+            "project_"
+        ):
+            kwargs["using"] = "default"
+        result = super().save(*args, **kwargs)
+        if kwargs.get("using", getattr(self._state, "db", "default")) == "default":
+            try:
+                from peon.projects.db import mirror_project_row
 
-class RulesOfEngagement(models.Model):
+                mirror_project_row(self.pk)
+            except Exception:
+                pass
+        return result
+
+    def db_alias(self) -> str:
+        from peon.projects.db import alias_for, ensure_project_database
+
+        return ensure_project_database(self.pk)
+
+    def _scoped(self, model: type):
+        from peon.projects.db import ProjectRelation
+
+        return ProjectRelation(model, self)
+
+    @property
+    def jobs(self):
+        from peon.projects.models import Job
+
+        return self._scoped(Job)
+
+    @property
+    def objectives(self):
+        from peon.projects.models import Objective
+
+        return self._scoped(Objective)
+
+    @property
+    def findings(self):
+        from peon.projects.models import Finding
+
+        return self._scoped(Finding)
+
+    @property
+    def schedules(self):
+        from peon.projects.models import ProjectSchedule
+
+        return self._scoped(ProjectSchedule)
+
+    @property
+    def operator_prompts(self):
+        from peon.projects.models import OperatorPrompt
+
+        return self._scoped(OperatorPrompt)
+
+    @property
+    def checkpoints(self):
+        from peon.projects.models import JobCheckpoint
+
+        return self._scoped(JobCheckpoint)
+
+    @property
+    def agent_messages(self):
+        from peon.projects.models import AgentMessage
+
+        return self._scoped(AgentMessage)
+
+    @property
+    def roe(self):
+        from peon.projects.models import RulesOfEngagement
+
+        alias = self.db_alias()
+        return RulesOfEngagement.objects.using(alias).filter(pk=self.pk).first()
+
+    @roe.setter
+    def roe(self, value) -> None:
+        return None
+
+    @property
+    def asset_graph(self):
+        from peon.projects.models import AssetGraph
+
+        alias = self.db_alias()
+        return AssetGraph.objects.using(alias).filter(pk=self.pk).first()
+
+
+class EngagementRole(models.Model):
+    """Platform-global engagement role identity (Lab-editable).
+
+    Skill membership comes from affinity sidecars, not this row.
+    """
+
+    role_id = models.CharField(max_length=128, primary_key=True)
+    kind = models.CharField(
+        max_length=32,
+        help_text="engagement-pm | analyzer | technical",
+    )
+    aliases = models.JSONField(default=list, blank=True)
+    protected = models.BooleanField(
+        default=False,
+        help_text="Bookend roles that Lab must not delete.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Engagement role"
+        verbose_name_plural = "Engagement roles"
+        ordering = ["role_id"]
+
+    def __str__(self) -> str:
+        return f"{self.role_id} ({self.kind})"
+
+
+class RoleSkillMemory(models.Model):
+    """Platform-global observed role → skill usage (affinity is the allowlist)."""
+
+    role_id = models.CharField(max_length=128, primary_key=True)
+    skills = models.JSONField(default=list, blank=True)
+    counts = models.JSONField(default=dict, blank=True)
+    last_source = models.CharField(max_length=64, blank=True, default="")
+    last_project_id = models.CharField(max_length=64, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Role skill memory"
+        verbose_name_plural = "Role skill memory"
+
+    def __str__(self) -> str:
+        return f"{self.role_id}: {len(self.skills or [])} skills"
+
+
+class RulesOfEngagement(ProjectScopedModel):
     """Scope and safety rules — values authorize; type is an optional hint."""
 
     project = models.OneToOneField(
         Project,
         on_delete=models.CASCADE,
-        related_name="roe",
+        related_name="+",
         primary_key=True,
+        db_constraint=False,
     )
     in_scope = models.JSONField(
         default=list,
@@ -159,14 +385,15 @@ class RulesOfEngagement(models.Model):
         return f"Rules of Engagement for {self.project_id}"
 
 
-class Objective(models.Model):
+class Objective(ProjectScopedModel):
     """Kill-chain step under a project (maps to orchestrator project-plan objectives)."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
-        related_name="objectives",
+        related_name="+",
+        db_constraint=False,
     )
     seq = models.PositiveIntegerField(default=1)
     title = models.CharField(max_length=255)
@@ -193,7 +420,12 @@ class Objective(models.Model):
     role_id = models.CharField(
         max_length=128,
         blank=True,
-        help_text="CrewAI role id from roles/ (e.g. osint-expert).",
+        help_text="CrewAI role id from the platform role store (e.g. osint-expert).",
+    )
+    skill_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Selected skill ids from the role's skill group (subset).",
     )
     profile_suggestion = models.CharField(
         max_length=128,
@@ -239,9 +471,28 @@ TERMINAL_JOB_STATUSES = frozenset(
     {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
 )
 
+# Project is done (operator may still view; no new work without resume/replan).
+TERMINAL_PROJECT_STATUSES = frozenset(
+    {
+        ProjectStatus.FINISHED,
+        ProjectStatus.FINISHED_WITH_ERRORS,
+        ProjectStatus.CANCELLED,
+    }
+)
+
+# Operator/scheduler must not enqueue while paused or cancelled.
+INACTIVE_PROJECT_STATUSES = frozenset(
+    {ProjectStatus.PAUSED, ProjectStatus.CANCELLED}
+)
+
+# Finished (with or without errors) — durable stays ACTIVE instead of these.
+FINISHED_PROJECT_STATUSES = frozenset(
+    {ProjectStatus.FINISHED, ProjectStatus.FINISHED_WITH_ERRORS}
+)
+
 
 class Job(models.Model):
-    """One agent run; optional Project / Objective link. role_ids → roles/ catalog."""
+    """One agent run; optional Project / Objective link. role_ids → engagement roles."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
@@ -259,14 +510,20 @@ class Job(models.Model):
     role_ids = models.JSONField(
         default=list,
         blank=True,
-        help_text="CrewAI role ids from roles/ (RoleRegistry).",
+        help_text="CrewAI role ids from the platform role store (RoleRegistry).",
+    )
+    skill_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Selected skill ids for this job (subset of the role skill group).",
     )
     project = models.ForeignKey(
         Project,
         null=True,
         blank=True,
         on_delete=models.CASCADE,
-        related_name="jobs",
+        related_name="+",
+        db_constraint=False,
     )
     objective = models.ForeignKey(
         Objective,
@@ -300,6 +557,23 @@ class Job(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+    def save(self, *args, **kwargs):
+        if self.project_id:
+            expected = str(self.project_id)
+            if self.workspace_id != expected:
+                self.workspace_id = expected
+                update_fields = kwargs.get("update_fields")
+                if update_fields is not None:
+                    kwargs["update_fields"] = {*update_fields, "workspace_id"}
+            from peon.projects.db import ensure_project_database, using_project
+
+            alias = ensure_project_database(self.project_id)
+            kwargs["using"] = alias
+            with using_project(self.project_id):
+                return super().save(*args, **kwargs)
+        kwargs.setdefault("using", "default")
+        return super().save(*args, **kwargs)
+
     def __str__(self) -> str:
         return f"{self.title} ({self.status})"
 
@@ -307,9 +581,10 @@ class Job(models.Model):
 class JobDirectiveKind(models.TextChoices):
     STEER = "steer", "Steer"
     FOLLOWUP = "followup", "Follow-up"
+    REPLAN = "replan", "Replan"
 
 
-class JobDirective(models.Model):
+class JobDirective(ProjectScopedModel):
     """Operator instruction queued for a Job (consumed by the agent loop)."""
 
     id = models.BigAutoField(primary_key=True)
@@ -334,14 +609,24 @@ class JobDirective(models.Model):
         return f"{self.kind}:{preview}"
 
 
-class OperatorPrompt(models.Model):
+class OperatorPromptKind(models.TextChoices):
+    """Typed HITL reasons (structured — not scraped from free text)."""
+
+    AGENT_ASK = "agent_ask", "Agent ask"
+    BLOCKED_OBJECTIVE = "blocked_objective", "Blocked objective"
+    FAILURE_EXHAUSTED = "failure_exhausted", "Failure replans exhausted"
+    PLAN_CHANGE = "plan_change", "Plan change"
+
+
+class OperatorPrompt(ProjectScopedModel):
     """Human-in-the-loop ask: agent/control-plane needs operator input."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
-        related_name="operator_prompts",
+        related_name="+",
+        db_constraint=False,
     )
     job = models.ForeignKey(
         Job,
@@ -349,6 +634,12 @@ class OperatorPrompt(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="operator_prompts",
+    )
+    kind = models.CharField(
+        max_length=32,
+        choices=OperatorPromptKind.choices,
+        default=OperatorPromptKind.AGENT_ASK,
+        help_text="agent_ask | blocked_objective | failure_exhausted | plan_change",
     )
     question = models.TextField()
     options = models.JSONField(default=list, blank=True)
@@ -360,12 +651,86 @@ class OperatorPrompt(models.Model):
         ordering = ["created_at"]
         indexes = [
             models.Index(fields=["project", "resolved_at"]),
+            models.Index(fields=["kind", "resolved_at"]),
         ]
 
     def __str__(self) -> str:
         preview = (self.question or "")[:48]
         state = "open" if self.resolved_at is None else "done"
-        return f"[{state}] {preview}"
+        return f"[{state}/{self.kind}] {preview}"
+
+
+class ScheduleKind(models.TextChoices):
+    CRON = "cron", "Cron"
+    INTERVAL = "interval", "Interval"
+    ONCE = "once", "Once"
+
+
+class ProjectSchedule(ProjectScopedModel):
+    """Durable cadence: enqueue Jobs on cron/interval without a second runtime."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+    )
+    objective = models.ForeignKey(
+        Objective,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="schedules",
+    )
+    title = models.CharField(max_length=255, blank=True, default="")
+    role_id = models.CharField(max_length=128, blank=True, default="")
+    brief = models.TextField(
+        blank=True,
+        help_text="Job description / prompt override for scheduled runs.",
+    )
+    kind = models.CharField(
+        max_length=16,
+        choices=ScheduleKind.choices,
+        default=ScheduleKind.INTERVAL,
+    )
+    cron = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="5-field cron (minute hour day month weekday) when kind=cron.",
+    )
+    interval_seconds = models.PositiveIntegerField(
+        default=0,
+        help_text="Seconds between runs when kind=interval.",
+    )
+    enabled = models.BooleanField(default=True)
+    skip_if_running = models.BooleanField(
+        default=True,
+        help_text="Skip run when a non-terminal Job already exists for this schedule.",
+    )
+    next_run_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_job = models.ForeignKey(
+        Job,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["next_run_at", "created_at"]
+        indexes = [
+            models.Index(fields=["enabled", "next_run_at"]),
+            models.Index(fields=["project", "enabled"]),
+        ]
+
+    def __str__(self) -> str:
+        label = (self.title or self.role_id or "schedule").strip()
+        return f"{label} ({self.kind})"
 
 
 class StreamMessageType(models.TextChoices):
@@ -379,7 +744,7 @@ class StreamMessageType(models.TextChoices):
     STATUS = "status", "Status"
 
 
-class StreamMessage(models.Model):
+class StreamMessage(ProjectScopedModel):
     """One live stream line for a Job (Unix socket ingest and/or worker emit)."""
 
     id = models.BigAutoField(primary_key=True)
@@ -419,14 +784,15 @@ class RuntimeSettings(models.Model):
         return "Runtime settings"
 
 
-class Finding(models.Model):
+class Finding(ProjectScopedModel):
     """Engagement discovery about a subject (any asset class) under a project."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
-        related_name="findings",
+        related_name="+",
+        db_constraint=False,
     )
     objective = models.ForeignKey(
         Objective,
@@ -474,7 +840,19 @@ class Finding(models.Model):
     mitre_techniques = models.JSONField(default=list, blank=True)
     description = models.TextField(blank=True)
     evidence = models.TextField(blank=True)
-    evidence_path = models.CharField(max_length=1024, blank=True)
+    evidence_path = models.CharField(
+        max_length=1024,
+        blank=True,
+        help_text="Workspace provenance path only — not an engagement subject.",
+    )
+    subjects = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            'Affected subjects: [{"type","value"}] (optional "relation"). '
+            "evidence_path is never a subject."
+        ),
+    )
     remediation = models.TextField(blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -491,7 +869,7 @@ class Finding(models.Model):
         return f"FIND-{self.seq}: {self.title}"
 
 
-class AssetGraph(models.Model):
+class AssetGraph(ProjectScopedModel):
     """Engagement asset graph (open types / relations).
 
     Types and relation labels are free-form slugs from producers (roles,
@@ -502,8 +880,9 @@ class AssetGraph(models.Model):
     project = models.OneToOneField(
         Project,
         on_delete=models.CASCADE,
-        related_name="asset_graph",
+        related_name="+",
         primary_key=True,
+        db_constraint=False,
     )
     assets = models.JSONField(
         default=list,
@@ -527,7 +906,53 @@ class AssetGraph(models.Model):
         return f"AssetGraph<{self.project_id}> {len(self.assets or [])} assets"
 
 
-class AgentMessage(models.Model):
+class JobCheckpoint(ProjectScopedModel):
+    """Domain/context checkpoint written when a Job attempt ends (mandatory)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    job = models.ForeignKey(Job, on_delete=models.CASCADE, related_name="checkpoints")
+    project = models.ForeignKey(
+        Project,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+    )
+    objective = models.ForeignKey(
+        Objective,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="checkpoints",
+    )
+    seq = models.PositiveIntegerField(default=1)
+    reason = models.CharField(
+        max_length=64,
+        blank=True,
+        default="job_finished",
+        help_text="job_finished | resume | steer | scheduled_run",
+    )
+    context = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Structured domain context: status, roles, digest refs, artifacts.",
+    )
+    transcript_digest = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["job", "-seq", "-created_at"]
+        indexes = [
+            models.Index(fields=["job", "-seq"]),
+            models.Index(fields=["project", "-created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"CKPT-{self.seq} job={self.job_id}"
+
+
+class AgentMessage(ProjectScopedModel):
     """In-process agent↔agent message (A2A-shaped; protocol adapter later)."""
 
     class MsgType(models.TextChoices):
@@ -538,7 +963,10 @@ class AgentMessage(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(
-        Project, on_delete=models.CASCADE, related_name="agent_messages"
+        Project,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
     )
     objective = models.ForeignKey(
         Objective,

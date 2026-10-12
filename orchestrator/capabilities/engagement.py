@@ -1,0 +1,44 @@
+"""Shared engagement operations for capability and CrewAI tool adapters."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from orchestrator.agent.job import get_job
+
+
+class EngagementTools:
+    """One typed bridge contract behind both framework tool surfaces."""
+
+    @staticmethod
+    def list_objectives() -> str:
+        return get_job().bridge.list_objectives()
+
+    @staticmethod
+    def update_objective_status(seq: int, status: str, note: str = "") -> str:
+        return get_job().bridge.update_objective_status(seq, status, note)
+
+    @staticmethod
+    def ask_operator(
+        question: str,
+        *,
+        options: str = "",
+        blocks_job: bool = True,
+    ) -> str:
+        return get_job().bridge.ask_operator(
+            question,
+            options=options,
+            blocks_job=blocks_job,
+        )
+
+    @staticmethod
+    def record_finding(**fields: Any) -> str:
+        return get_job().bridge.record_finding(**fields)
+
+    @staticmethod
+    def record_findings(findings_json: str) -> str:
+        return get_job().bridge.record_findings(findings_json)
+
+    @staticmethod
+    def list_findings(kind: str = "") -> str:
+        return get_job().bridge.list_findings(kind=kind)

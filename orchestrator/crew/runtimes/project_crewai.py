@@ -8,7 +8,7 @@ from typing import Any
 from orchestrator.agent.config import AgentRunConfig
 from orchestrator.agent.job import JobScope, bind_job
 from orchestrator.crew.flows.engagement import build_engagement_crew
-from orchestrator.crew.roles.registry import manager_role
+from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtime_base import (
     CrewRunRequest,
     CrewRunResult,
@@ -46,7 +46,7 @@ class ProjectCrewRuntime(CrewRuntimeBase):
             brief = f"{brief}\n\nOPERATOR INSTRUCTION:\n{request.steer.strip()}".strip()
 
         scope.extras = dict(scope.extras or {})
-        mgr = manager_role()
+        mgr = RoleRegistry.shared().manager()
         if mgr:
             scope.extras["role_id"] = mgr.id
         scope.extras["crew_flow_id"] = flow_id
@@ -57,6 +57,7 @@ class ProjectCrewRuntime(CrewRuntimeBase):
                 brief=brief,
                 role_ids=request.role_ids,
                 replan_note=request.steer if request.replan else "",
+                config=cfg,
             )
         except Exception as exc:
             scope.bridge.emit("error", f"crew build failed: {exc}")

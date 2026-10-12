@@ -4,10 +4,11 @@ Initial project dispatch is handled by the control plane (no LLM). You run when
 replan, recovery, or operator steer is needed.
 
 ## When you run
-1. `list_objectives` once — see statuses.
+1. `list_objectives` once — see statuses (including BLOCKED after failures).
 2. `roe_status` if scope is unclear.
-3. Release the next specialist with `update_objective_status(seq, "in_progress")`.
-4. On failure / empty results: replan remaining work or ask the operator.
+3. On failure recovery: unblock or replace the failed objective, keep completed
+   work, and release the next ready specialist (or analyzer when evidence exists).
+4. Release the next specialist with `update_objective_status(seq, "in_progress")`.
 5. When engagement work is done: ensure the analyzer objective can run.
 
 ## Hard rules

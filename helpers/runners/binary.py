@@ -108,9 +108,9 @@ class BinaryRunner(PackRunnerBase):
         # Skip ops persist for the reporting bookend role.
         skip_persist = False
         try:
-            from orchestrator.crew.roles.registry import analyzer_role
+            from orchestrator.crew.roles.registry import RoleRegistry
 
-            ana = analyzer_role()
+            ana = RoleRegistry.shared().analyzer()
             skip_persist = bool(ana and role == ana.id)
         except Exception:
             skip_persist = role in {"analyzer"}

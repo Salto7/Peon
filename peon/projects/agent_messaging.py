@@ -9,6 +9,7 @@ from django.utils import timezone as dj_tz
 from orchestrator.agent.messaging_base import AgentMessage as MsgDTO
 from orchestrator.agent.messaging_base import AgentMessagingPortBase, MessageType
 from orchestrator.utils.stream_events import envelope
+from peon.projects.db import ensure_project_database, get_job, qs_using, using_project
 from peon.projects.models import AgentMessage, Job, Objective
 from peon.projects.streaming import emit_job_stream
 
@@ -26,33 +27,45 @@ class DjangoAgentMessaging(AgentMessagingPortBase):
         body: str,
         artifact_refs: list[str] | None = None,
     ) -> MsgDTO:
-        from_job = Job.objects.select_related("project", "objective").get(pk=from_job_id)
-        objective = None
-        if objective_id:
-            objective = Objective.objects.filter(pk=objective_id).first()
-        objective = objective or from_job.objective
-        if objective is None:
-            raise ValueError("peer messaging requires an objective on the job")
+        from_job = get_job(from_job_id)
         if from_job.project_id is None:
             raise ValueError("peer messaging requires a project")
+        alias = ensure_project_database(from_job.project_id)
+        with using_project(from_job.project_id):
+            objective = None
+            if objective_id:
+                objective = (
+                    qs_using(Objective, from_job.project_id)
+                    .filter(pk=objective_id)
+                    .first()
+                )
+            objective = objective or from_job.objective
+            if objective is None:
+                raise ValueError("peer messaging requires an objective on the job")
 
-        to_job = None
-        tid = (to_job_id or "").strip()
-        if tid and tid not in {"*", "broadcast"}:
-            to_job = Job.objects.filter(pk=tid, project_id=from_job.project_id).first()
-            if to_job is None:
-                raise ValueError(f"target job not found: {tid}")
+            to_job = None
+            tid = (to_job_id or "").strip()
+            if tid and tid not in {"*", "broadcast"}:
+                to_job = (
+                    qs_using(Job, from_job.project_id)
+                    .filter(pk=tid, project_id=from_job.project_id)
+                    .first()
+                )
+                if to_job is None:
+                    raise ValueError(f"target job not found: {tid}")
 
-        msg_type = type if type in {c.value for c in AgentMessage.MsgType} else "inform"
-        row = AgentMessage.objects.create(
-            project_id=from_job.project_id,
-            objective=objective,
-            from_job=from_job,
-            to_job=to_job,
-            msg_type=msg_type,
-            body=(body or "")[:8000],
-            artifact_refs=list(artifact_refs or [])[:32],
-        )
+            msg_type = (
+                type if type in {c.value for c in AgentMessage.MsgType} else "inform"
+            )
+            row = AgentMessage.objects.using(alias).create(
+                project_id=from_job.project_id,
+                objective=objective,
+                from_job=from_job,
+                to_job=to_job,
+                msg_type=msg_type,
+                body=(body or "")[:8000],
+                artifact_refs=list(artifact_refs or [])[:32],
+            )
         emit_job_stream(
             from_job,
             "log",
@@ -71,31 +84,50 @@ class DjangoAgentMessaging(AgentMessagingPortBase):
     def inbox(
         self, job_id: str, *, limit: int = 20, consume: bool = True
     ) -> list[MsgDTO]:
-
-        job = Job.objects.filter(pk=job_id).first()
-        if job is None:
+        try:
+            job = get_job(job_id)
+        except Job.DoesNotExist:
             return []
-        with transaction.atomic():
-            qs = (
-                AgentMessage.objects.select_for_update()
-                .filter(consumed_at__isnull=True)
-                .filter(
-                    # directed to this job OR broadcast on same objective
-                    models_q_broadcast(job)
+        if not job.project_id:
+            return []
+        alias = ensure_project_database(job.project_id)
+        with using_project(job.project_id):
+            with transaction.atomic(using=alias):
+                qs = (
+                    AgentMessage.objects.using(alias)
+                    .select_for_update()
+                    .filter(consumed_at__isnull=True)
+                    .filter(models_q_broadcast(job))
+                    .exclude(from_job_id=job.id)
+                    .order_by("created_at")[: max(1, limit)]
                 )
-                .exclude(from_job_id=job.id)
-                .order_by("created_at")[: max(1, limit)]
-            )
-            rows = list(qs)
-            if consume and rows:
-                now = dj_tz.now()
-                for r in rows:
-                    r.consumed_at = now
-                AgentMessage.objects.bulk_update(rows, ["consumed_at"])
+                rows = list(qs)
+                if consume and rows:
+                    now = dj_tz.now()
+                    for r in rows:
+                        r.consumed_at = now
+                    AgentMessage.objects.using(alias).bulk_update(
+                        rows, ["consumed_at"]
+                    )
         return [self._dto(r) for r in rows]
 
     def list_peers(self, objective_id: str, *, exclude_job_id: str = "") -> list[dict]:
-        qs = Job.objects.filter(objective_id=objective_id).order_by("created_at")
+        from peon.projects.db import iter_project_aliases
+
+        sample = None
+        for _pid, alias in iter_project_aliases():
+            sample = (
+                Job.objects.using(alias).filter(objective_id=objective_id).first()
+            )
+            if sample is not None:
+                break
+        if sample is None or not sample.project_id:
+            return []
+        qs = (
+            qs_using(Job, sample.project_id)
+            .filter(objective_id=objective_id)
+            .order_by("created_at")
+        )
         if exclude_job_id:
             qs = qs.exclude(pk=exclude_job_id)
         return [

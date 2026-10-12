@@ -6,7 +6,6 @@ Used when an agent calls ``propose_agents``. Spawning stays in the control plane
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from orchestrator.utils.llm import chat_json, llm_configured
 
@@ -28,8 +27,8 @@ Rules:
 - Propose 0–N agents only when parallel specialists clearly help; else {"agents":[]}.
 - Each agent gets a focused brief (description) derived from the objective context.
 - role_id MUST be empty or one of the allowed role ids provided (prefer the
-  objective's primary role when unsure).
-- Do NOT invent role ids. Deduce workstreams from the objective, RoE, and evidence.
+  objective's primary role when unsure — same-role fan-out is allowed).
+- Do NOT invent role ids. Use transcript errors/gaps to choose better existing roles.
 - Prefer fewer sharp specialists over many vague ones (max 4).
 - Titles short; descriptions actionable under Rules of Engagement.
 """
@@ -43,6 +42,7 @@ def propose_agents(
     primary_role: str,
     allowed_roles: list[str],
     context_notes: str = "",
+    transcript_digest: str = "",
     max_agents: int = 4,
 ) -> list[AgentSpec]:
     """LLM-deduce specialist Jobs from objective context (empty if not useful)."""
@@ -52,6 +52,7 @@ def propose_agents(
     primary = (primary_role or "").strip()
     if primary and primary not in allow:
         allow = [primary, *allow]
+    digest = (transcript_digest or "").strip()
     human = (
         f"Primary role: {primary or '(none)'}\n"
         f"Allowed role ids: {', '.join(allow) or '(none)'}\n"
@@ -61,6 +62,8 @@ def propose_agents(
         f"Acceptance: {acceptance or '(none)'}\n\n"
         f"Extra context:\n{(context_notes or '(none)')[:4000]}\n"
     )
+    if digest:
+        human += f"\nTranscript digest (errors/handoffs/gaps):\n{digest[:4000]}\n"
     try:
         data = chat_json(_PROPOSE_SYSTEM, human)
     except Exception:
@@ -82,10 +85,3 @@ def propose_agents(
             continue
         out.append(AgentSpec(title=title, description=desc, role_id=role))
     return out
-
-
-def specs_as_dicts(specs: list[AgentSpec]) -> list[dict[str, Any]]:
-    return [
-        {"title": s.title, "description": s.description, "role_id": s.role_id}
-        for s in specs
-    ]

@@ -10,7 +10,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Prefer DB/UI override; fall back to DRAMATIQ_THREADS env / default 4.
+# Prefer DB/UI override; fall back to DRAMATIQ_MAX_THREADS (legacy DRAMATIQ_THREADS) / 4.
 THREADS="$(
   python - <<'PY' 2>/dev/null || true
 import os
@@ -18,10 +18,10 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "peon.config.settings")
 import django
 django.setup()
 from peon.projects.runtime_settings import PeonSettings
-print(int(PeonSettings.get_int("DRAMATIQ_THREADS", 4)))
+print(int(PeonSettings.get_int("DRAMATIQ_MAX_THREADS", 4)))
 PY
 )"
-THREADS="${THREADS:-${DRAMATIQ_THREADS:-4}}"
+THREADS="${THREADS:-${DRAMATIQ_MAX_THREADS:-${DRAMATIQ_THREADS:-4}}}"
 case "$THREADS" in
   ''|*[!0-9]*) THREADS=4 ;;
 esac

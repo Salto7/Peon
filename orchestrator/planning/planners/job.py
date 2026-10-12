@@ -17,7 +17,7 @@ or long engagement roadmaps — stay tactical for the given job brief.
 - reply — answer from knowledge only (no tools, no files)
 - write — create artifacts by writing files in the job workspace
 - sandbox — install/run catalog CLIs via bound role capabilities
-- code — short python/bash via run_cli when no catalog role/tool fits (no separate
+- code — short python/bash via bash when no catalog role/tool fits (no separate
   run_code tool)
 - hybrid — different strategies across phases (only when one approach is not enough)
 
@@ -25,7 +25,7 @@ Decision rules:
 - Prefer the lightest approach that meets the goal
 - Prefer existing role tools / catalog CLIs over inventing one-off toolchains
 - Call provision_cli before missing CLIs ({INSTALL_CASCADE})
-- Use run_cli for authorized probes and ad-hoc shell under RoE
+- Use bash for authorized probes and ad-hoc shell under RoE
 - If the operator asked for files/artifacts, never choose reply alone
 - Reuse procedural memory and prior results; avoid repeating known failures
 - Keep phases cheap to re-plan
@@ -37,11 +37,11 @@ Break the work into a few ordered phases. Each phase needs:
 - an observable exit condition (what “done” looks like)
 
 Parallelism:
-- Default sequential
-- Fan out with `spawn_agent` (peer or child) per independent phase only when phases
-  do not depend on each other; then `wait_for_agents` / `list_agents` before synthesizing
-- One worker per phase unless the operator explicitly asks for corroboration
-- Do not nest past depth limits — finish leftover work in the current agent
+- Cover authorized CIDR/host/URL scope **as given** — do not subdivide into
+  scope_slice workers unless the operator or brief explicitly asks
+- After evidence lands, spawn in-lane follow-on skills via `spawn_work`
+  (empty role_id + focused skill_ids), then `wait_for_work` / `list_work`
+- Sequential when a later phase needs prior artifacts; respect depth limits
 
 ## Deliverables & runtime constraints
 - If a report is expected, success includes writing findings/report.md as the
@@ -74,14 +74,14 @@ class JobPlanner(PlannerBase):
         description: str,
         *,
         prior_plan: str = "",
-        memory_block: str = "",
+        transcript_digest: str = "",
         **_kwargs,
     ) -> list:
         parts = [f"Job:\n{(description or '').strip()}"]
         self.append_context(
             parts,
             prior_plan=prior_plan,
-            memory_block=memory_block,
+            transcript_digest=transcript_digest,
         )
         return self.wrap_messages(parts)
 

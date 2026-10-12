@@ -34,7 +34,7 @@ Extract `<tenant-id>` from `issuer`. Never invent tenant IDs from model memory.
 
 Also:
 ```
-run_skill_script("entra-osint", "scripts/run.py", command="from-domains workspace/domains.txt --out workspace/entra-tenants.json")
+run_skill_script("entra-osint", "scripts/run.sh", args='["from-domains", "workspace/domains.txt", "--out", "workspace/entra-tenants.json"]')
 ```
 
 ## Workflow

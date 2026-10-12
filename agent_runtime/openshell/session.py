@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import shlex
-
 from agent_runtime.api import ExecResult, RuntimeSession, SessionInfo
 from agent_runtime.openshell.cli import OpenShellCli
-from agent_runtime.process import run_process
+from agent_runtime.process import ExecTransport, HostProcessRunner
 from agent_runtime.util import forward_env_items
 
 
@@ -22,21 +20,27 @@ class OpenShellSession(RuntimeSession):
         timeout: float | None = 300,
         shell: bool = False,
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> ExecResult:
         work = cwd or self.workdir()
-        if shell or isinstance(cmd, str):
-            inner = cmd if isinstance(cmd, str) else " ".join(cmd)
-            remote = ["bash", "-lc", f"cd {shlex.quote(work)} && {inner}"]
-        else:
-            remote = [
-                "bash",
-                "-lc",
-                "cd "
-                + shlex.quote(work)
-                + " && "
-                + " ".join(shlex.quote(c) for c in cmd),
-            ]
+        workspace = self.workdir()
+        remote = ExecTransport.command_in(cmd, cwd=work, shell=shell)
         env_prefix = [f"{k}={v}" for k, v in forward_env_items(self.env_get)]
+        # Match DockerSession so skill scripts see the same mount layout.
+        env_prefix.extend(
+            [
+                f"ORCHESTRATOR_WORKSPACE={workspace}",
+                "SKILLS_DIR=/skills",
+                "SKILLS_IMPORTED_DIR=/skills-imported",
+                "HELPERS_DIR=/helpers",
+                "TOOLS_CATALOG_DIR=/tools/catalog",
+                "PROJECT_WORKSPACES_DIR=/workspace",
+                "PYTHONPATH=/skills/helpers:/helpers",
+            ]
+        )
+        for key, val in (env or {}).items():
+            if key and val is not None:
+                env_prefix.append(f"{key}={val}")
         if env_prefix:
             remote = ["env", *env_prefix, *remote]
         argv = [
@@ -48,4 +52,4 @@ class OpenShellSession(RuntimeSession):
             "--",
             *remote,
         ]
-        return run_process(argv, timeout=timeout, shell=False)
+        return HostProcessRunner.run(argv, timeout=timeout, shell=False)

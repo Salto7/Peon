@@ -10,5 +10,4 @@ install:
     packages: [dnsutils]
 verify:
   - command: "dig -v 2>/dev/null || which dig"
-roles: [domain-enum]
 tags: [recon]

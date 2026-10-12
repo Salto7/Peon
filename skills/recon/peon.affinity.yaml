@@ -1,0 +1,5 @@
+bindings:
+- role_id: osint-expert
+  score: 0.85
+  lead: false
+source: seed

@@ -50,6 +50,22 @@ class DockerCli(CLIBase):
     def inspect_format(self, ref: str, fmt: str, *, timeout: float = 30) -> ExecResult:
         return self.run(["inspect", "-f", fmt, ref], timeout=timeout)
 
+    def labels(self, ref: str) -> dict[str, str]:
+        result = self.inspect_format(ref, "{{json .Config.Labels}}")
+        if not result.ok:
+            return {}
+        try:
+            payload = json.loads((result.stdout or "").strip() or "{}")
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(key): str(value)
+            for key, value in payload.items()
+            if str(key).strip()
+        }
+
     def start(self, name: str, *, timeout: float = 60) -> ExecResult:
         return self.run(["start", name], timeout=timeout)
 

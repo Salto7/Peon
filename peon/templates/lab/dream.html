@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Dream — Lab — Peon{% endblock %}
+{% block content %}
+{% include "lab/_crumb.html" with lab_crumb="Dream" %}
+<header class="page-header">
+  <div>
+    <h1>Dream</h1>
+    <p class="lead">Pick a Cognee dataset and session, then recall or improve.</p>
+  </div>
+</header>
+
+<section class="catalog-section" aria-labelledby="dream-health-heading">
+  <div class="catalog-section-head">
+    <h2 id="dream-health-heading">Cognee status</h2>
+    <div class="bar catalog-section-actions">
+      <button type="button" class="btn secondary" id="dream-refresh">Refresh</button>
+      <button type="button" class="btn secondary" id="dream-run-cycle">Run dream cycle</button>
+    </div>
+  </div>
+  <dl class="meta" id="dream-status">
+    <div><dt>Dreaming enabled</dt><dd>{{ dream.enabled|yesno:"yes,no" }}</dd></div>
+    <div><dt>Cognee</dt><dd id="dream-cognee-ok">{{ dream.cognee.ok|yesno:"healthy,unreachable" }}</dd></div>
+    <div><dt>API</dt><dd><code>{{ dream.cognee.base_url|default:"—" }}</code></dd></div>
+    <div><dt>Dream cycle</dt><dd>{{ dream_interval_s }} s <span class="meta">(<a href="{% url 'settings_page' %}#PEON_DREAMING_INTERVAL_S">Settings</a>)</span></dd></div>
+    <div><dt>Last run</dt><dd id="dream-last-run">{{ dream.last_run_at|default:"—" }}</dd></div>
+    <div><dt>Tracked sessions</dt><dd id="dream-session-count">{{ dream.session_count }}</dd></div>
+  </dl>
+  {% if dream.cognee.error %}
+  <p class="msg warning" id="dream-cognee-error">{{ dream.cognee.error }}</p>
+  {% else %}
+  <p class="msg warning" id="dream-cognee-error" hidden></p>
+  {% endif %}
+</section>
+
+<section class="catalog-section" aria-labelledby="dream-action-heading">
+  <div class="catalog-section-head">
+    <h2 id="dream-action-heading">Memory action</h2>
+  </div>
+
+  <form id="dream-action-form" class="stack dream-action-form">
+    {% csrf_token %}
+
+    <div class="learn-mode-switch" role="tablist" aria-label="Memory action">
+      <button type="button" class="learn-mode-btn is-active" data-dream-mode="recall"
+              role="tab" aria-selected="true">Recall</button>
+      <button type="button" class="learn-mode-btn" data-dream-mode="improve"
+              role="tab" aria-selected="false">Improve</button>
+    </div>
+
+    <label for="dream-dataset">Dataset</label>
+    <select id="dream-dataset" name="dataset" required>
+      <option value="__all__">All datasets</option>
+      {% for d in catalog.datasets %}
+      <option value="{{ d.name }}"
+              {% if d.name == "peon" %}selected{% endif %}>{{ d.label }}</option>
+      {% empty %}
+      <option value="peon" selected>peon — platform memory</option>
+      {% endfor %}
+    </select>
+
+    <label for="dream-session">Session</label>
+    <select id="dream-session" name="session_id">
+      <option value="">All sessions in dataset</option>
+    </select>
+    <p class="meta" id="dream-session-hint">Optional scope for recall; required for a targeted improve (leave blank to improve the whole dataset).</p>
+
+    <div id="dream-query-wrap">
+      <label for="dream-query">Query</label>
+      <textarea id="dream-query" name="query" rows="3"
+                placeholder="What lessons apply to web recon failures?"></textarea>
+    </div>
+
+    <div class="bar">
+      <button type="submit" class="btn" id="dream-action-btn">Recall</button>
+    </div>
+  </form>
+
+  <pre class="meta dream-out" id="dream-out" hidden></pre>
+</section>
+
+<script>
+  window.PEON_DREAM = {
+    urls: {{ dream_urls_json|safe }},
+    catalog: {{ catalog_json|safe }}
+  };
+</script>
+<script src="{% static 'js/lab-dream.js' %}?v=20261011a"></script>
+{% endblock %}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 
@@ -17,14 +19,19 @@ logger = logging.getLogger(__name__)
 class DockerRuntime(Runtime):
     id = "sandbox"
 
+    @staticmethod
+    def mode_for(spec: RuntimeSpec) -> str:
+        if spec.role == "learn-lab":
+            return "learn-lab"
+        if spec.role == "shared":
+            return "shared"
+        return "docker"
+
     def resource_name(self, project_id: str, *, prefix: str, shared: bool) -> str:
         return make_resource_name(project_id, prefix=prefix, shared=shared)
 
     def _cli(self) -> DockerCli:
         return DockerCli.shared()
-
-    def _labels(self, spec: RuntimeSpec) -> list[str]:
-        return [f"{key}={value}" for key, value in (spec.labels or {}).items() if key]
 
     def _volumes(self, spec: RuntimeSpec) -> list[str]:
         cli = self._cli()
@@ -33,8 +40,26 @@ class DockerRuntime(Runtime):
             args.extend(
                 ["-v", f"{cli.host_bind_path(Path(spec.workspace_host))}:/workspace"]
             )
-        if spec.roles_host:
-            args.extend(["-v", f"{cli.host_bind_path(Path(spec.roles_host))}:/roles:ro"])
+        if spec.skills_host:
+            args.extend(
+                ["-v", f"{cli.host_bind_path(Path(spec.skills_host))}:/skills:ro"]
+            )
+        if spec.skills_imported_host:
+            args.extend(
+                [
+                    "-v",
+                    f"{cli.host_bind_path(Path(spec.skills_imported_host))}:/skills-imported:ro",
+                ]
+            )
+        for host, container in spec.extra_ro_mounts or []:
+            if not host or not container or not container.startswith("/"):
+                continue
+            args.extend(
+                [
+                    "-v",
+                    f"{cli.host_bind_path(Path(host))}:{container}:ro",
+                ]
+            )
         if spec.helpers_host:
             args.extend(
                 ["-v", f"{cli.host_bind_path(Path(spec.helpers_host))}:/helpers:ro"]
@@ -50,6 +75,22 @@ class DockerRuntime(Runtime):
             args.extend(["-v", f"{cli.host_bind_path(parent)}:{parent}"])
         return args
 
+    def _runtime_fingerprint(self, spec: RuntimeSpec, volumes: list[str]) -> str:
+        """Identify the image/configuration a reusable sandbox was created with."""
+        image_ref = (spec.image or "").strip()
+        image = self._cli().inspect_format(image_ref, "{{.Id}}").stdout.strip()
+        payload = {
+            "image": image or image_ref,
+            "workdir": spec.container_workdir or "/workspace",
+            "volumes": volumes,
+            "network": (spec.network or "").strip(),
+            "env": sorted((str(k), str(v)) for k, v in (spec.env or {}).items()),
+            "extra_args": list(spec.extra_run_args or []),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:32]
+
     def provision(self, spec: RuntimeSpec) -> RuntimeSession:
         cli = self._cli()
         if not cli.available():
@@ -63,14 +104,27 @@ class DockerRuntime(Runtime):
         image = (spec.image or "").strip()
         if not image:
             raise RuntimeError("sandbox image is required")
+        volumes = self._volumes(spec)
+        fingerprint = self._runtime_fingerprint(spec, volumes)
+        labels = dict(spec.labels or {})
+        labels["peon.runtime_fingerprint"] = fingerprint
         if spec.recreate:
             cli.rm_force(name)
+        else:
+            exists, _ = cli.inspect_running(name)
+            if exists and cli.labels(name).get("peon.runtime_fingerprint") != fingerprint:
+                removed = cli.rm_force(name)
+                if not removed.ok:
+                    detail = (removed.stderr or removed.stdout or "").strip()
+                    raise RuntimeError(
+                        f"Failed to recreate sandbox {name}: {detail}"
+                    )
         action = cli.ensure_running(
             name,
             image=image,
             workdir=spec.container_workdir or "/workspace",
-            labels=self._labels(spec),
-            volume_args=self._volumes(spec) or None,
+            labels=[f"{key}={value}" for key, value in labels.items() if key],
+            volume_args=volumes or None,
             network=(spec.network or "").strip(),
             env=dict(spec.env or {}),
             extra_args=list(spec.extra_run_args or []),
@@ -82,11 +136,10 @@ class DockerRuntime(Runtime):
         return self._session(spec, action="reused")
 
     def _session(self, spec: RuntimeSpec, *, action: str) -> DockerSession:
-        mode = _mode(spec)
         info = SessionInfo(
             project_id=spec.project_id,
             name=spec.name,
-            mode=mode,
+            mode=self.mode_for(spec),
             action=action,
             image=spec.image,
             workdir=spec.container_workdir or "/workspace",
@@ -166,11 +219,3 @@ class DockerRuntime(Runtime):
             "-l",
         ]
         return PtyTerminal(spec.name, argv=argv, cols=cols, rows=rows)
-
-
-def _mode(spec: RuntimeSpec) -> str:
-    if spec.role == "learn-lab":
-        return "learn-lab"
-    if spec.role == "shared":
-        return "shared"
-    return "docker"

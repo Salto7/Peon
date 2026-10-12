@@ -6,7 +6,9 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-from orchestrator.crew.roles.registry import engagement_end_role, engagement_start_role
+from orchestrator.crew.roles.registry import (
+    RoleRegistry,
+)
 from orchestrator.planning.planner_base import PlannerBase
 from orchestrator.utils.commands import normalize_objective_commands
 from orchestrator.utils.paths import format_roe_block
@@ -21,7 +23,7 @@ You produce the shared project plan (objectives + dependencies) for CrewAI roles
 - Plan ONLY against in-scope subjects; never expand scope
 - NEVER plan actions against exclusions
 - If RoE / in-scope is empty: manager + passive/OSINT only; do not invent attack targets
-- Roles with requires_roe / active probing need in-scope values
+- Technical / probing roles need in-scope values (engagement RoE)
 - Project data lives under workspace/ and findings/
 
 ## Planning principles
@@ -31,22 +33,39 @@ You produce the shared project plan (objectives + dependencies) for CrewAI roles
 - Keep 3–8 objectives total including those bookends
 - Middle objectives MUST use a role_id from the Role catalog (never invent names)
   Match using goal + capabilities/tags + reports_to from the Role catalog block
-  Authoring/Learn (mode=authoring) only when the brief asks to draft/suggest
 - role_id is the PRIMARY role for the Job that runs the objective
+- Every command binary MUST appear in that role's `binaries=[...]` catalog field.
+  If an objective needs binaries owned by different roles, split it into separate
+  role-owned objectives; never assign a forbidden binary to a role
 - depends_on uses 1-based indices in THIS objectives list
-- Parallel only when independent; otherwise chain with depends_on
+- Independent middle objectives: each depends only on the manager bookend
+  (index 1) so the scheduler can run them in parallel
+- When a middle objective needs artifacts/targets/findings produced by an
+  earlier middle, set depends_on to that earlier index (middle→middle is
+  required for correct ordering — do not rely on agents to wait informally)
+- Analyzer bookend waits until every middle specialist completes
+- Technical experts run authorized scope as given. They may spawn_work for
+  in-lane follow-on skills after evidence lands — never invent role ids, and
+  never instruct CIDR/host-list subdivision into parallel workers unless the
+  operator asked for that. Prefer plan-level depends_on over mid-job waits when
+  ordering is known at plan time
+- skill_ids on a middle objective: the **single lead skill** for that expert
+  (usually matching role_id). Do NOT dump the full role skill armory onto the
+  objective — follow-ons are spawned at runtime
 - No ethics lectures, no prose outside JSON
 
 ## Quality bar for each objective
 - title: short, verb-led
 - phase: recon | initial-access | post-exploit | reporting
-- description: concrete actions on named in-scope subjects
+- description: concrete actions on named in-scope subjects; do NOT tell the
+  expert to partition CIDRs or fan out host-range workers
 - acceptance_criteria: observable done condition
 - mitre: technique ids when known; else []
 - role_id: REQUIRED catalog role id
+- skill_ids: optional; one lead skill id for technical experts
 - commands: 1–3 **plain shell CLIs** for the role (catalog binary first token),
-  e.g. `nmap -sT --top-ports 100 -oX workspace/scan.xml <host>`.
-  Do NOT wrap in `run_cli(...)` / `provision_cli(...)` / other tool-call syntax.
+  e.g. `nmap -sT --top-ports 100 -oG workspace/scan.gnmap <host>`.
+  Do NOT wrap in `bash(...)` / `provision_cli(...)` / other tool-call syntax.
   Scope checks and provisioning are role workflow, not command strings.
 
 ## Output
@@ -63,7 +82,7 @@ Return ONLY a JSON object:
       "mitre": ["T1046"],
       "depends_on": [1],
       "role_id": "<catalog role id — required>",
-      "commands": ["nmap -sT --top-ports 100 -oX workspace/scan.xml <host>"]
+      "commands": ["nmap -sT --top-ports 100 -oG workspace/scan.gnmap <host>"]
     }
   ]
 }
@@ -114,7 +133,7 @@ def parse_project_objectives(raw: str) -> dict[str, Any]:
 def _is_bookend_objective(obj: dict[str, Any]) -> bool:
     role = str(obj.get("role_id") or "").strip()
     phase = str(obj.get("phase") or "").strip().lower()
-    start, end = engagement_start_role(), engagement_end_role()
+    start, end = RoleRegistry.shared().engagement_bookends()
     if role and role in {start, end}:
         return True
     return phase == "reporting"
@@ -123,8 +142,8 @@ def _is_bookend_objective(obj: dict[str, Any]) -> bool:
 def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ensure every project plan starts with manager and ends with analyzer."""
 
-    start = engagement_start_role()
-    end = engagement_end_role()
+    registry = RoleRegistry.shared()
+    start, end = registry.engagement_bookends()
     if not start or not end:
         return [dict(o) for o in (objectives or []) if isinstance(o, dict)]
 
@@ -139,37 +158,55 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
         "phase": "recon",
         "description": (
             "Read RoE, review the persisted specialist objective sequence, confirm "
-            "scope and dependencies, then release the next objective to the scheduler."
+            "scope and dependencies. The scheduler releases every ready independent "
+            "objective once this bookend completes (no serial stall)."
         ),
         "acceptance_criteria": "Specialist objective order and RoE constraints confirmed",
         "mitre": [],
         "depends_on": [],
         "role_id": start,
+        "skill_ids": registry.objective_skill_ids(start),
         "commands": ["roe_status()"],
     }
-    middle: list[dict[str, Any]] = []
-    old_to_final: dict[int, int] = {}
+    # old 1-based planner indices → new indices after manager bookend (1).
+    old_to_new: dict[int, int] = {}
+    kept: list[tuple[int, dict[str, Any]]] = []
     for old_idx, obj in survivors:
-        final_idx = len(middle) + 2
-        deps: list[int] = [1]
-        for dep in obj.get("depends_on") or []:
-            try:
-                dep_i = int(dep)
-            except (TypeError, ValueError):
-                continue
-            mapped = old_to_final.get(dep_i)
-            if mapped is not None and mapped not in deps:
-                deps.append(mapped)
-        row = dict(obj)
-        row["depends_on"] = deps
-        role = str(row.get("role_id") or "").strip()
+        role = str(obj.get("role_id") or "").strip()
         if not role:
             continue
+        kept.append((old_idx, obj))
+        old_to_new[old_idx] = 1 + len(kept)
+
+    from orchestrator.crew.roles.catalog import resolve_role_id
+
+    middle: list[dict[str, Any]] = []
+    for old_idx, obj in kept:
+        row = dict(obj)
+        role = resolve_role_id(str(row.get("role_id") or "").strip())
         row["role_id"] = role
-        old_to_final[old_idx] = final_idx
+        raw_skills = row.get("skill_ids") or []
+        if not isinstance(raw_skills, (list, tuple)):
+            raw_skills = []
+        row["skill_ids"] = registry.objective_skill_ids(role, raw_skills)
+        remapped: list[int] = []
+        for raw in row.get("depends_on") or []:
+            try:
+                dep = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if dep == old_idx:
+                continue
+            if dep in old_to_new:
+                remapped.append(old_to_new[dep])
+        # Parallel default: only the manager. Preserve remapped middle→middle
+        # edges when the planner declared a real artifact/order dependency.
+        row["depends_on"] = sorted(set(remapped)) or [1]
         middle.append(row)
 
     last_middle = 1 + len(middle)
+    # Analyzer waits for every middle specialist (supports parallel middles).
+    analyzer_deps = list(range(2, last_middle + 1)) if middle else [1]
     analyzer = {
         "title": "Security findings report",
         "phase": "reporting",
@@ -183,8 +220,9 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
             "findings/report.md summarizes security findings with evidence citations"
         ),
         "mitre": [],
-        "depends_on": [last_middle],
+        "depends_on": analyzer_deps,
         "role_id": end,
+        "skill_ids": registry.objective_skill_ids(end),
         "commands": ["list_findings()", "write_report_note(\"summary\", \"…\")"],
     }
     return [manager, *middle, analyzer]
@@ -193,7 +231,7 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
 def bookend_role_ids(names: list[str] | None) -> list[str]:
     """Put manager first and analyzer last; drop duplicates of either."""
 
-    start, end = engagement_start_role(), engagement_end_role()
+    start, end = RoleRegistry.shared().engagement_bookends()
     bookends = {x for x in (start, end) if x}
     middle: list[str] = []
     seen: set[str] = set()
@@ -280,7 +318,7 @@ class ProjectPlanner(PlannerBase):
         project_summary: str = "",
         roe=None,
         prior_plan: str = "",
-        memory_block: str = "",
+        transcript_digest: str = "",
         existing_objectives_summary: str = "",
         filtered_roles_index: str = "",
         focus_tags: list[str] | None = None,
@@ -303,10 +341,11 @@ class ProjectPlanner(PlannerBase):
             parts.append(roles)
         if existing_objectives_summary.strip():
             parts.append("Existing objectives:\n" + existing_objectives_summary.strip())
-        if memory_block.strip():
-            parts.append(memory_block.strip())
-        if prior_plan.strip():
-            parts.append("Prior plan excerpt:\n" + prior_plan.strip()[:4000])
+        self.append_context(
+            parts,
+            prior_plan=(prior_plan or "").strip()[:4000],
+            transcript_digest=transcript_digest,
+        )
         return self.wrap_messages(parts)
 
     def format_result(

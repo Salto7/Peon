@@ -116,10 +116,10 @@ class TerminalRegistry:
 
         info = self._ensure_container(pid)
         runtime = ProjectSandbox.shared().runtime_for(pid)
-        roles_raw = str(getattr(settings, "ROLES_DIR", "") or "").strip()
+        skills_raw = str(getattr(settings, "SKILLS_DIR", "") or "").strip()
         helpers_raw = str(getattr(settings, "HELPERS_DIR", "") or "").strip()
         tools_raw = str(getattr(settings, "TOOLS_CATALOG_DIR", "") or "").strip()
-        roles = Path(roles_raw) if roles_raw else None
+        skills = Path(skills_raw) if skills_raw else None
         helpers = Path(helpers_raw) if helpers_raw else None
         tools = Path(tools_raw) if tools_raw else None
         handle = runtime.open_terminal(
@@ -127,7 +127,7 @@ class TerminalRegistry:
                 pid,
                 runtime_id=runtime.id,
                 workspace=project_workspace_dir(pid, create=True),
-                roles_dir=roles if roles and roles.is_dir() else None,
+                skills_dir=skills if skills and skills.is_dir() else None,
                 helpers_dir=helpers if helpers and helpers.is_dir() else None,
                 tools_dir=tools if tools and tools.is_dir() else None,
             ),
@@ -219,16 +219,16 @@ class TerminalRegistry:
 
     def _ensure_container(self, project_id: str):
         ws = project_workspace_dir(project_id, create=True)
-        roles_raw = str(getattr(settings, "ROLES_DIR", "") or "").strip()
+        skills_raw = str(getattr(settings, "SKILLS_DIR", "") or "").strip()
         helpers_raw = str(getattr(settings, "HELPERS_DIR", "") or "").strip()
         tools_raw = str(getattr(settings, "TOOLS_CATALOG_DIR", "") or "").strip()
-        roles = Path(roles_raw) if roles_raw else None
+        skills = Path(skills_raw) if skills_raw else None
         helpers = Path(helpers_raw) if helpers_raw else None
         tools = Path(tools_raw) if tools_raw else None
         return ProjectSandbox.provision(
             project_id,
             workspace=ws,
-            roles_dir=roles if roles and roles.is_dir() else None,
+            skills_dir=skills if skills and skills.is_dir() else None,
             helpers_dir=helpers if helpers and helpers.is_dir() else None,
             tools_dir=tools if tools and tools.is_dir() else None,
         )

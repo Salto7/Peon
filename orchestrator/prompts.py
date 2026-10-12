@@ -2,42 +2,42 @@
 
 from __future__ import annotations
 
-# Three-layer CLI install path (runtime + authoring + agent preamble).
-INSTALL_CASCADE = "tools/catalog → role references/INSTALL.md → LLM"
+# CLI provision order (runtime + authoring + agent preamble).
+# 1) Binary already on PATH (Kali image / prior install)
+# 2) Peon tools/catalog recipe
+# 3) LLM planner recipe
+INSTALL_CASCADE = "Kali PATH → tools/catalog → LLM"
 
 INSTALL_MISSING_HINT = (
     f"If missing: {INSTALL_CASCADE} via provision_cli."
 )
 
-# Last-resort LLM install recipe (aligned with roles/tool-suggestor PROMPT.md).
+# Last-resort LLM install recipe (aligned with tools-suggestor / skill-writer).
 # Steps in ``install`` run in list order — put apt deps before git_clone / pip.
 PLANNER_INSTALL_SYSTEM = (
-    "Install a missing CLI in a minimal debian:bookworm-slim Docker sandbox "
-    "(no git, no preinstalled runtime interpreters, or extra tools until your "
-    "steps add them). "
+    "Install a missing CLI in a Kali Linux Docker sandbox (kalilinux/kali-rolling "
+    "based). Many pentest CLIs are already packaged — prefer apt from Kali repos. "
     "Reply with JSON only, no prose: "
     '{"install":[{"type":"apt"|"github_release"|"git_clone"|"pip"|"custom",...}],'
     '"verify":[{"command":"..."}]}. '
-    "List install steps in execution order. Prefer: apt when the tool is a Debian "
-    "package; github_release for release binaries; apt then git_clone for cloned "
-    "repos (git_clone needs repo, entrypoint, binary). For git_clone, make sure "
-    "the runtime interpreter referenced by the entrypoint's `#!/usr/bin/env <name>` "
-    "exists (add the corresponding apt dependency, and if needed also add/ensure "
-    "a compatible alias). Use custom only as a last resort — inline shell must run "
-    "apt-get for prerequisites itself. verify must succeed after all steps; use the "
-    "binary name on PATH."
+    "List install steps in execution order. Prefer: apt when the tool is a Kali/"
+    "Debian package; github_release for release binaries; apt then git_clone for "
+    "cloned repos (git_clone needs repo, entrypoint, binary). For git_clone, ensure "
+    "the interpreter in the entrypoint shebang exists (apt dependency / alias). "
+    "Use custom only as a last resort — inline shell must apt-get prerequisites "
+    "itself. verify must succeed after all steps; use the binary name on PATH."
 )
 
 # Catalog recipe preference when drafting/revising tools/catalog YAML.
 CATALOG_INSTALL_PREFER = (
-    "Prefer apt when the package exists on Debian bookworm; else github_release; "
+    "Prefer apt when the package exists on Kali (kali-rolling); else github_release; "
     "else apt then git_clone; else pip; use custom only as a last resort "
     "(custom scripts must apt-get their own prerequisites)."
 )
 
 AGENT_RECOVER_NUDGE = (
     "The last tool call failed. Call provision_cli for a missing CLI, adjust "
-    "arguments, or use run_cli — then retry. Do not repeat the identical "
+    "arguments, or use bash — then retry. Do not repeat the identical "
     "failing call."
 )
 

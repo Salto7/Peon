@@ -12,5 +12,4 @@ install:
     packages: [playwright]
 verify:
   - command: "python3 -c 'import playwright' 2>/dev/null"
-roles: [browser-automation]
 tags: [web]

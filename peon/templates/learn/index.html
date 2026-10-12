@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 {% load static %}
-{% block title %}Toolsmith — Peon{% endblock %}
+{% block title %}Toolsmith — Lab — Peon{% endblock %}
 {% block content %}
+{% include "lab/_crumb.html" with lab_crumb="Toolsmith" %}
 <header class="page-header">
   <div>
     <h1>Toolsmith</h1>
     <p class="lead">
-      Author catalog tools and CrewAI roles with OpenCode in the Learn lab, edit the draft, then save.
+      Author catalog tools and skills with OpenCode, edit the draft, then save.
     </p>
   </div>
 </header>
@@ -16,7 +17,7 @@
 {% endif %}
 {% if not llm_proxy_enabled %}
 <p class="msg warning" id="learn-proxy-warning">
-  LiteLLM proxy is required to create new tools/roles with OpenCode.
+  LiteLLM proxy is required to create new skills/tools with OpenCode.
   Enable <strong>LiteLLM proxy enabled</strong> in
   <a href="{% url 'settings_page' %}#LLM_PROXY_ENABLED">Settings</a>, then return here.
 </p>
@@ -29,12 +30,12 @@
 
 <div id="learn-app"
      data-suggest-tool="{% url 'learn_api_tool' %}"
-     data-suggest-role="{% url 'learn_api_role' %}"
+     data-suggest-skill="{% url 'learn_api_skill' %}"
      data-save-tool="{% url 'learn_api_tool_save' %}"
      data-test-tool="{% url 'learn_api_tool_test' %}"
      data-replan-tool="{% url 'learn_api_tool_replan' %}"
-     data-lint-role="{% url 'learn_api_role_lint' %}"
-     data-save-role="{% url 'learn_api_role_save' %}"
+     data-lint-skill="{% url 'learn_api_skill_lint' %}"
+     data-save-skill="{% url 'learn_api_skill_save' %}"
      data-lab-create="{% url 'learn_api_lab_create' %}"
      data-lab-delete="{% url 'learn_api_lab_delete' %}"
      data-lab-status="{% url 'learn_api_lab' %}"
@@ -46,7 +47,7 @@
 
   <div class="learn-mode-switch" role="tablist" aria-label="Toolsmith mode">
     <button type="button" class="learn-mode-btn is-active" data-mode="tool" role="tab" aria-selected="true">Tool</button>
-    <button type="button" class="learn-mode-btn" data-mode="role" role="tab" aria-selected="false">Role</button>
+    <button type="button" class="learn-mode-btn" data-mode="skill" role="tab" aria-selected="false">Skill</button>
   </div>
 
   <section class="war-zone learn-panel" id="learn-prompt-panel" aria-labelledby="prompt-heading">
@@ -57,9 +58,9 @@
                 placeholder="e.g. Add ProjectDiscovery nuclei for authorized vulnerability scanning"
                 {% if not authoring_ready %}disabled{% endif %}></textarea>
 
-      <div id="role-tools-wrap" class="learn-role-only" hidden>
-        <label for="role-tools">Prefer catalog tools (optional)</label>
-        <select id="role-tools" name="tools" multiple size="6" {% if not authoring_ready %}disabled{% endif %}>
+      <div id="skill-tools-wrap" class="learn-skill-only" hidden>
+        <label for="skill-tools">Prefer catalog tools (optional)</label>
+        <select id="skill-tools" name="tools" multiple size="6" {% if not authoring_ready %}disabled{% endif %}>
           {% for t in tools %}
           <option value="{{ t.id }}">{{ t.id }}{% if t.binary and t.binary != t.id %} ({{ t.binary }}){% endif %}</option>
           {% endfor %}
@@ -132,31 +133,32 @@
     </div>
   </section>
 
-  <section class="war-zone learn-panel learn-role-only" id="role-result" hidden aria-labelledby="role-result-heading">
-    <h2 id="role-result-heading">Role draft</h2>
-    <p class="meta">Edit <code>ROLE.yaml</code> and companion files, then lint or save under <code>roles/</code>.</p>
+  <section class="war-zone learn-panel learn-skill-only" id="skill-result" hidden aria-labelledby="skill-result-heading">
+    <h2 id="skill-result-heading">Skill draft</h2>
+    <p class="meta">Edit <code>SKILL.md</code> and companion files, then lint or save. New skills are Claude Agent Skills under <code>skills_imported/</code> and are assigned to matching roles automatically. Existing packs in <code>skills/</code> stay as they are.</p>
 
-    <label for="role-name">Role id</label>
-    <input id="role-name" type="text" autocomplete="off" spellcheck="false" />
+    <label for="skill-name">Skill name</label>
+    <input id="skill-name" type="text" autocomplete="off" spellcheck="false" />
 
-    <p id="role-lint" class="meta"></p>
+    <p id="skill-lint" class="meta"></p>
 
-    <label for="role-yaml">ROLE.yaml</label>
-    <textarea id="role-yaml" class="learn-edit" rows="16" spellcheck="false"></textarea>
+    <label for="skill-md">SKILL.md</label>
+    <textarea id="skill-md" class="learn-edit" rows="16" spellcheck="false"></textarea>
 
-    <div id="role-files" class="learn-files"></div>
-    <div id="role-notes" class="meta learn-notes"></div>
+    <div id="skill-files" class="learn-files"></div>
+    <div id="skill-notes" class="meta learn-notes"></div>
 
     <div class="bar learn-actions">
-      <button type="button" id="role-lint-btn" class="btn secondary">Lint</button>
-      <button type="button" id="role-save-btn" class="btn">Save</button>
+      <button type="button" id="skill-lint-btn" class="btn secondary">Lint</button>
+      <button type="button" id="skill-save-btn" class="btn">Save</button>
     </div>
   </section>
 
   <section class="war-zone learn-panel" id="docs" aria-labelledby="docs-heading">
     <h2 id="docs-heading">Catalog format</h2>
     <p class="meta">
-      Tools: <code>tools/CATALOG.md</code>. Roles: <code>roles/*/ROLE.yaml</code>.
+      Full reference: <code>tools/CATALOG.md</code>.
+      Install priority: <strong>custom</strong> → <strong>apt</strong> → <strong>github_release</strong> → pip / git_clone.
       Tool install tests use a minimal isolated container (<code>{{ lab.image }}</code>), not project sandboxes.
     </p>
     <pre class="learn-code">{% verbatim %}install:
@@ -175,5 +177,5 @@ verify:
 {% endblock %}
 
 {% block scripts %}
-<script src="{% static 'js/learn.js' %}?v=20261004a"></script>
+<script src="{% static 'js/learn.js' %}?v=20261011a"></script>
 {% endblock %}

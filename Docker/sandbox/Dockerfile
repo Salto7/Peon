@@ -4,8 +4,11 @@
 FROM kalilinux/kali-rolling
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl unzip python3 \
+    bash ca-certificates curl unzip nodejs npm python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/* \
+    && ln -sf "$(command -v nodejs)" /usr/local/bin/node \
+    && node --version \
+    && npm --version \
     && mkdir -p /etc/peon /workspace
 
 COPY Docker/sandbox/entrypoint.sh /entrypoint.sh

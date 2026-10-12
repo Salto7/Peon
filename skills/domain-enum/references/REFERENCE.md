@@ -17,7 +17,7 @@
 
 ## Optional targeted run
 ```
-run_skill_script("domain-enum", "scripts/run.py", command="subdomains --from-corp --workspace workspace --out workspace/subdomains.txt --json-out workspace/subdomains.json")
+run_skill_script("domain-enum", "scripts/run.sh", args='["subdomains", "--from-corp", "--workspace", "workspace", "--out", "workspace/subdomains.txt", "--json-out", "workspace/subdomains.json"]')
 ```
 
 ## Subcommands

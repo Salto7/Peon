@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates \
+    curl ca-certificates git xz-utils \
     && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.1.1.tgz \
       | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
     && rm -rf /var/lib/apt/lists/*
@@ -21,18 +21,25 @@ COPY requirements.txt .
 RUN python -m venv "$VIRTUAL_ENV" \
     && pip install --no-cache-dir -r requirements.txt
 
+# Marketplace skill install shells out to `npx openskills`. Official tarball
+# includes npm/npx without Debian's npm dependency tree.
+ARG NODE_VERSION=22.20.0
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+      | tar -xJ -C /usr/local --strip-components=1 \
+    && node --version && npx --version
+
 COPY manage.py .
 COPY peon/ peon/
 COPY orchestrator/ orchestrator/
 COPY agent_runtime/ agent_runtime/
 COPY helpers/ helpers/
-COPY roles/ roles/
+COPY skills/ skills/
 COPY tools/ tools/
 COPY Docker/entrypoint-web.sh /entrypoint-web.sh
 COPY Docker/entrypoint-worker.sh /entrypoint-worker.sh
 
 RUN chmod +x /app/manage.py /entrypoint-web.sh /entrypoint-worker.sh \
-    && mkdir -p /data
+    && mkdir -p /workspaces/platform
 
 EXPOSE 8000
 

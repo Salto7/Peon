@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Plan — {{ project.title }} — Peon{% endblock %}
+{% block body_class %}plan-editor{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Durable plan</h1>
+    <p class="lead">{{ project.title }} — edit agents, prompts, and dependencies, then accept to start.</p>
+  </div>
+  <p class="bar">
+    <a class="btn secondary" href="{% url 'project_list' %}">← Projects</a>
+    <span class="status-pill" data-status="pending">{{ project.kind }}</span>
+  </p>
+</header>
+
+<section class="panel plan-editor-panel">
+  <div class="workspace-header">
+    <h2>Agent graph</h2>
+    <div class="bar">
+      <button type="button" class="secondary" id="plan-add-agent">Add agent</button>
+      <button type="button" class="secondary" id="plan-save">Save</button>
+      <button type="button" id="plan-accept">Accept &amp; start</button>
+    </div>
+  </div>
+  <p class="meta" id="plan-status">Dependency graph of the planned crew. Click a node to edit role, prompt, and deps.</p>
+  <div class="plan-editor-body">
+    <div id="plan-graph-host" class="plan-graph-host" aria-label="Editable agent plan graph"></div>
+    <aside class="plan-editor-aside" id="plan-editor-aside" hidden>
+      <h3 id="plan-edit-title">Edit agent</h3>
+      <label for="plan-edit-role">Role</label>
+      <select id="plan-edit-role"></select>
+      <label for="plan-edit-name">Title</label>
+      <input id="plan-edit-name" type="text">
+      <label for="plan-edit-prompt">Prompt / description</label>
+      <textarea id="plan-edit-prompt" rows="8"></textarea>
+      <fieldset class="plan-edit-skills">
+        <legend>Skills</legend>
+        <div id="plan-edit-skills" class="skill-check-list"></div>
+      </fieldset>
+      <label for="plan-edit-commands">Commands (one per line)</label>
+      <textarea id="plan-edit-commands" rows="3"></textarea>
+      <label for="plan-edit-deps">Depends on (OBJ seq, comma-separated)</label>
+      <input id="plan-edit-deps" type="text" placeholder="e.g. 1, 2">
+      <div class="bar">
+        <button type="button" class="secondary" id="plan-edit-apply">Apply</button>
+        <button type="button" class="secondary" id="plan-edit-remove">Remove</button>
+        <button type="button" class="secondary" id="plan-edit-close">Close</button>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<section class="panel" id="plan-schedules-panel">
+  <div class="workspace-header">
+    <h2>Schedules</h2>
+    <div class="bar">
+      <button type="button" class="secondary" id="plan-add-schedule">Add interval schedule</button>
+    </div>
+  </div>
+  <p class="meta">Cron or interval cadence for durable re-fire (Dramatiq Jobs).</p>
+  <div id="plan-schedules-host" class="plan-schedules-host"></div>
+</section>
+
+{{ plan_graph|json_script:"plan-graph-data" }}
+{% endblock %}
+{% block scripts %}
+<script src="{% static 'js/plan-graph.js' %}?v=20261010b"></script>
+<script>
+  PeonPlanGraph.init({
+    hostId: "plan-graph-host",
+    projectPk: "{{ project.pk }}",
+    apiUrl: "{% url 'project_plan_api' project.pk %}",
+    data: JSON.parse(document.getElementById("plan-graph-data").textContent),
+  });
+</script>
+{% endblock %}

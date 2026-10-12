@@ -7,97 +7,199 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone as dj_tz
 
-from peon.projects.models import Job, JobStatus, ProjectStatus
+from peon.projects.db import (
+    ensure_project_database,
+    iter_project_aliases,
+    project_alias_or_default,
+    refresh_project_kpis,
+    using_project,
+)
+from peon.projects.models import Job, JobStatus, Project, ProjectStatus
 from peon.projects.runtime_settings import PeonSettings
-from peon.projects.streaming import emit_job_stream
+from peon.projects.streaming import StreamStore
 
 
-def _emit(job: Job, message_type: str, content: str, **meta) -> None:
-    emit_job_stream(job, message_type, content, meta or None, swallow_errors=True)
+def emit(job: Job, message_type: str, content: str, **meta) -> None:
+    """Stream a job event (swallow errors so workers stay alive)."""
+    StreamStore.emit(job, message_type, content, meta or None, swallow_errors=True)
 
 
 def mark_job_running(job: Job) -> Job | None:
     """Atomically PENDING → RUNNING. Returns refreshed job or None if lost race."""
-    updated = Job.objects.filter(pk=job.pk, status=JobStatus.PENDING).update(
-        status=JobStatus.RUNNING,
-        started_at=dj_tz.now(),
-        error="",
-    )
-    if not updated:
-        return None
-    job.refresh_from_db()
+    alias = project_alias_or_default(job.project_id)
+    with using_project(job.project_id):
+        updated = Job.objects.using(alias).filter(
+            pk=job.pk, status=JobStatus.PENDING
+        ).update(
+            status=JobStatus.RUNNING,
+            started_at=dj_tz.now(),
+            error="",
+        )
+        if not updated:
+            return None
+        job = Job.objects.using(alias).get(pk=job.pk)
+    if job.project_id:
+        refresh_project_kpis(job.project_id)
     return job
 
 
 def reclaim_stuck_jobs(*, older_than_seconds: int | None = None) -> int:
-    """Mark long-stuck RUNNING jobs as FAILED so the queue can continue.
-
-    Returns the number of jobs reclaimed. Uses RuntimeSettings when available.
-    """
+    """Mark long-stuck RUNNING jobs as FAILED so the queue can continue."""
 
     seconds = older_than_seconds
     if seconds is None:
         seconds = PeonSettings.get_int("JOB_STUCK_RUNNING_SECONDS", 7200)
     seconds = max(60, int(seconds))
     cutoff = dj_tz.now() - timedelta(seconds=seconds)
-    stuck = list(
-        Job.objects.filter(status=JobStatus.RUNNING, updated_at__lt=cutoff)[:50]
-    )
+    from peon.projects.job_run import JobExecutionService
+
     n = 0
+    # Platform orphan jobs
+    stuck = list(
+        Job.objects.using("default").filter(
+            status=JobStatus.RUNNING, updated_at__lt=cutoff, project_id__isnull=True
+        )[:50]
+    )
     for job in stuck:
-        job.status = JobStatus.FAILED
-        job.error = (job.error or "")[:1800] + (
-            f"\n[reclaimed] stuck RUNNING > {seconds}s"
+        err = (job.error or "").strip()
+        note = f"[reclaimed] stuck RUNNING > {seconds}s"
+        JobExecutionService.finish(
+            job,
+            status=JobStatus.FAILED,
+            error=(f"{err}\n{note}" if err else note)[:2000],
         )
-        job.completed_at = dj_tz.now()
-        job.save(update_fields=["status", "error", "completed_at", "updated_at"])
-        _emit(job, "error", f"Reclaimed stuck RUNNING job (>{seconds}s)")
         n += 1
+
+    for project_id, alias in iter_project_aliases():
+        stuck = list(
+            Job.objects.using(alias).filter(
+                status=JobStatus.RUNNING, updated_at__lt=cutoff
+            )[:50]
+        )
+        with using_project(project_id):
+            for job in stuck:
+                err = (job.error or "").strip()
+                note = f"[reclaimed] stuck RUNNING > {seconds}s"
+                JobExecutionService.finish(
+                    job,
+                    status=JobStatus.FAILED,
+                    error=(f"{err}\n{note}" if err else note)[:2000],
+                )
+                n += 1
     return n
 
 
 def claim_next_job() -> Job | None:
-    """Atomically move one PENDING job to RUNNING.
-
-    Skips paused/cancelled projects, children whose parent is stopped, and jobs
-    that would exceed parallel project / per-project agent caps.
-    """
+    """Atomically move one PENDING job to RUNNING across project DBs."""
     reclaim_stuck_jobs()
-    with transaction.atomic():
-        qs = Job.objects.filter(status=JobStatus.PENDING).order_by("created_at")
-        for job in qs.select_related("project", "parent")[:20]:
-            project = job.project
-            if project is not None and project.status != ProjectStatus.ACTIVE:
+    orphan_parent = {
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+        JobStatus.PAUSED,
+    }
+
+    # Fair-ish: active projects first by created_at, then platform orphans.
+    active_ids = list(
+        Project.objects.filter(status=ProjectStatus.ACTIVE)
+        .order_by("created_at")
+        .values_list("id", flat=True)
+    )
+    for pid in active_ids:
+        claimed = _claim_in_alias(str(pid), ensure_project_database(pid), orphan_parent)
+        if claimed is not None:
+            return claimed
+
+    return _claim_in_alias(None, "default", orphan_parent, orphans_only=True)
+
+
+def _claim_in_alias(
+    project_id: str | None,
+    alias: str,
+    orphan_parent: set[str],
+    *,
+    orphans_only: bool = False,
+) -> Job | None:
+    """Claim one PENDING job without holding a long project-DB transaction.
+
+    Slot checks touch every project alias; doing that inside ``atomic`` kept a
+    read/write transaction open and blocked finish_job → enqueue_ready.
+    """
+    with using_project(project_id):
+        qs = Job.objects.using(alias).filter(status=JobStatus.PENDING)
+        if orphans_only:
+            qs = qs.filter(project_id__isnull=True)
+        candidates = list(
+            qs.select_related("parent", "objective").order_by("created_at")[:20]
+        )
+
+    for job in candidates:
+        if project_id:
+            project = Project.objects.filter(pk=project_id).first()
+            if project is None or project.status != ProjectStatus.ACTIVE:
                 continue
-            parent = job.parent
-            if parent is not None and parent.status != JobStatus.RUNNING:
-                job.status = JobStatus.CANCELLED
-                job.error = f"Orphaned: parent job is {parent.status}"
-                job.completed_at = dj_tz.now()
-                job.save(
-                    update_fields=["status", "error", "completed_at", "updated_at"]
-                )
+        if job.objective_id and job.objective is not None:
+            from peon.projects.objectives import ObjectiveScheduler
+
+            if not ObjectiveScheduler().dependencies_met(job.objective):
                 continue
-            if not job_slots_available(job):
-                continue
-            claimed = mark_job_running(job)
-            if claimed is not None:
-                return claimed
-        return None
+        parent = job.parent
+        if parent is not None and parent.status in orphan_parent:
+            with using_project(project_id):
+                with transaction.atomic(using=alias):
+                    locked = (
+                        Job.objects.using(alias)
+                        .select_for_update()
+                        .filter(pk=job.pk, status=JobStatus.PENDING)
+                        .first()
+                    )
+                    if locked is None:
+                        continue
+                    locked.status = JobStatus.CANCELLED
+                    locked.error = f"Orphaned: parent job is {parent.status}"
+                    locked.completed_at = dj_tz.now()
+                    locked.save(
+                        update_fields=[
+                            "status",
+                            "error",
+                            "completed_at",
+                            "updated_at",
+                        ]
+                    )
+            continue
+        if not job_slots_available(job):
+            continue
+        claimed = mark_job_running(job)
+        if claimed is not None:
+            return claimed
+    return None
 
 
 def job_slots_available(job: Job) -> bool:
     """True if claiming/running this job would respect parallel caps."""
 
     max_projects = PeonSettings.get_int("MAX_PARALLEL_PROJECTS", 3)
-    max_agents = PeonSettings.get_int("MAX_AGENTS_PER_PROJECT", 2)
-    running = Job.objects.filter(status=JobStatus.RUNNING)
+    max_agents = PeonSettings.get_int("MAX_AGENTS_PER_PROJECT", 8)
+
+    running_project_ids: set[str] = set()
+    for pid, alias in iter_project_aliases():
+        if Job.objects.using(alias).filter(status=JobStatus.RUNNING).exists():
+            running_project_ids.add(str(pid))
+    if Job.objects.using("default").filter(
+        status=JobStatus.RUNNING, project_id__isnull=True
+    ).exists():
+        # orphan lane does not count as a project slot
+        pass
+
     if job.project_id:
-        project_ids = set(
-            running.exclude(project_id=None).values_list("project_id", flat=True)
-        )
-        if job.project_id not in project_ids and len(project_ids) >= max_projects:
+        pid = str(job.project_id)
+        if pid not in running_project_ids and len(running_project_ids) >= max_projects:
             return False
-        if running.filter(project_id=job.project_id).count() >= max_agents:
+        alias = ensure_project_database(pid)
+        if (
+            Job.objects.using(alias)
+            .filter(project_id=pid, status=JobStatus.RUNNING)
+            .count()
+            >= max_agents
+        ):
             return False
     return True

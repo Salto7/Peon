@@ -1,0 +1,21 @@
+# corp-osint v3 — async class-based pipeline
+aiohttp>=3.9.0
+aiohttp-socks>=0.9.0
+tenacity>=8.2.0
+playwright>=1.40.0
+
+# Setup:
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#   playwright install chromium
+#
+# Optional system package: whois
+#
+# Optional env:
+#   URLSCAN_API_KEY=...
+#   DNSLYTICS_API_KEY=...          # official reverse GTM API (credits)
+#   SEC_USER_AGENT=CorpOSINT/2.0 (research; you@acme.com)
+#   CORP_OSINT_USER_AGENT=...
+#   CORP_OSINT_PROXY=socks5://127.0.0.1:1080   # or http://host:port
+#   HTTP_PROXY / HTTPS_PROXY / ALL_PROXY       # standard fallbacks
+#   NO_PROXY / CORP_OSINT_NO_PROXY             # comma-separated bypass hosts

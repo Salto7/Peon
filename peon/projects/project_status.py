@@ -12,7 +12,8 @@ from orchestrator.utils.commands import (
 )
 from orchestrator.utils.stream_events import display_command
 from peon.projects.catalog_cards.role import RoleCards
-from peon.projects.console_chat import pending_operator_prompts
+from peon.projects.hitl import pending_operator_prompts
+from peon.projects.findings import FindingStore
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
     Job,
@@ -87,18 +88,37 @@ class ProjectOpsPayload:
         operator_command = pick_agent_command(*obj_cmds)
         primary = RoleJobTree.primary_role_id(job)
         meta = RoleJobTree.role_meta(primary)
+        skill_ids = [
+            str(s).strip()
+            for s in (getattr(job, "skill_ids", None) or [])
+            if str(s).strip()
+        ]
+        if not skill_ids and obj is not None:
+            skill_ids = [
+                str(s).strip()
+                for s in (getattr(obj, "skill_ids", None) or [])
+                if str(s).strip()
+            ]
+        is_spawn = bool(job.parent_id)
+        lane = cls._agent_lane(primary, is_spawn=is_spawn)
+        primary_skill = skill_ids[0] if skill_ids else ""
         return {
             "id": str(job.id),
             "title": job.title,
             "status": job.status,
             "profile": job.profile or "",
             "role_ids": job.role_ids or [],
+            "skill_ids": skill_ids,
+            "primary_skill_id": primary_skill,
             "primary_role_id": primary,
             "role_label": meta["role_label"],
             "crew_role": meta["crew_role"],
             "role_goal": meta["role_goal"],
             "capabilities": meta["capabilities"],
             "reports_to": RoleJobTree.reports_to(primary),
+            "execution_parent_id": str(job.parent_id) if job.parent_id else "",
+            "is_spawn": is_spawn,
+            "lane": lane,
             "terminal": job.status in TERMINAL_JOB_STATUSES,
             "updated_at": job.updated_at.isoformat() if job.updated_at else "",
             "error": job.error or "",
@@ -110,6 +130,30 @@ class ProjectOpsPayload:
             "tool_calls": 0,
             **cls._objective_fields(job),
         }
+
+    @classmethod
+    def _agent_lane(cls, role_id: str, *, is_spawn: bool) -> str:
+        """Graph lane: pm | expert | skill | analyzer | agent."""
+        if is_spawn:
+            return "skill"
+        rid = (role_id or "").strip()
+        if not rid:
+            return "agent"
+        try:
+            from orchestrator.crew.roles.registry import RoleRegistry
+
+            spec = RoleRegistry.shared().get(rid)
+        except Exception:
+            spec = None
+        if spec is None:
+            return "agent"
+        if spec.is_manager or spec.kind == "engagement-pm":
+            return "pm"
+        if spec.is_analyzer or spec.kind == "analyzer":
+            return "analyzer"
+        if spec.is_technical or spec.kind == "technical":
+            return "expert"
+        return "agent"
 
     @classmethod
     def agent_payload(cls, 
@@ -192,7 +236,7 @@ class ProjectOpsPayload:
 
     @classmethod
     def agents_tree(cls, jobs: list[Job]) -> list[dict]:
-        """Build agent graph: ROLE.yaml reports_to first, then Job.parent edges."""
+        """Build agent graph: RoleSpec.reports_to first, then Job.parent edges."""
 
         roots, children = RoleJobTree.build_job_hierarchy(jobs)
 
@@ -205,8 +249,12 @@ class ProjectOpsPayload:
         return [_payload(root, role="ROOT") for root in roots]
 
     @classmethod
-    def recent_activity_by_job(cls, 
-        job_ids: list[str], *, per_job: int = 4
+    def recent_activity_by_job(
+        cls,
+        job_ids: list[str],
+        *,
+        per_job: int = 4,
+        project_id: str | None = None,
     ) -> dict[str, dict]:
         """Latest command snippets + tool-call counts keyed by job id."""
 
@@ -217,27 +265,38 @@ class ProjectOpsPayload:
         if not ids:
             return empty
 
-        tool_counts: dict[str, int] = {jid: 0 for jid in ids}
-        for row in (
-            StreamMessage.objects.filter(
-                job_id__in=ids, message_type=StreamMessageType.TOOL
-            )
-            .values("job_id")
-            .annotate(n=Count("id"))
-        ):
-            tool_counts[str(row["job_id"])] = int(row["n"] or 0)
+        from contextlib import nullcontext
 
-        qs = (
-            StreamMessage.objects.filter(
-                job_id__in=ids, message_type__in=_COMMAND_TYPES
+        from peon.projects.db import ensure_project_database, using_project
+
+        pid = str(project_id or "").strip()
+        if pid:
+            alias = ensure_project_database(pid)
+            msg_qs = StreamMessage.objects.using(alias)
+            ctx = using_project(pid)
+        else:
+            # Orphan / platform jobs live on default.
+            msg_qs = StreamMessage.objects.using("default")
+            ctx = nullcontext()
+
+        tool_counts: dict[str, int] = {jid: 0 for jid in ids}
+        with ctx:
+            for row in (
+                msg_qs.filter(job_id__in=ids, message_type=StreamMessageType.TOOL)
+                .values("job_id")
+                .annotate(n=Count("id"))
+            ):
+                tool_counts[str(row["job_id"])] = int(row["n"] or 0)
+
+            rows = list(
+                msg_qs.filter(job_id__in=ids, message_type__in=_COMMAND_TYPES)
+                .order_by("-id")
+                .values("job_id", "message_type", "content", "metadata")[
+                    : max(80, per_job * len(ids) * 4)
+                ]
             )
-            .order_by("-id")
-            .values("job_id", "message_type", "content", "metadata")[
-                : max(80, per_job * len(ids) * 4)
-            ]
-        )
         buckets: dict[str, list[str]] = {jid: [] for jid in ids}
-        for row in qs:
+        for row in rows:
             jid = str(row["job_id"])
             meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
             text = display_command(meta, str(row.get("content") or ""))
@@ -317,15 +376,21 @@ class ProjectOpsPayload:
 
     @classmethod
     def for_project(cls, project: Project, *, jobs_limit: int) -> dict:
+        from peon.projects.asset_graph import AssetGraphEngine
+
         jobs = list(
             project.jobs.select_related("parent", "objective").all()[:jobs_limit]
         )
         objectives = list(project.objectives.all())
         agents = cls.agents_tree(jobs)
-        activity = cls.recent_activity_by_job([str(j.id) for j in jobs])
+        activity = cls.recent_activity_by_job(
+            [str(j.id) for j in jobs],
+            project_id=str(project.id),
+        )
         cls._annotate_activity(agents, activity)
 
         next_obj = ObjectiveScheduler().next_ready(project)
+        attack_surface = AssetGraphEngine(project).payload(fresh=True)
 
         return {
             "project": cls.project_status_payload(project, objectives=objectives, jobs=jobs),
@@ -333,6 +398,8 @@ class ProjectOpsPayload:
             "roles_used": cls.roles_used_from_jobs(jobs),
             "jobs": [cls.job_payload(j) for j in jobs],
             "objectives": [cls.objective_payload(o) for o in objectives],
+            "finding_counts": FindingStore.board_counts(project),
+            "attack_surface": attack_surface,
             "reports": reports_payload(str(project.id)),
             "next_objective_ready": next_obj is not None,
             "pending_inputs": pending_operator_prompts(project),

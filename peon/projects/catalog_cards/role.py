@@ -4,18 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from orchestrator.crew.roles.registry import analyzer_role, manager_role
 from orchestrator.crew.roles.registry import RoleRegistry
-from peon.projects.catalog_cards_base import CatalogCardsBase
+from peon.projects.catalog_cards.base import CatalogCardsBase
 
 
 class RoleCards(CatalogCardsBase):
-    """UI cards for filesystem roles under ``roles/``."""
+    """UI cards for platform engagement roles + affinity skills."""
 
     SECTION = "roles"
     LABEL = "Roles"
     RELOAD_URL_NAME = "catalog_api_roles_reload"
-    RELOAD_TITLE = "Rescan roles/ via RoleRegistry"
+    RELOAD_TITLE = "Rescan platform roles + skill affinity via RoleRegistry"
 
     @classmethod
     def reload(cls) -> dict[str, list]:
@@ -56,8 +55,9 @@ class RoleCards(CatalogCardsBase):
     def required_names() -> list[str]:
         """Bookend roles for multi-phase projects (discovered from hierarchy)."""
         out: list[str] = []
-        mgr = manager_role()
-        ana = analyzer_role()
+        registry = RoleRegistry.shared()
+        mgr = registry.manager()
+        ana = registry.analyzer()
         if mgr:
             out.append(mgr.id)
         if ana and ana.id not in out:
@@ -66,8 +66,11 @@ class RoleCards(CatalogCardsBase):
 
     @classmethod
     def from_role(cls, role, *, desc_limit: int | None = None, tag_limit: int | None = None) -> dict:
+        from orchestrator.crew.roles.catalog import catalog_role
+
         required = set(cls.required_names())
-        return cls.card(
+        defn = catalog_role(role.id)
+        card = cls.card(
             name=role.id,
             description=role.goal or role.backstory or "",
             category=role.crew_role or "",
@@ -76,6 +79,10 @@ class RoleCards(CatalogCardsBase):
             desc_limit=desc_limit,
             tag_limit=tag_limit,
         )
+        card["aliases"] = list(defn.aliases) if defn else []
+        card["skills"] = list(role.skills or ())
+        card["kind"] = defn.kind if defn else getattr(role, "kind", "") or ""
+        return card
 
     @classmethod
     def from_registry(cls, name: str) -> dict:
@@ -107,5 +114,4 @@ class RoleCards(CatalogCardsBase):
                 tag_limit=cls.PICKER_TAG_LIMIT,
             )
             for r in roles
-            if not r.is_authoring or r.id in required
         ]

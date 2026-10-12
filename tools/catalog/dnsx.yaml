@@ -17,5 +17,4 @@ install:
       - https://codeload.github.com
 verify:
   - command: "dnsx -version"
-roles: [domain-enum]
 tags: [recon, osint]

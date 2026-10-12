@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Lab — Peon{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Lab</h1>
+    <p class="lead">Author catalog capabilities, manage engagement roles, install Claude skills, and govern Cognee memory.</p>
+  </div>
+</header>
+
+<ul class="lab-page-list">
+  <li>
+    <a class="lab-page-link" href="{% url 'lab_toolsmith' %}">
+      <span class="lab-page-link-title">Toolsmith</span>
+      <span class="lab-page-link-desc">Suggest, edit, and save catalog tools and skills with OpenCode.</span>
+    </a>
+  </li>
+  <li>
+    <a class="lab-page-link" href="{% url 'lab_roles' %}">
+      <span class="lab-page-link-title">Roles</span>
+      <span class="lab-page-link-desc">View and edit engagement roles in the platform database.</span>
+    </a>
+  </li>
+  <li>
+    <a class="lab-page-link" href="{% url 'lab_skills' %}">
+      <span class="lab-page-link-title">Imported skills</span>
+      <span class="lab-page-link-desc">Install Claude Agent Skills and assign them to matching roles automatically.</span>
+    </a>
+  </li>
+  <li>
+    <a class="lab-page-link" href="{% url 'lab_dream' %}">
+      <span class="lab-page-link-title">Dream</span>
+      <span class="lab-page-link-desc">Cognee health, recall, and background dreaming cycles.</span>
+    </a>
+  </li>
+</ul>
+{% endblock %}

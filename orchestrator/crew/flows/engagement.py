@@ -1,15 +1,11 @@
-"""Build a hierarchical engagement Crew from ROLE.yaml hierarchy."""
+"""Build a hierarchical engagement Crew from platform role hierarchy."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from orchestrator.agent.config import AgentRunConfig
 from orchestrator.crew.roles.model import build_crew_agent, llm_id_for_crew
-from orchestrator.crew.roles.registry import (
-    analyzer_role,
-    manager_role,
-    specialists_for,
-)
 from orchestrator.crew.roles.registry import RoleRegistry
 
 
@@ -18,6 +14,7 @@ def build_engagement_crew(
     brief: str,
     role_ids: tuple[str, ...] | list[str] | None = None,
     replan_note: str = "",
+    config: AgentRunConfig | None = None,
 ) -> Any:
     """Return a CrewAI ``Crew`` (hierarchical + planning). Lazy-imports crewai."""
     try:
@@ -29,24 +26,32 @@ def build_engagement_crew(
             "(pip install 'crewai>=1.0.0')"
         ) from exc
 
+    cfg = config or AgentRunConfig()
+    agent_kwargs = {
+        "max_iterations": cfg.max_iterations,
+        "reasoning_effort": cfg.crew_reasoning_effort,
+        "reasoning_max_attempts": cfg.crew_reasoning_max_attempts,
+    }
+
     reg = RoleRegistry.shared()
-    manager_spec = manager_role(reg)
-    analyzer_spec = analyzer_role(reg)
+    manager_spec = reg.manager()
+    analyzer_spec = reg.analyzer()
     if manager_spec is None:
         raise RuntimeError(
-            "No manager role in roles/ (need allow_delegation: true and empty reports_to)"
+            "No manager role in platform store (need kind: engagement-pm)"
         )
     if analyzer_spec is None:
         raise RuntimeError(
-            "No analyzer role in roles/ (need capabilities including 'report')"
+            "No analyzer role in platform store (need kind: analyzer)"
         )
 
-    specialist_specs = specialists_for(role_ids, reg=reg)
+
+    specialist_specs = reg.specialists(role_ids)
     # CrewAI hierarchical mode injects delegation tools into a custom manager
     # and rejects manager_agent instances that already carry role tools.
-    manager = build_crew_agent(manager_spec, tools=[])
-    specialists = [build_crew_agent(s) for s in specialist_specs]
-    analyzer = build_crew_agent(analyzer_spec)
+    manager = build_crew_agent(manager_spec, tools=[], **agent_kwargs)
+    specialists = [build_crew_agent(s, **agent_kwargs) for s in specialist_specs]
+    analyzer = build_crew_agent(analyzer_spec, **agent_kwargs)
 
     specialist_lines = ", ".join(s.id for s in specialist_specs) or "(none preselected)"
     plan_extra = ""

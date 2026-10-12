@@ -10,5 +10,4 @@ install:
     packages: [whois]
 verify:
   - command: "whois --version 2>/dev/null || which whois"
-roles: [domain-enum]
 tags: [recon, osint]

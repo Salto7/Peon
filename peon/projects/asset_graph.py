@@ -15,14 +15,13 @@ import ipaddress
 from typing import Any, Iterable
 
 from peon.projects.models import AssetGraph, Project
-from peon.projects.target_discovery import (
-    discovery_assets_from_finding,
-    expand_related_assets,
-)
+from peon.projects.target_discovery import SubjectCanonicalizer
 from peon.projects.target_shapes import (
     accept_asset,
+    canonical_asset_key,
     coerce_targets,
     detect_shape,
+    parse_service,
     sanitize_label,
     url_host,
 )
@@ -34,15 +33,44 @@ def _stable_id(*parts: str) -> str:
 
 
 def asset_key(typ: str, value: str) -> str:
-    return f"{sanitize_label(typ, default='other')}:{(value or '').strip().lower()}"[:400]
+    """Canonical identity key independent of producer label aliases."""
+    return canonical_asset_key(typ, value)
 
 
-def get_or_create_graph(project: Project) -> AssetGraph:
-    graph, _ = AssetGraph.objects.get_or_create(project=project)
-    return graph
+def _prefer_type(previous: str, new: str, value: str) -> str:
+    """Keep the most precise display type while identity stays canonical."""
+    shape = detect_shape(value)
+    if shape:
+        return shape
+    if previous in {"", "other", "host"} and new not in {"", "other"}:
+        return new
+    return previous or new or shape or "other"
 
 
-def upsert_asset(
+def _get_or_create_graph(project: Project) -> AssetGraph:
+    import time
+
+    from django.db import OperationalError
+
+    from peon.projects.db import ensure_project_database, using_project
+
+    last: Exception | None = None
+    for attempt in range(6):
+        try:
+            alias = ensure_project_database(project.pk)
+            with using_project(project.pk):
+                graph, _ = AssetGraph.objects.using(alias).get_or_create(project=project)
+            return graph
+        except OperationalError as exc:
+            last = exc
+            if "locked" not in str(exc).lower():
+                raise
+            time.sleep(0.05 * (2**attempt))
+    assert last is not None
+    raise last
+
+
+def _upsert_asset(
     graph: AssetGraph,
     *,
     typ: str,
@@ -50,7 +78,6 @@ def upsert_asset(
     bucket: str = "discovered",
     source: str = "",
     props: dict | None = None,
-    asset_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Insert or merge one asset. Returns the stored row (or None if empty)."""
     accepted = accept_asset(value, typ)
@@ -62,10 +89,13 @@ def upsert_asset(
             "type": sanitize_label(typ, default="other") or "other",
             "value": cleaned[:1024],
         }
-    typ = accepted["type"]
+    # Intrinsic value shapes are authoritative inside the graph. Producer
+    # labels remain useful outside it, but cannot make one IP appear as both
+    # ``host`` and ``ip`` nodes.
+    typ = detect_shape(accepted["value"]) or accepted["type"]
     value = accepted["value"]
     key = asset_key(typ, value)
-    nid = asset_id or _stable_id("a", key)
+    nid = _stable_id("a", key)
     assets = list(graph.assets or [])
     by_key = {str(a.get("key") or ""): i for i, a in enumerate(assets)}
     by_id = {str(a.get("id") or ""): i for i, a in enumerate(assets)}
@@ -86,9 +116,10 @@ def upsert_asset(
     else:
         prev = assets[idx]
         # Prefer non-other type; keep richest bucket (in_scope > seed > candidate …)
-        if prev.get("type") in {"", "other"} and row["type"] not in {"", "other"}:
-            prev["type"] = row["type"]
-            prev["key"] = asset_key(prev["type"], prev.get("value") or value)
+        prev["type"] = _prefer_type(
+            str(prev.get("type") or ""), row["type"], value
+        )
+        prev["key"] = key
         prev["bucket"] = _prefer_bucket(str(prev.get("bucket") or ""), row["bucket"])
         if row["source"]:
             prev_src = str(prev.get("source") or "")
@@ -105,7 +136,51 @@ def upsert_asset(
     return row
 
 
-def upsert_relation(
+def _compact_graph(graph: AssetGraph) -> None:
+    """Merge legacy alias duplicates and rewire relations to canonical ids."""
+    old_assets = list(graph.assets or [])
+    old_relations = list(graph.relations or [])
+    old_hubs = {
+        str(a.get("id") or "")
+        for a in old_assets
+        if (a.get("props") or {}).get("center")
+        or (a.get("props") or {}).get("kind") == "hub"
+    }
+    graph.assets = []
+    graph.relations = []
+    id_map: dict[str, str] = {}
+    for asset in old_assets:
+        row = _upsert_asset(
+            graph,
+            typ=str(asset.get("type") or "other"),
+            value=str(asset.get("value") or ""),
+            bucket=str(asset.get("bucket") or "discovered"),
+            source=str(asset.get("source") or ""),
+            props=asset.get("props") if isinstance(asset.get("props"), dict) else None,
+        )
+        if row is not None:
+            id_map[str(asset.get("id") or "")] = str(row["id"])
+
+    bucket_spokes = {"seed", "in_scope", "candidate", "exclusion", "discovered"}
+    for edge in old_relations:
+        # Remove legacy visual-only hub spokes. Structural edges survive.
+        if (
+            str(edge.get("source") or "") in old_hubs
+            and str(edge.get("rel") or "") in bucket_spokes
+        ):
+            continue
+        sid = id_map.get(str(edge.get("source") or ""), "")
+        tid = id_map.get(str(edge.get("target") or ""), "")
+        _upsert_relation(
+            graph,
+            rel=str(edge.get("rel") or "related"),
+            source_id=sid,
+            target_id=tid,
+            props=edge.get("props") if isinstance(edge.get("props"), dict) else None,
+        )
+
+
+def _upsert_relation(
     graph: AssetGraph,
     *,
     rel: str,
@@ -165,7 +240,7 @@ def _prefer_bucket(prev: str, new: str) -> str:
     return prev or new or "discovered"
 
 
-def ingest_assets(
+def _ingest_assets(
     project: Project,
     assets: Iterable[dict[str, Any] | str],
     *,
@@ -175,7 +250,7 @@ def ingest_assets(
     save: bool = True,
 ) -> AssetGraph:
     """Producer API: upsert assets (+ optional relations) into the project graph."""
-    graph = get_or_create_graph(project)
+    graph = _get_or_create_graph(project)
     id_by_key: dict[str, str] = {
         str(a.get("key") or ""): str(a.get("id") or "")
         for a in (graph.assets or [])
@@ -192,7 +267,7 @@ def ingest_assets(
             props = raw.get("props") if isinstance(raw.get("props"), dict) else None
             b = str(raw.get("bucket") or bucket)
             src = str(raw.get("source") or source)
-            row = upsert_asset(
+            row = _upsert_asset(
                 graph, typ=typ, value=value, bucket=b, source=src, props=props
             )
             if row:
@@ -200,7 +275,7 @@ def ingest_assets(
             continue
         else:
             continue
-        row = upsert_asset(
+        row = _upsert_asset(
             graph, typ=typ, value=value, bucket=bucket, source=source, props=props
         )
         if row:
@@ -217,7 +292,7 @@ def ingest_assets(
             src = id_by_key.get(src.lower()) or src
         if ":" in tgt and tgt not in {a.get("id") for a in (graph.assets or [])}:
             tgt = id_by_key.get(tgt.lower()) or tgt
-        upsert_relation(
+        _upsert_relation(
             graph,
             rel=rel,
             source_id=src,
@@ -271,7 +346,7 @@ def _enrich_shape_relations(graph: AssetGraph) -> None:
     for net in nets:
         for ip in ips:
             if _ip_in_net(str(ip.get("value") or ""), str(net.get("value") or "")):
-                upsert_relation(
+                _upsert_relation(
                     graph,
                     rel="contains",
                     source_id=str(net["id"]),
@@ -290,21 +365,24 @@ def _enrich_shape_relations(graph: AssetGraph) -> None:
                 if detect_shape(str(peer.get("value") or "")) == "ip"
                 else "domain"
             )
-            upsert_relation(
+            _upsert_relation(
                 graph, rel=rel, source_id=str(url["id"]), target_id=str(peer["id"])
             )
 
     for svc in services:
-        raw = str(svc.get("value") or "")
-        if ":" not in raw:
+        endpoint = parse_service(str(svc.get("value") or ""))
+        if endpoint is None:
             continue
-        host = raw.rsplit(":", 1)[0]
-        for peer in by_value.get(host.lower(), []):
-            upsert_relation(
+        for peer in by_value.get(endpoint.host.lower(), []):
+            _upsert_relation(
                 graph,
                 rel="port",
                 source_id=str(peer["id"]),
                 target_id=str(svc["id"]),
+                props={
+                    "port": endpoint.port,
+                    **({"protocol": endpoint.protocol} if endpoint.protocol else {}),
+                },
             )
 
     by_base: dict[str, list[dict]] = {}
@@ -317,7 +395,7 @@ def _enrich_shape_relations(graph: AssetGraph) -> None:
             continue
         root = group[0]
         for peer in group[1:]:
-            upsert_relation(
+            _upsert_relation(
                 graph,
                 rel="same_file",
                 source_id=str(root["id"]),
@@ -330,7 +408,7 @@ def _enrich_shape_relations(graph: AssetGraph) -> None:
             continue
         for art in pathish:
             if hv in str(art.get("value") or "").lower():
-                upsert_relation(
+                _upsert_relation(
                     graph,
                     rel="hashes",
                     source_id=str(digest["id"]),
@@ -338,7 +416,7 @@ def _enrich_shape_relations(graph: AssetGraph) -> None:
                 )
 
 
-def sync_roe(graph: AssetGraph, roe) -> None:
+def _sync_roe(graph: AssetGraph, roe) -> None:
     if roe is None:
         return
     for bucket, attr in (
@@ -348,8 +426,8 @@ def sync_roe(graph: AssetGraph, roe) -> None:
         ("exclusion", "exclusions"),
     ):
         for t in coerce_targets(getattr(roe, attr, None)):
-            for related in expand_related_assets(t):
-                upsert_asset(
+            for related in SubjectCanonicalizer.expand(t):
+                _upsert_asset(
                     graph,
                     typ=str(related.get("type") or "other"),
                     value=str(related.get("value") or ""),
@@ -363,13 +441,19 @@ def _finding_as_row(finding) -> dict[str, Any]:
     meta = getattr(finding, "metadata", None)
     if not isinstance(meta, dict):
         meta = {}
+    subjects = getattr(finding, "subjects", None)
+    if not isinstance(subjects, list):
+        subjects = []
     return {
         "host": getattr(finding, "host", None) or "",
         "port": getattr(finding, "port", None),
+        "protocol": getattr(finding, "protocol", None) or "",
+        # evidence_path is provenance only — discovery ignores it.
         "evidence_path": getattr(finding, "evidence_path", None) or "",
         "asset_type": getattr(finding, "asset_type", None) or "",
         "kind": getattr(finding, "kind", None) or "",
         "title": getattr(finding, "title", None) or "",
+        "subjects": subjects,
         "metadata": meta,
         "url": meta.get("url") or meta.get("uri") or "",
         "uri": meta.get("uri") or "",
@@ -377,8 +461,6 @@ def _finding_as_row(finding) -> dict[str, Any]:
         "hash": meta.get("hash") or meta.get("sha256") or "",
         "sample": meta.get("sample") or meta.get("malware") or "",
         "malware": meta.get("malware") or "",
-        "file": meta.get("file") or meta.get("path") or "",
-        "source": meta.get("source") or "",
         "package": meta.get("package") or "",
     }
 
@@ -454,19 +536,20 @@ def _attach_finding_props(row: dict[str, Any], finding) -> None:
     row["props"] = props
 
 
-def sync_finding(graph: AssetGraph, finding) -> None:
+def _sync_finding(graph: AssetGraph, finding) -> None:
     """Promote finding *subjects* onto the graph — never FIND-XXX nodes."""
-    subjects = discovery_assets_from_finding(_finding_as_row(finding))
+    finding_row = _finding_as_row(finding)
+    subjects = SubjectCanonicalizer.from_finding(finding_row)
     if not subjects:
         return
-    host_id = None
+
     for item in subjects:
         typ = str(item.get("type") or "other")
         value = str(item.get("value") or "").strip()
         if not value:
             continue
         # Meaningful discovery stays as discovered (candidates come from RoE).
-        row = upsert_asset(
+        row = _upsert_asset(
             graph,
             typ=typ,
             value=value,
@@ -475,29 +558,25 @@ def sync_finding(graph: AssetGraph, finding) -> None:
         )
         if row is None:
             continue
-        _attach_finding_props(row, finding)
-        # Keep host↔service spokes when both land.
-        if typ in {"host", "ip", "fqdn"} and host_id is None:
-            host_id = row["id"]
-        elif typ == "service" and host_id and ":" in value:
-            upsert_relation(
-                graph, rel="port", source_id=host_id, target_id=row["id"]
-            )
+        if str(item.get("relation") or "affected") != "parent":
+            _attach_finding_props(row, finding)
 
 
-def sync_project_graph(
+def _sync_project_graph(
     project: Project,
     *,
     findings: list | None = None,
     persist: bool = True,
+    graph: AssetGraph | None = None,
 ) -> AssetGraph:
     """Rebuild/merge graph from RoE + finding subjects (idempotent upserts)."""
-    graph = get_or_create_graph(project)
+    graph = graph or _get_or_create_graph(project)
     _prune_finding_pollution(graph)
+    _compact_graph(graph)
     roe = getattr(project, "roe", None)
-    sync_roe(graph, roe)
+    _sync_roe(graph, roe)
     for f in findings or []:
-        sync_finding(graph, f)
+        _sync_finding(graph, f)
     _prune_finding_pollution(graph)
     _enrich_shape_relations(graph)
 
@@ -514,25 +593,28 @@ def sync_project_graph(
                 props["center"] = True
                 a["props"] = props
                 a["bucket"] = a.get("bucket") or "seed"
-            # Spoke edges from hub to other meaningful assets
-            if (
-                a.get("id") != hub["id"]
-                and a.get("bucket")
-                in {"seed", "in_scope", "candidate", "exclusion", "discovered"}
-            ):
-                upsert_relation(
-                    graph,
-                    rel=str(a.get("bucket") or "related"),
-                    source_id=str(hub["id"]),
-                    target_id=str(a["id"]),
-                )
     if persist:
         graph.save()
     return graph
 
 
-def view_payload(graph: AssetGraph) -> dict[str, Any]:
+def _view_payload(graph: AssetGraph) -> dict[str, Any]:
     """UI payload: meaningful assets only (no FIND-XXX board rows)."""
+    structural_priority = {"port": 100, "contains": 80}
+    parent_by_id: dict[str, tuple[int, str]] = {}
+    for edge in graph.relations or []:
+        rel = str(edge.get("rel") or "")
+        priority = structural_priority.get(rel, 0)
+        if not priority:
+            continue
+        child = str(edge.get("target") or "")
+        parent = str(edge.get("source") or "")
+        current = parent_by_id.get(child)
+        if child and parent and child != parent and (
+            current is None or priority > current[0]
+        ):
+            parent_by_id[child] = (priority, parent)
+
     nodes: list[dict[str, Any]] = []
     types: set[str] = set()
     buckets: set[str] = set()
@@ -570,6 +652,7 @@ def view_payload(graph: AssetGraph) -> dict[str, Any]:
                 "severity": str(props.get("severity") or ""),
                 "status": str(props.get("status") or ""),
                 "finding_count": len(refs) if isinstance(refs, list) else 0,
+                "parent_id": parent_by_id.get(str(a.get("id") or ""), (0, ""))[1],
                 "props": props,
             }
         )
@@ -596,12 +679,88 @@ def view_payload(graph: AssetGraph) -> dict[str, Any]:
     }
 
 
-def engagement_graph(
-    project: Project,
-    *,
-    findings: list | None = None,
-    persist: bool = True,
-) -> dict[str, Any]:
-    """Sync + return dynamic graph payload for the attack-surface pane."""
-    graph = sync_project_graph(project, findings=findings, persist=persist)
-    return view_payload(graph)
+class AssetGraphEngine:
+    """Project-bound canonical asset graph projection and persistence."""
+
+    def __init__(self, project: Project) -> None:
+        self.project = project
+
+    @property
+    def graph(self) -> AssetGraph:
+        return _get_or_create_graph(self.project)
+
+    def upsert_asset(self, **kwargs: Any) -> dict[str, Any] | None:
+        return _upsert_asset(self.graph, **kwargs)
+
+    def ingest(
+        self,
+        assets: Iterable[dict[str, Any] | str],
+        *,
+        bucket: str = "discovered",
+        source: str = "",
+        relations: Iterable[dict[str, Any]] | None = None,
+        save: bool = True,
+    ) -> AssetGraph:
+        return _ingest_assets(
+            self.project,
+            assets,
+            bucket=bucket,
+            source=source,
+            relations=relations,
+            save=save,
+        )
+
+    def sync(
+        self,
+        *,
+        findings: list | None = None,
+        persist: bool = True,
+        rebuild: bool = False,
+    ) -> AssetGraph:
+        graph = self.graph
+        if rebuild:
+            graph.assets = []
+            graph.relations = []
+        return _sync_project_graph(
+            self.project,
+            findings=findings,
+            persist=persist,
+            graph=graph,
+        )
+
+    def rebuild(self, *, persist: bool = True) -> AssetGraph:
+        findings = list(self.project.findings.order_by("seq", "created_at"))
+        return self.sync(findings=findings, persist=persist, rebuild=True)
+
+    def is_stale(self) -> bool:
+        graph = self.graph
+        latest_finding = (
+            self.project.findings.order_by("-updated_at")
+            .values_list("updated_at", flat=True)
+            .first()
+        )
+        roe = getattr(self.project, "roe", None)
+        source_times = [
+            value
+            for value in (latest_finding, getattr(roe, "updated_at", None))
+            if value is not None
+        ]
+        return bool(source_times and graph.updated_at < max(source_times))
+
+    def payload(self, *, fresh: bool = False) -> dict[str, Any]:
+        graph = self.rebuild() if fresh and self.is_stale() else self.graph
+        return _view_payload(graph)
+
+    def engagement(
+        self,
+        *,
+        findings: list | None = None,
+        persist: bool = True,
+        rebuild: bool = False,
+    ) -> dict[str, Any]:
+        graph = self.sync(
+            findings=findings,
+            persist=persist,
+            rebuild=rebuild,
+        )
+        return _view_payload(graph)

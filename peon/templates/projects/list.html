@@ -30,6 +30,7 @@
       <tr>
         <th class="col-check"><input type="checkbox" data-select-all aria-label="Select all projects"></th>
         <th>Title</th>
+        <th>Kind</th>
         <th>Status</th>
         <th>Created</th>
         <th></th>
@@ -42,6 +43,7 @@
           <input type="checkbox" name="project_ids" value="{{ p.pk }}" form="projects-bulk" data-bulk-row>
         </td>
         <td><a href="{% url 'project_detail' p.pk %}">{{ p.title }}</a></td>
+        <td><span class="kind-pill" data-kind="{{ p.kind }}">{{ p.get_kind_display }}</span></td>
         <td class="meta status">{{ p.status }}</td>
         <td class="meta">{{ p.created_at }}</td>
         <td class="job-actions">

@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 
 from agent_runtime.api import ExecResult
-from agent_runtime.process import run_process
+from agent_runtime.process import HostProcessRunner
 from agent_runtime.util import SharedBase
 
 
@@ -30,4 +30,4 @@ class CLIBase(SharedBase):
         return path
 
     def run(self, args: list[str], *, timeout: float = 120) -> ExecResult:
-        return run_process([self.require_bin(), *args], timeout=timeout)
+        return HostProcessRunner.run([self.require_bin(), *args], timeout=timeout)

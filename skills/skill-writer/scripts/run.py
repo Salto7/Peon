@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draft a lint-clean Peon skill from ORCHESTRATOR_SKILL_COMMAND / argv prompt."""
+"""Draft a Claude Agent Skill from argv prompt."""
 from __future__ import annotations
 
 import json
@@ -23,7 +23,7 @@ def _prompt() -> str:
 def _run() -> int:
     prompt = _prompt()
     if not prompt:
-        print("usage: provide a skill request via command=…", file=sys.stderr)
+        print("usage: provide a skill request as argv", file=sys.stderr)
         return 2
 
     out_root = workspace_path() / "learn" / "skill"

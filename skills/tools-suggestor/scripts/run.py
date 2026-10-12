@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Suggest tools/catalog YAML from ORCHESTRATOR_SKILL_COMMAND / argv prompt."""
+"""Suggest tools/catalog YAML from argv prompt."""
 from __future__ import annotations
 
 import json
@@ -23,7 +23,7 @@ def _prompt() -> str:
 def _run() -> int:
     prompt = _prompt()
     if not prompt:
-        print("usage: provide a tool request via command=…", file=sys.stderr)
+        print("usage: provide a tool request as argv", file=sys.stderr)
         return 2
 
     out_dir = workspace_path() / "learn"

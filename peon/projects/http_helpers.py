@@ -3,13 +3,50 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from functools import wraps
+from typing import Any, Callable, TypeVar
 
 from django.contrib import messages
+from django.db import models
 from django.http import HttpRequest, HttpResponse, JsonResponse
-from django.shortcuts import redirect
+from django.shortcuts import get_object_or_404, redirect
 
 from orchestrator.utils.strings import as_str_list
+
+_M = TypeVar("_M", bound=models.Model)
+_V = TypeVar("_V", bound=Callable[..., Any])
+
+
+def scoped_get_or_404(model: type[_M], project, **lookup: Any) -> _M:
+    """``get_object_or_404`` against the project's SQLite file (not platform default)."""
+    from peon.projects.db import qs_using
+
+    lookup = dict(lookup)
+    lookup.pop("project", None)
+    lookup.setdefault("project_id", getattr(project, "pk", project))
+    return get_object_or_404(qs_using(model, project.pk), **lookup)
+
+
+def with_project_context(view: _V) -> _V:
+    """Bind the request thread to ``pk``'s project SQLite for the view body.
+
+    Engagement models otherwise route to empty platform ``default`` when no
+    thread context is set (see ``PeonDatabaseRouter``).
+    """
+
+    @wraps(view)
+    def _wrapped(request: HttpRequest, pk, *args: Any, **kwargs: Any):
+        from peon.projects.db import using_project
+
+        with using_project(pk):
+            return view(request, pk, *args, **kwargs)
+
+    return _wrapped  # type: ignore[return-value]
+
+
+def split_csv(value: Any) -> list[str]:
+    """Split a comma/semicolon-separated string (or pass through a list)."""
+    return as_str_list(value)
 
 
 def wants_json(request: HttpRequest) -> bool:
@@ -73,12 +110,6 @@ def request_values(
     return {
         k: request_value(request, k, defs.get(k, ""), body=body) for k in keys
     }
-
-
-def split_csv(raw: str | None) -> list[str]:
-    """Split a comma/semicolon-separated string into non-empty parts."""
-
-    return as_str_list(raw)
 
 
 def json_or_redirect(

@@ -13,7 +13,7 @@
   var _queue = [];
 
   function csrfToken() {
-    return (window.PeonUI && window.PeonUI.csrfToken && window.PeonUI.csrfToken()) || "";
+    return window.PeonUI.csrfToken();
   }
 
   function isFocused() {
@@ -447,9 +447,15 @@
       openBtn.addEventListener("click", function () {
         if (_session) {
           revealShellCard();
+          // Stream can die while _session stays set — reconnect on Open shell.
+          if (!_es || _es.readyState === 2) {
+            connectStream(_session.id);
+          }
           setTimeout(function () {
             fit();
-            _term.focus();
+            if (_term) _term.focus();
+            _focused = true;
+            document.body.classList.add("terminal-focused");
           }, 40);
           return;
         }

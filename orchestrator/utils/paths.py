@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shlex
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -56,41 +55,6 @@ def write_rel_files(
         path.write_text(str(content).rstrip() + "\n", encoding="utf-8")
         written.append(rel_s)
     return written
-
-
-def absolutize_relative_paths(command: str, workdir: Path) -> str:
-    """Rewrite relative path-like tokens to absolute paths under workdir."""
-    if not command:
-        return command
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return command
-    root = workdir.resolve()
-    out: list[str] = []
-    changed = False
-    for token in tokens:
-        raw = token.strip().strip("'\"")
-        path = Path(raw)
-        if (
-            not raw
-            or raw.startswith("-")
-            or path.is_absolute()
-            or ".." in path.parts
-            or len(path.parts) < 2
-        ):
-            out.append(token)
-            continue
-        target = (root / path).resolve()
-        try:
-            target.relative_to(root)
-        except ValueError:
-            out.append(token)
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        out.append(shlex.quote(str(target)))
-        changed = True
-    return " ".join(out) if changed else command
 
 
 def workspaces_root() -> Path:
@@ -153,7 +117,7 @@ def join_target_lines(
 def format_roe_block(roe: Any) -> str:
     """Multi-line RoE summary for planner / agent prompts."""
     if roe is None:
-        return "RoE: (missing — do not invent targets; blueprint/passive only)"
+        return "RoE: (missing — do not invent targets; passive planning only)"
     parts = [
         f"In-scope (authorized values; type optional hint): "
         f"{join_target_lines(roe.in_scope)}",

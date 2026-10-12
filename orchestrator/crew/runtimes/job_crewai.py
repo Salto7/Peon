@@ -49,7 +49,8 @@ class CrewAIJobRuntime(AgentRuntimeBase):
                 ok=False,
                 error=(
                     "AGENT_MODULE=crewai requires a role id "
-                    "(extras.role_id or role_ids matching roles/*)"
+                    "(extras.role_id or role_ids matching the "
+                    "platform role store)"
                 ),
             )
         try:
@@ -86,19 +87,6 @@ class CrewAIJobRuntime(AgentRuntimeBase):
                 iterations=1,
             )
 
-        if role.requires_roe:
-            summary = scope.bridge.roe_summary()
-            blocked = (
-                "No Rules of Engagement" in summary
-                or "in_scope: (empty)" in summary
-                or "not configured" in summary.lower()
-            )
-            if blocked:
-                return AgentRunResult(
-                    ok=False,
-                    error=f"role {role_id} requires non-empty RoE in_scope",
-                )
-
         brief = (request.steer or scope.brief or role.goal).strip()
         if request.resume and not request.steer:
             brief = (
@@ -108,17 +96,31 @@ class CrewAIJobRuntime(AgentRuntimeBase):
 
         scope.extras = dict(scope.extras or {})
         scope.extras["role_id"] = role.id
+        from orchestrator.skills.bind import resolve_skill_ids
+
+        skill_ids = resolve_skill_ids(role, scope.extras.get("skill_ids"))
+        scope.extras["skill_ids"] = list(skill_ids)
+        # RoE is enforced by the parent engagement / planner, not per skill job.
 
         try:
-            agent = build_crew_agent(role)
+            agent = build_crew_agent(
+                role,
+                skill_ids=skill_ids,
+                max_iterations=request.config.max_iterations,
+                reasoning_effort=request.config.crew_reasoning_effort,
+                reasoning_max_attempts=request.config.crew_reasoning_max_attempts,
+            )
         except Exception as exc:
             scope.bridge.emit("error", f"crew agent build failed: {exc}")
             return AgentRunResult(ok=False, error=str(exc))
 
         scope.bridge.emit(
             "status",
-            f"crewai role={role.id} starting",
-            metadata=envelope("crewai_role_start", {"role_id": role.id}),
+            f"crewai role={role.id} skills={','.join(skill_ids) or '-'} starting",
+            metadata=envelope(
+                "crewai_role_start",
+                {"role_id": role.id, "skill_ids": list(skill_ids)},
+            ),
         )
 
         with bind_job(scope, request.config):

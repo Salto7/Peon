@@ -5,14 +5,15 @@
 if a binary is still missing after provision.
 
 ## Paths
-- Raw output → `workspace/`
+- Greppable scan output → `workspace/*.gnmap` (`-oG` only)
 - Curated notes → `findings/network-scanner.md` (not `findings/report.md`)
 
 ## Rules
 - Match requested port scope — never `-p-` / `1-65535` unless explicitly asked
+- Always `-oG workspace/<label>.gnmap` — never `-oA` / `-oX` / `-oN`
 - Obey RoE / `list_objectives`
 - `record_finding` for notable discoveries about probed subjects (with evidence) —
   not skill/run completion status
 - Companion scanners: use a dedicated skill when one exists; ensure the CLI is in
   **`tools/catalog`** so the worker can provision it
-- Reuse collected output for notes — do not re-scan just to fill text
+- Reuse collected `.gnmap` for notes — do not re-scan just to fill text

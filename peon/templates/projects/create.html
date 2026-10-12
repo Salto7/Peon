@@ -5,7 +5,7 @@
 <header class="page-header">
   <div>
     <h1>New project</h1>
-    <p class="lead">Title, brief, optional Rules of Engagement targets, then crew role picks for the planner (core roles are always included).</p>
+    <p class="lead">Pick timed or durable, then title, brief, scope, and roles.</p>
   </div>
   <p class="bar">
     <a class="btn secondary" href="{% url 'project_list' %}">← Projects</a>
@@ -13,8 +13,19 @@
 </header>
 
 <section class="panel create-panel">
+  <div class="kind-toggle-row" id="kind-slide" data-kind-slide>
+    <button type="button" class="theme-slide kind-slide-btn" id="kind-toggle" data-kind-toggle
+            role="switch" aria-checked="false" aria-label="Project type">
+      <span class="theme-slide-rail" aria-hidden="true">
+        <span class="theme-slide-knob"></span>
+      </span>
+    </button>
+    <span class="kind-toggle-label" id="kind-label">Timed</span>
+  </div>
+
   <form method="post" action="{% url 'project_create' %}" enctype="multipart/form-data" id="project-create-form">
     {% csrf_token %}
+    <input type="hidden" name="kind" id="kind" value="timed">
     <label for="title">Title</label>
     <input id="title" name="title" required placeholder="lab" autofocus>
     <label for="summary">Summary</label>
@@ -47,10 +58,15 @@
   </form>
 </section>
 
-<dialog id="project-create-dialog" class="create-status-dialog" aria-labelledby="create-status-title">
-  <div class="create-status-card">
-    <h2 id="create-status-title">Starting project</h2>
-    <p class="meta create-status-sub" id="create-status-sub">Hang on while Peon sets things up…</p>
+<dialog id="project-create-dialog" class="create-status-dialog peon-dialog" aria-labelledby="create-status-title">
+  <div class="create-status-card peon-dialog-card">
+    <div class="create-status-hero">
+      <span class="create-status-orb" aria-hidden="true"></span>
+      <div>
+        <h2 id="create-status-title">Preparing project</h2>
+        <p class="meta create-status-sub" id="create-status-sub">Hang on while Peon sets things up…</p>
+      </div>
+    </div>
     <ol class="create-status-steps" id="create-status-steps" aria-live="polite">
       <li data-step="create" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Create project</strong><span class="create-step-detail"></span></span></li>
       <li data-step="roe" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Configure Rules of Engagement</strong><span class="create-step-detail"></span></span></li>
@@ -66,7 +82,7 @@
 </dialog>
 {% endblock %}
 {% block scripts %}
-<script src="{% static 'js/project-create.js' %}?v=20260925c"></script>
+<script src="{% static 'js/project-create.js' %}?v=20261010c"></script>
 <script>
   PeonProjectCreate.init({ formId: "project-create-form" });
 </script>

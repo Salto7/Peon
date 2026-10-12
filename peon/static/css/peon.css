@@ -204,6 +204,121 @@ html.app-side-collapsed body.app-shell:not(.war-room) .app-side {
   flex: 1 1 auto;
   min-height: 0;
 }
+/* Compact slide used by project-kind toggle (create page) */
+.theme-slide {
+  position: relative;
+  margin: 0;
+  padding: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(62, 200, 240, 0.14);
+  border-radius: 999px;
+  background: rgba(8, 14, 22, 0.35);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+.theme-slide:hover {
+  border-color: rgba(62, 200, 240, 0.35);
+}
+.theme-slide-rail {
+  position: relative;
+  width: 2.4rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: rgba(62, 200, 240, 0.12);
+}
+.theme-slide-knob {
+  position: absolute;
+  top: 0.15rem;
+  left: 0.15rem;
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(62, 200, 240, 0.45);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.theme-slide.is-light .theme-slide-knob,
+.kind-slide-btn.is-durable .theme-slide-knob {
+  transform: translateX(1.05rem);
+}
+
+/* Settings appearance: sun / moon mode toggle */
+.theme-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin: 0.35rem 0 0.25rem;
+}
+.theme-mode-label {
+  font-size: 0.9rem;
+  color: var(--text);
+}
+.theme-mode-toggle {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+}
+.theme-mode-track {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  width: 4.1rem;
+  height: 2.05rem;
+  padding: 0.2rem;
+  border-radius: 999px;
+  box-sizing: border-box;
+  background: #e8eaed;
+  transition: background 0.28s ease;
+}
+html[data-theme="dark"] .theme-mode-track,
+.theme-mode-toggle.is-dark .theme-mode-track {
+  background: #1f2328;
+}
+.theme-mode-thumb {
+  position: absolute;
+  top: 0.2rem;
+  left: 0.2rem;
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 50%;
+  background: #3b82f6;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.28);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 0;
+}
+.theme-mode-toggle.is-dark .theme-mode-thumb {
+  transform: translateX(2.05rem);
+}
+.theme-mode-toggle.is-light .theme-mode-thumb {
+  transform: translateX(0);
+}
+.theme-mode-icon {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  color: #9aa0a6;
+  transition: color 0.2s ease;
+}
+.theme-mode-toggle.is-light .theme-mode-sun,
+.theme-mode-toggle.is-dark .theme-mode-moon {
+  color: #fff;
+}
+html[data-theme="light"] .theme-mode-toggle.is-dark .theme-mode-sun {
+  color: #5f6368;
+}
+html[data-theme="dark"] .theme-mode-toggle.is-light .theme-mode-moon {
+  color: #9aa0a6;
+}
 .app-side-link {
   display: flex;
   align-items: center;
@@ -245,6 +360,143 @@ html.app-side-collapsed body.app-shell:not(.war-room) .app-side {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.app-side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+.app-side-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  margin: 0 0 0.2rem 1.7rem;
+  padding: 0;
+}
+.app-side-sublink {
+  display: block;
+  padding: 0.28rem 0.5rem;
+  border-radius: 6px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.86rem;
+  line-height: 1.3;
+}
+.app-side-sublink:hover {
+  color: var(--fg);
+  background: rgba(62, 200, 240, 0.08);
+}
+.app-side-sublink.is-active {
+  color: var(--fg);
+  background: rgba(62, 200, 240, 0.14);
+}
+body.is-app-side-collapsed .app-side-subnav,
+html.app-side-collapsed body.app-shell:not(.war-room) .app-side-subnav {
+  display: none;
+}
+.lab-crumb {
+  margin: 0 0 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.lab-crumb a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.lab-crumb a:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.lab-page-list {
+  list-style: none;
+  margin: 1.25rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.lab-page-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid rgba(62, 200, 240, 0.12);
+  color: inherit;
+  text-decoration: none;
+}
+.lab-page-link:hover .lab-page-link-title {
+  color: var(--accent, #3ec8f0);
+}
+.lab-page-link-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+.lab-page-link-desc {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.skill-install-form,
+.skill-pack-list form,
+.role-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-width: 40rem;
+}
+.role-edit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.role-edit-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+.role-delete-form {
+  margin-top: 1.75rem;
+}
+.btn.danger {
+  background: transparent;
+  color: var(--bad);
+  border: 1px solid var(--bad);
+}
+.skill-drop {
+  margin-top: 1rem;
+  padding: 1.25rem;
+  border: 1px dashed rgba(62, 200, 240, 0.45);
+  border-radius: 0.4rem;
+}
+.skill-drop.is-over {
+  border-color: var(--accent, #3ec8f0);
+}
+.skill-pack-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.dream-action-form .learn-mode-switch {
+  margin: 0.25rem 0 0.75rem;
+}
+.dream-action-form select {
+  max-width: 40rem;
+}
+.dream-out {
+  margin-top: 1rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 28rem;
+  overflow: auto;
 }
 
 /* Collapsed = icon rail (labels / wordmark / search label hidden) */
@@ -913,7 +1165,76 @@ main.shell { max-width: 1180px; }
   width: min(560px, 94vw);
   margin: 12vh auto auto;
 }
-.palette-dialog::backdrop { background: rgba(4, 8, 14, 0.72); }
+.palette-dialog::backdrop { background: rgba(4, 8, 14, 0.55); }
+
+/* Shared dialog / overlay enter-exit */
+.peon-dialog {
+  opacity: 0;
+  transform: translateY(14px) scale(0.96);
+  transition: opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.peon-dialog[open],
+.peon-dialog.is-open {
+  opacity: 1;
+  transform: none;
+}
+.peon-dialog.is-closing {
+  opacity: 0;
+  transform: translateY(10px) scale(0.97);
+}
+.peon-dialog::backdrop {
+  background: rgba(4, 8, 14, 0.45);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  opacity: 0;
+  transition: opacity 0.28s ease;
+}
+.peon-dialog[open]::backdrop,
+.peon-dialog.is-open::backdrop {
+  opacity: 1;
+}
+.peon-dialog.is-closing::backdrop {
+  opacity: 0;
+}
+.peon-dialog-card {
+  animation: peon-card-in 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.peon-overlay {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.24s ease;
+  background: rgba(4, 8, 14, 0.42);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.peon-overlay.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.peon-overlay.is-closing {
+  opacity: 0;
+}
+.peon-overlay .peon-dialog-card {
+  transform: translateY(12px) scale(0.97);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.peon-overlay.is-open .peon-dialog-card {
+  transform: none;
+}
+@keyframes peon-card-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .peon-dialog,
+  .peon-dialog-card,
+  .peon-overlay,
+  .peon-overlay .peon-dialog-card {
+    transition: none;
+    animation: none;
+  }
+}
 .palette-form { padding: 0.75rem; }
 .palette-form input[type="search"] {
   margin: 0;
@@ -1210,12 +1531,36 @@ main.shell { max-width: 1180px; }
 .catalog-card-name {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.4rem;
   flex-wrap: wrap;
   font-weight: 600;
   font-size: 0.85rem;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
 }
+.catalog-card-edit {
+  flex: 0 0 auto;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+}
+.catalog-edit-dialog .catalog-edit-card {
+  width: min(52rem, 96vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+.catalog-edit-ta {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.82rem;
+}
+.catalog-edit-files {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.75rem;
+}
+.catalog-edit-actions { margin-top: 0.85rem; }
 .catalog-card-cat {
   color: var(--muted);
   font-size: 0.68rem;
@@ -1362,18 +1707,24 @@ main.shell { max-width: 1180px; }
   padding: 0.1rem 0 0;
 }
 
-/* n8n-style flow graph */
+/* n8n-style flow graph — content-sized canvas centered in the panel */
 .console-graph .agent-tree {
   max-height: 40rem;
   overflow: auto;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 0.35rem;
+  padding: 0.75rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 14rem;
 }
 .flow-canvas {
   position: relative;
-  min-width: 100%;
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 .flow-edges {
   position: absolute;
@@ -1747,17 +2098,36 @@ body.war-room .console-graph {
   overflow: auto;
 }
 body.war-room .console-graph .agent-tree {
+  position: relative;
   max-height: none !important;
-  height: auto;
-  overflow-x: auto;
-  overflow-y: visible;
-  min-height: 0;
+  height: min(28rem, 52vh);
+  min-height: 16rem;
   width: 100%;
+  overflow: hidden;
+  display: block;
+}
+body.war-room .org-agent-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+body.war-room .org-agent-viewport.is-panning {
+  cursor: grabbing;
+}
+body.war-room .org-agent-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 body.war-room .console-graph .flow-canvas {
   display: block;
   max-width: none;
-  width: 100%;
+  width: auto;
+  min-width: 0;
 }
 body.war-room .console-workspace .terminal-host {
   height: min(32rem, 48vh);
@@ -1973,7 +2343,9 @@ body.war-room .btn:disabled {
   align-items: center;
   justify-content: center;
   padding: 1.25rem;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(4, 8, 14, 0.42);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 .agent-command-dialog[hidden] {
   display: none !important;
@@ -1983,8 +2355,47 @@ body.war-room .btn:disabled {
   padding: 1rem 1.1rem 1.05rem;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: 12px;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+.skill-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.35rem 0 0.75rem;
+  max-height: 9rem;
+  overflow: auto;
+}
+.skill-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--fg);
+  cursor: pointer;
+}
+.plan-edit-skills,
+.agent-add-child-skills {
+  margin: 0.5rem 0 0.75rem;
+  border: 1px solid rgba(62, 200, 240, 0.12);
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+}
+.plan-edit-skills legend,
+.agent-add-child-skills legend {
+  padding: 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.agent-add-child-dialog .agent-command-dialog-card {
+  width: min(28rem, 100%);
+}
+.agent-add-child-dialog select,
+.agent-add-child-dialog input[type="text"] {
+  display: block;
+  width: 100%;
+  margin: 0.3rem 0 0.75rem;
+  box-sizing: border-box;
 }
 .agent-command-dialog-card h3 {
   margin: 0 0 0.2rem;
@@ -2184,27 +2595,49 @@ body.war-room .as-detail-v {
   border: 0;
   padding: 0;
   background: transparent;
-  max-width: min(26rem, calc(100vw - 2rem));
+  max-width: min(34rem, calc(100vw - 1.5rem));
   width: 100%;
 }
 .create-status-dialog::backdrop {
-  background: rgba(4, 8, 14, 0.72);
+  background: rgba(3, 6, 12, 0.52);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
 }
 .create-status-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 1.25rem 1.35rem 1.15rem;
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(62, 200, 240, 0.14), transparent 45%),
+    var(--panel);
+  border: 1px solid rgba(62, 200, 240, 0.22);
+  border-radius: 16px;
+  padding: 1.55rem 1.6rem 1.35rem;
+  box-shadow: 0 28px 64px rgba(0, 0, 0, 0.45);
+  min-height: 18rem;
+}
+.create-status-hero {
+  display: flex;
+  gap: 0.9rem;
+  align-items: flex-start;
+  margin-bottom: 1.1rem;
+}
+.create-status-orb {
+  flex: 0 0 auto;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  border: 2px solid rgba(62, 200, 240, 0.45);
+  border-top-color: var(--accent);
+  animation: create-spin 0.9s linear infinite;
+  box-shadow: 0 0 18px rgba(62, 200, 240, 0.25);
 }
 .create-status-card h2 {
   margin: 0 0 0.25rem;
-  font-size: 1.15rem;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
 }
-.create-status-sub { margin: 0 0 1rem; }
+.create-status-sub { margin: 0; }
 .create-status-steps {
   list-style: none;
-  margin: 0;
+  margin: 0.85rem 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -2280,7 +2713,8 @@ body.war-room .as-detail-v {
   to { transform: rotate(360deg); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .create-status-steps li.is-active .create-step-mark { animation: none; }
+  .create-status-steps li.is-active .create-step-mark,
+  .create-status-orb { animation: none; }
 }
 
 .project-chat-composer {
@@ -3142,18 +3576,50 @@ body.war-room .as-edge {
   stroke: var(--edge);
   stroke-width: 1.5;
   opacity: 0.75;
+  stroke-dasharray: 6 4;
+  animation: as-edge-flow 1.8s linear infinite;
 }
 body.war-room .as-edge-candidate { stroke-dasharray: 4 3; }
-body.war-room .as-edge-exclusion { stroke: var(--bad); opacity: 0.55; }
+body.war-room .as-edge-exclusion { stroke: var(--bad); opacity: 0.55; animation: none; }
 body.war-room .as-edge-contains { stroke: #9b8cff; stroke-width: 2; opacity: 0.85; }
 body.war-room .as-edge-finding { stroke: var(--ok); opacity: 0.7; }
 body.war-room .as-edge-port,
 body.war-room .as-edge-domain,
 body.war-room .as-edge-ip_address { stroke: var(--accent-dim); stroke-dasharray: 3 2; }
+@keyframes as-edge-flow {
+  to { stroke-dashoffset: -20; }
+}
+body.war-room .as-node {
+  transition: transform 0.18s ease, filter 0.18s ease;
+}
+body.war-room .as-node circle {
+  transition: r 0.18s ease, filter 0.18s ease;
+}
+body.war-room .as-hub circle {
+  animation: as-hub-pulse 2.4s ease-in-out infinite;
+}
+body.war-room .as-node:hover {
+  filter: drop-shadow(0 0 8px rgba(62, 200, 240, 0.45));
+}
+@keyframes as-hub-pulse {
+  0%, 100% { filter: drop-shadow(0 0 2px rgba(240, 198, 116, 0.25)); }
+  50% { filter: drop-shadow(0 0 10px rgba(240, 198, 116, 0.55)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.war-room .as-edge,
+  body.war-room .as-hub circle { animation: none; }
+}
 body.war-room .as-label {
   fill: var(--fg);
   font-size: 11px;
   font-family: "IBM Plex Sans", sans-serif;
+}
+body.war-room .as-type-chip {
+  font-size: 9px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.9;
 }
 
 /* Findings / objectives boards */
@@ -3342,6 +3808,9 @@ body.war-room .org-agent-glyph {
   line-height: 1;
   color: #d7dde6;
 }
+body.war-room .org-agent-glyph-analyzer {
+  font-size: 1.25rem;
+}
 body.war-room .org-agent-led {
   position: absolute;
   right: -1px;
@@ -3357,23 +3826,100 @@ body.war-room .org-agent-text {
 }
 body.war-room .org-agent-title {
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-  font-size: 0.9rem;
+  font-size: 0.86rem;
   font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-body.war-room .org-agent-sub {
-  font-size: 0.72rem;
+body.war-room .org-agent-sub,
+body.war-room .org-agent-role,
+body.war-room .org-agent-skills {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  font-size: 0.68rem;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-body.war-room .org-agent-live {
+body.war-room .org-agent-tag {
+  flex: 0 0 auto;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.35;
+}
+body.war-room .org-agent-tag-role,
+body.war-room .org-agent-tag-expert {
+  color: #dbeafe;
+  background: rgba(59, 130, 246, 0.28);
+}
+body.war-room .org-agent-tag-pm {
+  color: #e9d5ff;
+  background: rgba(168, 85, 247, 0.28);
+}
+body.war-room .org-agent-tag-analyzer {
+  color: #fce7f3;
+  background: rgba(236, 72, 153, 0.22);
+}
+body.war-room .org-agent-tag-skill {
+  color: #d1fae5;
+  background: rgba(16, 185, 129, 0.22);
+}
+body.war-room .org-agent-tag-spawn,
+body.war-room .org-agent-tag-spawned,
+body.war-room .org-agent-tag-agent {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.22);
+}
+body.war-room .org-agent-node.lane-expert {
+  border-color: rgba(59, 130, 246, 0.35);
+}
+body.war-room .org-agent-node.lane-skill {
+  border-style: dashed;
+  border-color: rgba(16, 185, 129, 0.4);
+}
+/* Built-in always-on roles share a purple frame */
+body.war-room .org-agent-node.lane-pm,
+body.war-room .org-agent-node.lane-analyzer {
+  border-color: rgba(168, 85, 247, 0.55);
+}
+body.war-room .org-agent-role-name,
+body.war-room .org-agent-skill-names {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.war-room .org-agent-node.is-spawn {
+  border-style: dashed;
+}
+body.war-room .org-agent-live,
+body.war-room .org-agent-obj {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 0.66rem;
+  font-size: 0.62rem;
   color: #8f9aab;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+body.war-room .org-agent-obj-link {
+  color: #93c5fd;
+  text-decoration: none;
+}
+body.war-room .org-agent-obj-link:hover {
+  color: #bfdbfe;
+  text-decoration: underline;
+}
+body.war-room .objective-card.is-highlight {
+  outline: 2px solid rgba(59, 130, 246, 0.75);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
 }
 body.war-room .flow-node.org-agent-node .flow-node-head,
 body.war-room .flow-node.org-agent-node .flow-node-cmd,
@@ -3381,3 +3927,254 @@ body.war-room .flow-node.org-agent-node .flow-node-foot,
 body.war-room .flow-node.org-agent-node .flow-node-live {
   display: none;
 }
+
+
+/* Project kind toggle (create) — same control language as theme slide */
+.kind-toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0 0 1.15rem;
+}
+.kind-toggle-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  min-width: 4.5rem;
+}
+/* Durable plan editor — dependency graph (agent nodes + edges) */
+body.plan-editor .shell { max-width: 72rem; }
+.plan-editor-panel { align-items: stretch; }
+.plan-editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
+  gap: 1rem;
+  align-items: start;
+  margin-top: 0.75rem;
+}
+.plan-editor-body:has(#plan-editor-aside[hidden]) {
+  grid-template-columns: 1fr;
+}
+.plan-graph-host {
+  min-height: 24rem;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(62, 200, 240, 0.14);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(62, 200, 240, 0.06), transparent 55%),
+    rgba(6, 10, 16, 0.55);
+}
+.plan-graph-canvas-wrap {
+  display: flex;
+  justify-content: center;
+  min-width: 100%;
+  padding: 0.5rem;
+  box-sizing: border-box;
+}
+.plan-graph-canvas {
+  position: relative;
+  flex: 0 0 auto;
+  min-height: 12rem;
+}
+.plan-graph-canvas .flow-node {
+  position: absolute;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  background: #15181d;
+  border: 1px solid #2a3038;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+.plan-graph-canvas .flow-node:hover {
+  border-color: rgba(62, 200, 240, 0.45);
+}
+.plan-graph-canvas .flow-node.is-selected {
+  border-color: rgba(62, 200, 240, 0.75);
+  box-shadow: 0 0 0 1px rgba(62, 200, 240, 0.35), 0 0 16px rgba(62, 200, 240, 0.18);
+}
+.plan-graph-canvas .org-agent-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  min-width: 0;
+}
+.plan-graph-canvas .org-agent-icon {
+  position: relative;
+  flex: 0 0 auto;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 50%;
+  background: #1e242c;
+  border: 1px solid #343b45;
+  display: grid;
+  place-items: center;
+}
+.plan-graph-canvas .org-agent-glyph {
+  font-size: 0.95rem;
+  line-height: 1;
+  color: #d7dde6;
+}
+.plan-graph-canvas .org-agent-led {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 0.55rem;
+  height: 0.55rem;
+}
+.plan-graph-canvas .org-agent-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.plan-graph-canvas .org-agent-title {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 0.9rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+.plan-graph-canvas .org-agent-sub {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.plan-graph-canvas .org-agent-live {
+  margin-top: 0.15rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.66rem;
+  color: #8f9aab;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.plan-flow-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+.plan-flow-edge {
+  stroke: rgba(62, 200, 240, 0.35);
+  stroke-width: 1.5;
+}
+.plan-editor-aside {
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(62, 200, 240, 0.18);
+  background: rgba(8, 14, 22, 0.65);
+  position: sticky;
+  top: 1rem;
+}
+.plan-editor-aside[hidden] { display: none !important; }
+.plan-editor-aside h3 { margin: 0 0 0.75rem; }
+.plan-editor-aside label {
+  display: block;
+  margin: 0.55rem 0 0.25rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.plan-editor-aside input,
+.plan-editor-aside select,
+.plan-editor-aside textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+.plan-schedule-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.plan-schedule-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid rgba(62, 200, 240, 0.12);
+  background: rgba(8, 14, 22, 0.45);
+}
+@media (max-width: 900px) {
+  .plan-editor-body { grid-template-columns: 1fr; }
+  .plan-editor-aside { position: static; }
+}
+
+/* Global HITL popup + nav badge */
+.app-side-link { position: relative; }
+.app-side-badge {
+  flex: 0 0 auto;
+  min-width: 1.25rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  background: #c44b4b;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+}
+body.is-app-side-collapsed .app-side-badge,
+html.app-side-collapsed body.app-shell:not(.war-room) .app-side-badge {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.15rem;
+  min-width: 0.85rem;
+  padding: 0.05rem 0.28rem;
+  font-size: 0.58rem;
+}
+.hitl-global-dialog {
+  width: min(32rem, calc(100vw - 2rem));
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  box-shadow: none;
+}
+.hitl-global-dialog::backdrop {
+  background: rgba(4, 8, 14, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.hitl-global-card {
+  padding: 1.1rem 1.2rem 1.15rem;
+  background: var(--panel, #0c121a);
+  border: 1px solid rgba(62, 200, 240, 0.28);
+  border-radius: 14px;
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.45);
+}
+.hitl-global-card h2 { margin: 0 0 0.35rem; font-size: 1.15rem; }
+.hitl-global-question {
+  margin: 0.65rem 0 0.85rem;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+.hitl-global-actions { flex-wrap: wrap; margin-top: 0.75rem; }
+.kind-pill {
+  display: inline-block;
+  padding: 0.12rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid rgba(62, 200, 240, 0.22);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.kind-pill[data-kind="durable"] {
+  border-color: rgba(120, 200, 140, 0.4);
+  color: #9fd9ae;
+}
+
+.plan-schedule-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.plan-schedule-item { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.65rem; border-radius: 8px; border: 1px solid rgba(62, 200, 240, 0.14); }

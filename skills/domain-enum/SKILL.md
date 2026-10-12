@@ -1,16 +1,8 @@
 ---
 name: domain-enum
 description: Domain + subdomain engine used by the corporate recon workflow after its canonical handoff gate. Passive only. Use for passive domain/subdomain inventory after corporate OSINT handoff.
+allowed-tools: Bash Read
 compatibility: Requires dnsx, dig, curl, whois
-allowed-tools: sandbox_setup run_skill_script sandbox_status skills_list skill_view list_objectives update_objective_status record_finding list_findings
-metadata:
-  version: 3.3.0
-  category: recon
-  tags: OSINT
-  requires_clis: dnsx, dig, curl, whois
-  jobable: 'true'
-  manually_created: 'true'
-  lifecycle: long
 ---
 
 ## Goal
@@ -20,27 +12,15 @@ Source of truth: `workspace/corp-entities.json`. Never parse `findings/*.md`.
 OSINT chain: **`ai-osint-subsidiaries` → `domain-enum` → `entra-osint`**
 
 ## Scripts / assets
-- scripts/run.py — project entry (`command=`)
+- scripts/run.sh — entry (argv)
 - scripts/domain_enum.py — CLI implementation
 - assets/wordlists/subdomains.txt — default dnsx wordlist
 
-## Verify
+## Run
 ```
-run_skill_script("domain-enum", "scripts/run.py", command="--help")
+run_skill_script("domain-enum", "scripts/run.sh", args='["subdomains", "--from-corp", "--workspace", "workspace"]')
 ```
 CLIs (`dnsx`, `dig`, …) are provisioned from **tools/catalog** before the job runs.
-
-## Workflow (mandatory)
-1. Ensure corp/AI handoff:
-```
-run_skill_script("domain-enum", "scripts/run.py", command="from-corp --workspace workspace")
-```
-2. Full domain→subdomain flow:
-```
-run_skill_script("domain-enum", "scripts/run.py", command="pipeline --from-corp --out-dir workspace --md findings/domain-inventory.md")
-```
-3. Record notable discoveries with `record_finding` (subject + evidence; free-form
-   `kind` / `asset_type`) — not run/objective status.
 
 For corporate recon, invoke **`ai-osint-subsidiaries` `workflow`** first — do not manually
 chain discovery and this skill.

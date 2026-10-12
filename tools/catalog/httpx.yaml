@@ -20,5 +20,4 @@ verify:
     # Distinguishes ProjectDiscovery CLI from the Python package console-script.
     must_match: "(?i)current version"
     must_not_match: "httpx\\[cli\\]|required dependencies were not installed"
-roles: [http-prober]
 tags: [recon, web]

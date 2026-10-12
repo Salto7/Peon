@@ -5,19 +5,19 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from peon.projects.models import Project, RulesOfEngagement
-from peon.projects.target_discovery import _active_probe_role_ids, _llm_suggest_assets
+from peon.projects.target_discovery import SubjectCanonicalizer
 from peon.projects.target_shapes import (
     coerce_targets,
     extract_targets,
 )
-from peon.projects.asset_graph import ingest_assets
+from peon.projects.asset_graph import AssetGraphEngine
 
 def roe_block_reason(role_ids: Iterable[str] | None, scope: Iterable[Any] | None) -> str | None:
-    """Fail-closed when requires_roe roles have no in-scope *values*."""
+    """Fail-closed when technical probe roles have no in-scope *values*."""
     names = [str(n).strip() for n in (role_ids or []) if str(n).strip()]
     if coerce_targets(scope):
         return None
-    active = _active_probe_role_ids()
+    active = SubjectCanonicalizer.active_probe_role_ids()
     needing = [n for n in names if n in active]
     if not needing:
         return None
@@ -27,11 +27,15 @@ def roe_block_reason(role_ids: Iterable[str] | None, scope: Iterable[Any] | None
     )
 
 
-# Back-compat aliases (call sites that iterate the frozenset get a live snapshot).
-def __getattr__(name: str):
-    if name == "ACTIVE_NETWORK_ROLES":
-        return _active_probe_role_ids()
-    raise AttributeError(name)
+def get_or_create_roe(project: Project) -> RulesOfEngagement:
+    """Load/create RoE on the project SQLite file (never the platform default DB)."""
+    from peon.projects.db import ensure_project_database, using_project
+
+    alias = ensure_project_database(project.pk)
+    with using_project(project.pk):
+        roe, _ = RulesOfEngagement.objects.using(alias).get_or_create(project=project)
+    return roe
+
 
 def provision_project_roe(
     project: Project,
@@ -44,48 +48,48 @@ def provision_project_roe(
     Ensure RoE exists. If in_scope is empty, deduce assets from texts /
     title+summary into in_scope. Type labels are soft producer hints.
     """
-    roe, _ = RulesOfEngagement.objects.get_or_create(project=project)
-    deduced: list[str] = []
-    scope = coerce_targets(roe.in_scope)
-    if not scope:
-        parts = list(texts or [])
-        parts.extend([project.title or "", project.summary or ""])
-        assets = extract_targets(*parts)
-        if assets:
-            roe.in_scope = assets
-            deduced = [t["value"] for t in assets]
-            if authorization and not roe.authorization_note:
-                roe.authorization_note = authorization
-            elif not roe.authorization_note:
-                roe.authorization_note = (
-                    "Auto-deduced from brief (operator did not supply Rules of Engagement)."
-                )
-            if not coerce_targets(getattr(roe, "seed", None)):
-                seed_bits = [
-                    s.strip()
-                    for s in (project.title, project.summary)
-                    if (s or "").strip()
-                ]
-                if seed_bits:
-                    roe.seed = coerce_targets(
-                        [{"type": "other", "value": " | ".join(seed_bits)[:500]}]
-                    )
-            roe.save()
-            scope = assets
-    elif scope != list(roe.in_scope or []):
-        roe.in_scope = scope
-        roe.save(update_fields=["in_scope", "updated_at"])
+    from peon.projects.db import ensure_project_database, using_project
 
-    if exclusions is not None:
-        roe.exclusions = coerce_targets(exclusions)
-        roe.save(update_fields=["exclusions", "updated_at"])
-    if authorization and not roe.authorization_note:
-        roe.authorization_note = authorization
-        roe.save(update_fields=["authorization_note", "updated_at"])
-    try:
-        project.roe = roe
-    except Exception:
-        pass
+    roe = get_or_create_roe(project)
+    alias = ensure_project_database(project.pk)
+    deduced: list[str] = []
+    with using_project(project.pk):
+        scope = coerce_targets(roe.in_scope)
+        if not scope:
+            parts = list(texts or [])
+            parts.extend([project.title or "", project.summary or ""])
+            assets = extract_targets(*parts)
+            if assets:
+                roe.in_scope = assets
+                deduced = [t["value"] for t in assets]
+                if authorization and not roe.authorization_note:
+                    roe.authorization_note = authorization
+                elif not roe.authorization_note:
+                    roe.authorization_note = (
+                        "Auto-deduced from brief (operator did not supply Rules of Engagement)."
+                    )
+                if not coerce_targets(getattr(roe, "seed", None)):
+                    seed_bits = [
+                        s.strip()
+                        for s in (project.title, project.summary)
+                        if (s or "").strip()
+                    ]
+                    if seed_bits:
+                        roe.seed = coerce_targets(
+                            [{"type": "other", "value": " | ".join(seed_bits)[:500]}]
+                        )
+                roe.save(using=alias)
+                scope = assets
+        elif scope != list(roe.in_scope or []):
+            roe.in_scope = scope
+            roe.save(using=alias, update_fields=["in_scope", "updated_at"])
+
+        if exclusions is not None:
+            roe.exclusions = coerce_targets(exclusions)
+            roe.save(using=alias, update_fields=["exclusions", "updated_at"])
+        if authorization and not roe.authorization_note:
+            roe.authorization_note = authorization
+            roe.save(using=alias, update_fields=["authorization_note", "updated_at"])
     return roe, deduced
 
 
@@ -110,9 +114,14 @@ def promote_candidates(
         return 0
     scope = coerce_targets(roe.in_scope)
     scope.extend(chosen)
+    from peon.projects.db import project_alias_or_default
+
     roe.in_scope = coerce_targets(scope)
     roe.candidates = remaining
-    roe.save(update_fields=["in_scope", "candidates", "updated_at"])
+    roe.save(
+        using=project_alias_or_default(roe.project_id),
+        update_fields=["in_scope", "candidates", "updated_at"],
+    )
     return len(chosen)
 
 
@@ -129,7 +138,11 @@ def add_candidates(roe: RulesOfEngagement, raw: Iterable) -> int:
     try:
         project = getattr(roe, "project", None)
         if project is not None:
-            ingest_assets(project, incoming, bucket="candidate", source="rules_of_engagement")
+            AssetGraphEngine(project).ingest(
+                incoming,
+                bucket="candidate",
+                source="rules_of_engagement",
+            )
     except Exception:
         pass
     return len(roe.candidates) - before
@@ -139,7 +152,7 @@ def authorize_operator_scope(roe: RulesOfEngagement, text: str) -> list[dict[str
     blob = text or ""
     incoming = extract_targets(blob)
     if not incoming and len(blob.strip()) >= 8:
-        incoming = _llm_suggest_assets(blob)
+        incoming = SubjectCanonicalizer.suggest_assets(blob)
     if not incoming:
         return []
     known = {
@@ -165,20 +178,24 @@ def authorize_operator_scope(roe: RulesOfEngagement, text: str) -> list[dict[str
 
 def roe_add_path(project: Project, sandbox_path: str) -> None:
     """Authorize a project-local input path in RoE seed + in_scope."""
-    roe, _ = RulesOfEngagement.objects.get_or_create(project=project)
+    from peon.projects.db import ensure_project_database, using_project
+
+    alias = ensure_project_database(project.pk)
     path = (sandbox_path or "").strip()
     if not path:
         return
-    seed = coerce_targets(roe.seed)
-    scope = coerce_targets(roe.in_scope)
-    row = {"type": "file", "value": path}
-    if not any(t.get("value") == path for t in seed):
-        seed.append(row)
-    if not any(t.get("value") == path for t in scope):
-        scope.append(row)
-    roe.seed = seed
-    roe.in_scope = scope
-    roe.save(update_fields=["seed", "in_scope", "updated_at"])
+    roe = get_or_create_roe(project)
+    with using_project(project.pk):
+        seed = coerce_targets(roe.seed)
+        scope = coerce_targets(roe.in_scope)
+        row = {"type": "file", "value": path}
+        if not any(t.get("value") == path for t in seed):
+            seed.append(row)
+        if not any(t.get("value") == path for t in scope):
+            scope.append(row)
+        roe.seed = seed
+        roe.in_scope = scope
+        roe.save(using=alias, update_fields=["seed", "in_scope", "updated_at"])
 
 
 def roe_remove_path(project: Project, sandbox_path: str) -> None:

@@ -14,5 +14,4 @@ install:
     packages: ["git+https://github.com/laramies/theHarvester.git@4.11.1"]
 verify:
   - command: "theHarvester -h"
-roles: [domain-enum]
 tags: [recon, osint]

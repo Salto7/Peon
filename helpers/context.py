@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from collections.abc import Callable
 
@@ -78,7 +79,7 @@ class PackContext:
     def explicit_command(self) -> str:
         command = (os.environ.get("ORCHESTRATOR_ROLE_COMMAND") or "").strip()
         if not command and len(sys.argv) > 1:
-            command = " ".join(sys.argv[1:]).strip()
+            command = shlex.join(sys.argv[1:]).strip()
         return command
 
     def resolve_command(

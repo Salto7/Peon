@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterable
 
 from django.conf import settings
 
@@ -19,8 +21,21 @@ from orchestrator.utils.paths import (
 
 def workspaces_root() -> Path:
     root = Path(
-        getattr(settings, "PROJECT_WORKSPACES_DIR", "project_workspaces")
+        getattr(settings, "PROJECT_WORKSPACES_DIR", "workspaces")
     ).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def platform_workspace_dir() -> Path:
+    root = Path(
+        getattr(
+            settings,
+            "PLATFORM_WORKSPACE_DIR",
+            workspaces_root() / "platform",
+        )
+    ).resolve()
+    root.relative_to(workspaces_root())
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -28,7 +43,10 @@ def workspaces_root() -> Path:
 def project_workspace_dir(project_id: str, *, create: bool = True) -> Path:
     """Return ``PROJECT_WORKSPACES_DIR / <project_id>`` (only that project)."""
     root = workspaces_root()
-    key = safe_workspace_key(str(project_id))
+    try:
+        key = str(uuid.UUID(str(project_id)))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"invalid project id {project_id!r}") from exc
     path = (root / key).resolve()
     path.relative_to(root)  # raises if escaped
     if create:
@@ -37,7 +55,7 @@ def project_workspace_dir(project_id: str, *, create: bool = True) -> Path:
 
 
 def resolve_job_workspace(job) -> Path:
-    """Project-bound jobs share the project folder; orphan jobs use workspace_id."""
+    """Project jobs use their project folder; orphan jobs stay under platform/jobs."""
     pid = getattr(job, "project_id", None)
     if pid:
         path = project_workspace_dir(str(pid))
@@ -58,19 +76,70 @@ def resolve_job_workspace(job) -> Path:
             job.save(update_fields=["workspace_id", "updated_at"])
         except Exception:
             pass
-    return project_workspace_dir(wid)
+    platform = platform_workspace_dir()
+    path = (platform / "jobs" / wid).resolve()
+    path.relative_to(platform)
+    return ensure_workspace_layout(path)
 
 
 def remove_project_workspace(project_id: str) -> dict:
-    """Delete the on-disk project workspace tree (best-effort)."""
+    """Delete one project's complete workspace tree."""
     try:
         path = project_workspace_dir(project_id, create=False)
     except ValueError:
         return {"action": "skipped", "reason": "unsafe id"}
     if not path.exists():
         return {"action": "missing", "path": str(path)}
-    shutil.rmtree(path, ignore_errors=True)
-    return {"action": "removed", "path": str(path)}
+    try:
+        if path.is_symlink():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
+    except OSError as exc:
+        return {"action": "error", "path": str(path), "error": str(exc)}
+    return {
+        "action": "removed" if not path.exists() else "error",
+        "path": str(path),
+    }
+
+
+def prune_orphan_workspaces(
+    active_project_ids: Iterable[str],
+    *,
+    persist: bool = False,
+) -> dict[str, list[str]]:
+    """Find or remove workspace entries not owned by a current Project."""
+    active: set[str] = set()
+    for project_id in active_project_ids:
+        try:
+            active.add(str(uuid.UUID(str(project_id))))
+        except (ValueError, AttributeError, TypeError):
+            continue
+    root = workspaces_root()
+    orphans: list[str] = []
+    removed: list[str] = []
+    errors: list[str] = []
+    for path in sorted(root.iterdir(), key=lambda item: item.name):
+        if path.name == "platform":
+            continue
+        try:
+            identity = str(uuid.UUID(path.name))
+        except (ValueError, AttributeError, TypeError):
+            identity = ""
+        if identity and identity in active:
+            continue
+        orphans.append(path.name)
+        if not persist:
+            continue
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            removed.append(path.name)
+        except OSError as exc:
+            errors.append(f"{path.name}: {exc}")
+    return {"orphans": orphans, "removed": removed, "errors": errors}
 
 
 # --- Report discovery ---
@@ -351,4 +420,32 @@ def format_workspace_artifact_index(workspace: Path, *, limit: int = 80) -> str:
         return ""
     lines = [f"- `{rel}` ({size} bytes)" for rel, size in rows]
     return "\n".join(lines)
+
+
+def project_db_path(project_id: str):
+    from peon.projects.db import project_db_path as _path
+
+    return _path(project_id)
+
+
+class WorkspaceStore:
+    """Project workspace paths, reports, uploads, and artifact discovery."""
+
+    root = staticmethod(workspaces_root)
+    platform = staticmethod(platform_workspace_dir)
+    project_dir = staticmethod(project_workspace_dir)
+    project_db = staticmethod(project_db_path)
+    for_job = staticmethod(resolve_job_workspace)
+    remove_project = staticmethod(remove_project_workspace)
+    prune_orphans = staticmethod(prune_orphan_workspaces)
+    resolve_report = staticmethod(resolve_report_path)
+    list_reports = staticmethod(list_reports)
+    reports_payload = staticmethod(reports_payload)
+    inputs_dir = staticmethod(inputs_dir)
+    resolve_input = staticmethod(resolve_input_path)
+    list_inputs = staticmethod(list_project_inputs)
+    save_input = staticmethod(save_project_input)
+    delete_input = staticmethod(delete_project_input)
+    artifacts = staticmethod(iter_workspace_artifacts)
+    artifact_index = staticmethod(format_workspace_artifact_index)
 

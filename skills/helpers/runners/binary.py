@@ -50,7 +50,7 @@ class BinaryRunner(SkillRunnerBase):
         if not commands:
             print(
                 f"usage: run.py '<{self.binary} …>'  "
-                "(or set ORCHESTRATOR_SKILL_COMMAND / ORCHESTRATOR_IN_SCOPE)",
+                "(or pass argv / set ORCHESTRATOR_IN_SCOPE)",
                 file=sys.stderr,
             )
             return 2

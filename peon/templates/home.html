@@ -57,7 +57,9 @@
     <tbody>
     {% for row in project_rows %}
       <tr>
-        <td><a href="{% url 'project_detail' row.project.pk %}">{{ row.project.title }}</a></td>
+        <td><a href="{% url 'project_detail' row.project.pk %}">{{ row.project.title }}</a>
+          <span class="kind-pill" data-kind="{{ row.project.kind }}">{{ row.project.get_kind_display }}</span>
+        </td>
         <td class="meta status">{{ row.project.status }}</td>
         <td class="meta"><code>{{ row.sandbox_name }}</code>
           <span class="home-sandbox-mode">{{ row.sandbox_mode }}</span></td>

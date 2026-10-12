@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,9 +11,10 @@ from django.db.models import Count, Q
 
 from peon.projects.models import Finding, FindingStatus, Job, Objective, Project
 from peon.projects.roe_ops import add_candidates
-from peon.projects.role_artifacts import ingest_role_artifacts
-from peon.projects.target_discovery import discovery_assets_from_finding
+from peon.projects.target_discovery import SubjectCanonicalizer
 from peon.projects.target_shapes import coerce_targets, sanitize_label
+
+logger = logging.getLogger(__name__)
 
 # Ranking scale for reports/UI — not a domain taxonomy.
 _SEVERITY_RANK = frozenset({"critical", "high", "medium", "low", "info"})
@@ -52,12 +54,13 @@ class FindingNormalizer:
         if not isinstance(mitre, list):
             mitre = []
         meta = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
-        return {
+        host = str(record.get("host") or "").strip()[:255]
+        base = {
             "title": title[:255],
             "kind": kind,
             "asset_type": asset,
             "severity": severity,
-            "host": str(record.get("host") or "").strip()[:255],
+            "host": host,
             "service": str(record.get("service") or "").strip()[:128],
             "port": port_i,
             "protocol": str(record.get("protocol") or "").strip()[:16],
@@ -70,6 +73,14 @@ class FindingNormalizer:
             "remediation": str(record.get("remediation") or "").strip()[:4000],
             "metadata": meta,
         }
+        # Prefer explicit subjects; else derive from host/port/url/… — never evidence_path.
+        subjects = SubjectCanonicalizer.from_finding(
+            {**base, "subjects": record.get("subjects")}
+        )
+        if not subjects:
+            return None
+        base["subjects"] = subjects
+        return base
 
 
 class FindingStore:
@@ -90,31 +101,40 @@ class FindingStore:
         row = self._normalizer.normalize(payload)
         if row is None:
             return None
-        if dedupe:
-            qs = Finding.objects.filter(
+        from peon.projects.db import ensure_project_database, using_project
+
+        alias = ensure_project_database(project.pk)
+        with using_project(project.pk):
+            if dedupe:
+                qs = Finding.objects.using(alias).filter(
+                    project=project,
+                    kind=row["kind"],
+                    title=row["title"],
+                    host=row["host"],
+                )
+                qs = (
+                    qs.filter(port__isnull=True)
+                    if row["port"] is None
+                    else qs.filter(port=row["port"])
+                )
+                if row["evidence_path"]:
+                    qs = qs.filter(evidence_path=row["evidence_path"])
+                existing = qs.first()
+                if existing is not None:
+                    return existing
+            finding = Finding.objects.using(alias).create(
                 project=project,
-                kind=row["kind"],
-                title=row["title"],
-                host=row["host"],
+                job=job,
+                objective=objective,
+                seq=self._next_seq(project),
+                **row,
             )
-            qs = (
-                qs.filter(port__isnull=True)
-                if row["port"] is None
-                else qs.filter(port=row["port"])
-            )
-            if row["evidence_path"]:
-                qs = qs.filter(evidence_path=row["evidence_path"])
-            existing = qs.first()
-            if existing is not None:
-                return existing
-        finding = Finding.objects.create(
-            project=project,
-            job=job,
-            objective=objective,
-            seq=self._next_seq(project),
-            **row,
-        )
         self._queue_discovered_candidates(project, row)
+        # Findings are graph producers. Persist their structured subjects at
+        # write time so every consumer sees the same canonical graph.
+        from peon.projects.asset_graph import AssetGraphEngine
+
+        AssetGraphEngine(project).sync(findings=[finding])
         return finding
 
     @staticmethod
@@ -124,7 +144,7 @@ class FindingStore:
         if roe is None:
             return
 
-        found = discovery_assets_from_finding(row)
+        found = SubjectCanonicalizer.from_finding(row)
         if not found:
             return
         known = {
@@ -256,8 +276,12 @@ class FindingStore:
 
     @staticmethod
     def _next_seq(project: Project) -> int:
+        from peon.projects.db import ensure_project_database
+
+        alias = ensure_project_database(project.pk)
         last = (
-            Finding.objects.filter(project=project)
+            Finding.objects.using(alias)
+            .filter(project=project)
             .order_by("-seq")
             .values_list("seq", flat=True)
             .first()
@@ -318,7 +342,5 @@ class FindingQueueIngestor:
 
 
 def ingest_workspace_findings(job: Job, workspace: Path) -> int:
-    """Run role artifact hooks, then ingest ``findings_queue.jsonl``."""
-    if job.project_id is not None:
-        ingest_role_artifacts(job, workspace)
+    """Ingest ``workspace/findings_queue.jsonl`` (skills write the queue)."""
     return FindingQueueIngestor().ingest(job, workspace)

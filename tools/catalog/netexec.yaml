@@ -1,0 +1,15 @@
+id: netexec
+name: NetExec
+description: >
+  Network service enumeration and auth testing across protocols NetExec supports
+  (SMB, LDAP, WinRM, RDP, MSSQL, SSH, FTP, VNC, …). Authorized in-scope hosts only.
+  Linked skill: network-service-recon. CLI entrypoint is ``nxc``.
+tier: catalog
+binary: nxc
+binaries: [nxc, netexec]
+install:
+  - type: pip
+    packages: [netexec]
+verify:
+  - command: "nxc --help"
+tags: [recon, network, smb, ldap, winrm]

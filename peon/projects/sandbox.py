@@ -1,34 +1,36 @@
-"""Project runtime lifecycle. Policy stays here; commands stay in agent_runtime.
-
-- ``SANDBOX_ENABLED=true``  → one dedicated environment per Project
-- ``SANDBOX_ENABLED=false`` → one shared Docker sandbox (OpenShell stays dedicated)
-"""
+"""Project runtime lifecycle with one dedicated environment per Project."""
 
 from __future__ import annotations
 
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 
 from agent_runtime.api import Runtime, RuntimeSpec, Session, SessionInfo
-from agent_runtime.registry import get as get_runtime
-from agent_runtime.registry import register_builtin
+from agent_runtime.registry import RuntimeRegistry
 from orchestrator.utils.job_env import JobEnv
+from orchestrator.utils.paths import safe_workspace_key
 from orchestrator.utils.service import SharedServiceBase
+from orchestrator.skills.mounts import extra_skill_mount
 from peon.projects.models import Project, SandboxRuntime
 
 logger = logging.getLogger(__name__)
 
 
 def runtime_state_dir() -> Path:
-    """Shared Docker/OpenShell state dir (sibling of project workspaces)."""
+    """Docker/OpenShell metadata in the reserved platform workspace."""
     root = Path(
-        getattr(settings, "PROJECT_WORKSPACES_DIR", Path.cwd() / "data")
+        getattr(
+            settings,
+            "PLATFORM_WORKSPACE_DIR",
+            Path.cwd() / "workspaces" / "platform",
+        )
     ).resolve()
-    return root.parent / "runtime"
+    return root / "runtime"
 
 
 def bind_runtime_session(session: Any, *, default_workdir: str = "/workspace") -> None:
@@ -63,7 +65,7 @@ class ProjectSandbox(SharedServiceBase):
     """Choose the project's runtime and bind a session. Does not run commands."""
 
     def per_project(self) -> bool:
-        return bool(getattr(settings, "SANDBOX_ENABLED", True))
+        return True
 
     def prefix(self) -> str:
         return str(
@@ -80,11 +82,9 @@ class ProjectSandbox(SharedServiceBase):
         return sandbox
 
     def runtime_for(self, project_id: str) -> Runtime:
-        register_builtin()
-        return get_runtime(runtime_id_for(project_id))
-
-    def uses_shared(self, project_id: str) -> bool:
-        return (not self.per_project()) and runtime_id_for(project_id) == SandboxRuntime.SANDBOX
+        registry = RuntimeRegistry.shared()
+        registry.register_builtin()
+        return registry.get(runtime_id_for(project_id))
 
     @classmethod
     def container_name(cls, project_id: str) -> str:
@@ -94,7 +94,7 @@ class ProjectSandbox(SharedServiceBase):
         return runtime.resource_name(
             pid,
             prefix=self.prefix(),
-            shared=self.uses_shared(pid),
+            shared=False,
         )
 
     @classmethod
@@ -109,7 +109,7 @@ class ProjectSandbox(SharedServiceBase):
         project_id: str,
         *,
         workspace: Path | None = None,
-        roles_dir: Path | None = None,
+        skills_dir: Path | None = None,
         helpers_dir: Path | None = None,
         tools_dir: Path | None = None,
     ) -> SessionInfo:
@@ -120,7 +120,7 @@ class ProjectSandbox(SharedServiceBase):
             pid,
             runtime_id=runtime.id,
             workspace=workspace,
-            roles_dir=roles_dir,
+            skills_dir=skills_dir,
             helpers_dir=helpers_dir,
             tools_dir=tools_dir,
         )
@@ -129,25 +129,37 @@ class ProjectSandbox(SharedServiceBase):
         return session.info
 
     @classmethod
-    def remove(cls, project_id: str) -> dict[str, Any]:
+    def remove(
+        cls,
+        project_id: str,
+        *,
+        runtime_id: str = "",
+    ) -> dict[str, Any]:
         self = cls.shared()
         pid = str(project_id or "").strip()
         if not pid:
             return {"action": "skipped", "reason": "no project_id"}
 
-        runtime = self.runtime_for(pid)
-        shared_name = get_runtime(SandboxRuntime.SANDBOX).resource_name(
-            "", prefix=self.prefix(), shared=True
+        registry = RuntimeRegistry.shared()
+        registry.register_builtin()
+        selected = (
+            SandboxRuntime.resolve(runtime_id)
+            if (runtime_id or "").strip()
+            else runtime_id_for(pid)
         )
+        runtime = registry.get(selected)
         dedicated = runtime.resource_name(pid, prefix=self.prefix(), shared=False)
         removed: list[str] = []
         errors: list[str] = []
 
         def _rm(target: str, *, role: str) -> None:
-            if target == shared_name:
-                return
             result = runtime.destroy(
-                RuntimeSpec(project_id=pid, name=target, role=role, image=self.image_for(runtime.id))
+                RuntimeSpec(
+                    project_id=pid,
+                    name=target,
+                    role=role,
+                    image=self.image_for(runtime.id),
+                )
             )
             if result.get("removed"):
                 removed.append(target)
@@ -163,7 +175,7 @@ class ProjectSandbox(SharedServiceBase):
 
         try:
             for cid in runtime.find(f"label=peon.project_id={pid}"):
-                if cid in removed or cid == dedicated or cid == shared_name:
+                if cid in removed or cid == dedicated:
                     continue
                 try:
                     _rm(cid, role="project")
@@ -171,6 +183,12 @@ class ProjectSandbox(SharedServiceBase):
                     errors.append(f"{cid}: {exc}")
         except Exception as exc:
             errors.append(str(exc))
+
+        policy = runtime_state_dir() / f"{dedicated}.policy.yaml"
+        try:
+            policy.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(f"{policy}: {exc}")
 
         Session.reset()
         if removed:
@@ -184,41 +202,93 @@ class ProjectSandbox(SharedServiceBase):
             return {"action": "error", "name": dedicated, "errors": errors}
         return {"action": "missing", "name": dedicated}
 
+    @classmethod
+    def remove_all_backends(cls, project_id: str) -> dict[str, Any]:
+        """Remove any runtime resource deterministically owned by a project."""
+        self = cls.shared()
+        pid = str(project_id or "").strip()
+        registry = RuntimeRegistry.shared()
+        registry.register_builtin()
+        results: dict[str, dict[str, Any]] = {}
+        for rid in registry.ids():
+            runtime = registry.get(rid)
+            name = runtime.resource_name(pid, prefix=self.prefix(), shared=False)
+            spec = RuntimeSpec(
+                project_id=pid,
+                name=name,
+                role="project",
+                image=self.image_for(rid),
+                state_dir=str(runtime_state_dir()),
+            )
+            try:
+                status = runtime.status(spec)
+            except Exception as exc:
+                results[rid] = {"action": "skipped", "error": str(exc)}
+                continue
+            if not status.get("exists") and status.get("error"):
+                results[rid] = {
+                    "action": "skipped",
+                    "error": str(status.get("error") or ""),
+                }
+                continue
+            results[rid] = cls.remove(pid, runtime_id=rid)
+        actions = {str(result.get("action") or "") for result in results.values()}
+        if "error" in actions:
+            action = "error"
+        elif "removed" in actions:
+            action = "removed"
+        else:
+            action = "missing"
+        return {"action": action, "project_id": pid, "backends": results}
+
     def _project_spec(
         self,
         project_id: str,
         *,
         runtime_id: str,
         workspace: Path | None,
-        roles_dir: Path | None,
+        skills_dir: Path | None,
         helpers_dir: Path | None,
         tools_dir: Path | None,
     ) -> RuntimeSpec:
-        ws = Path(workspace or "/tmp").resolve()
+        try:
+            project_id = str(uuid.UUID(str(project_id)))
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                "valid project_id is required for an isolated sandbox"
+            ) from exc
+        root = Path(getattr(settings, "PROJECT_WORKSPACES_DIR")).resolve()
+        expected = (root / safe_workspace_key(project_id)).resolve()
+        expected.relative_to(root)
+        ws = Path(workspace or expected).resolve()
+        if ws != expected:
+            raise ValueError(
+                f"workspace {ws} does not belong to project {project_id}"
+            )
         ws.mkdir(parents=True, exist_ok=True)
-        roles, helpers, tools = self._mount_paths(roles_dir, helpers_dir, tools_dir)
-        shared = self.uses_shared(project_id) and runtime_id == SandboxRuntime.SANDBOX
-        if shared:
-            root = Path(getattr(settings, "PROJECT_WORKSPACES_DIR", ws.parent)).resolve()
-            try:
-                rel = ws.resolve().relative_to(root).as_posix()
-            except ValueError:
-                rel = ws.name
-            mount = root
-            workdir = f"/workspace/{rel}" if rel else "/workspace"
-            role = "shared"
-            name = self.runtime_for(project_id).resource_name(
-                project_id, prefix=self.prefix(), shared=True
-            )
-            labels = {"peon.role": "shared-sandbox"}
-        else:
-            mount = ws
-            workdir = "/sandbox" if runtime_id == SandboxRuntime.OPENSHELL else "/workspace"
-            role = "project"
-            name = self.runtime_for(project_id).resource_name(
-                project_id, prefix=self.prefix(), shared=False
-            )
-            labels = {"peon.role": "project-sandbox", "peon.project_id": project_id}
+        skills, helpers, tools = self._mount_paths(
+            skills_dir, helpers_dir, tools_dir
+        )
+        imported = Path(
+            getattr(settings, "SKILLS_IMPORTED_DIR", "") or "skills_imported"
+        ).resolve()
+        imported.mkdir(parents=True, exist_ok=True)
+        extra_mounts = []
+        mounted_roots = {skills, imported}
+        for index, extra in enumerate(getattr(settings, "SKILLS_EXTRA_DIRS", ())):
+            extra_path = Path(extra).resolve()
+            if extra_path.is_dir() and extra_path not in mounted_roots:
+                extra_mounts.append(
+                    (str(extra_path), extra_skill_mount(index, extra_path))
+                )
+                mounted_roots.add(extra_path)
+        mount = ws
+        workdir = "/sandbox" if runtime_id == SandboxRuntime.OPENSHELL else "/workspace"
+        role = "project"
+        name = self.runtime_for(project_id).resource_name(
+            project_id, prefix=self.prefix(), shared=False
+        )
+        labels = {"peon.role": "project-sandbox", "peon.project_id": project_id}
 
         sock = str(getattr(settings, "STREAM_SOCKET_PATH", "") or "")
         volume = str(getattr(settings, "SANDBOX_SOCKETS_VOLUME", "") or "").strip()
@@ -228,7 +298,9 @@ class ProjectSandbox(SharedServiceBase):
             image=self.image_for(runtime_id),
             role=role,
             workspace_host=str(mount),
-            roles_host=str(roles),
+            skills_host=str(skills),
+            skills_imported_host=str(imported),
+            extra_ro_mounts=extra_mounts,
             helpers_host=str(helpers),
             tools_host=str(tools),
             socket_dir_host="" if volume else (str(Path(sock).parent) if sock else ""),
@@ -240,12 +312,12 @@ class ProjectSandbox(SharedServiceBase):
 
     def _mount_paths(
         self,
-        roles_dir: Path | None,
+        skills_dir: Path | None,
         helpers_dir: Path | None,
         tools_dir: Path | None,
     ) -> tuple[Path, Path, Path]:
-        roles = Path(
-            roles_dir or getattr(settings, "ROLES_DIR", "roles")
+        skills = Path(
+            skills_dir or getattr(settings, "SKILLS_DIR", "skills")
         ).resolve()
         helpers = Path(
             helpers_dir or getattr(settings, "HELPERS_DIR", "helpers")
@@ -253,4 +325,4 @@ class ProjectSandbox(SharedServiceBase):
         tools = Path(
             tools_dir or getattr(settings, "TOOLS_CATALOG_DIR", "tools/catalog")
         ).resolve()
-        return roles, helpers, tools
+        return skills, helpers, tools

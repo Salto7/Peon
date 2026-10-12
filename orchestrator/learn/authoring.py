@@ -1,72 +1,120 @@
-"""Learn authoring helpers — chat_json path for role packs / offline drafts."""
+"""Learn authoring — tool YAML suggestions and skill scaffolding."""
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Any
 
-from orchestrator.crew.roles.registry import RoleRegistry
-from orchestrator.learn.draft import (
-    authoring_prompt,
-    catalog_summaries,
-    filter_catalog,
-    propose_missing_tool,
-    tool_replan_human,
-    tool_suggest_human,
-    tool_suggestion_from_payload,
-)
-from orchestrator.learn.role_draft import assemble_role_result, lint_role_pack
-from orchestrator.utils.llm import chat_json, require_llm
+import yaml
+
+from orchestrator.learn.draft import DraftPipeline
+from orchestrator.skills.provision import SkillLinter
+from orchestrator.utils.llm import require_llm, chat_json
 from orchestrator.utils.service import SharedServiceBase
 
-_DEFAULT_AUTHOR = "code-writer"
-
-
-def _authoring_role(role_id: str = "") -> Any:
-    rid = (role_id or _DEFAULT_AUTHOR).strip() or _DEFAULT_AUTHOR
-    role = RoleRegistry.shared().get(rid)
-    if role is None:
-        raise RuntimeError(f"authoring role {rid!r} not found in roles/")
-    return role
+_TOOLS_SUGGESTOR = "tools-suggestor"
+_SKILL_WRITER = "skill-writer"
 
 
 class LearnAuthoring(SharedServiceBase):
-    """LLM authoring via chat_json (no OpenCode / proxy lab)."""
+    """LLM authoring backed by skill-writer / tools-suggestor prompt files.
+
+    Methods are static — no instance state; ``shared()`` remains for DI/tests.
+    """
 
     @staticmethod
-    def suggest_tool(prompt: str, *, role_id: str = "") -> dict[str, Any]:
+    def suggest_tool(prompt: str) -> dict[str, Any]:
+        """Return ``id``, ``yaml``, ``install_script``, ``notes`` for a catalog tool."""
         text = (prompt or "").strip()
         if not text:
             raise ValueError("prompt is required")
         require_llm()
-        role = _authoring_role(role_id)
-        return tool_suggestion_from_payload(
-            chat_json(role.authoring_prompt_text("tool"), tool_suggest_human(text))
-        )
-
-    @staticmethod
-    def write_role(
-        prompt: str, *, tools: list[str] | None = None, role_id: str = ""
-    ) -> dict[str, Any]:
-        text = (prompt or "").strip()
-        if not text:
-            raise ValueError("prompt is required")
-        require_llm()
-        role = _authoring_role(role_id)
-        tool_suggestion, proposed, install_recipes = propose_missing_tool(
-            text, LearnAuthoring.suggest_tool
-        )
-        return assemble_role_result(
+        return DraftPipeline.tool_suggestion_from_payload(
             chat_json(
-                role.authoring_prompt_text("role"),
-                authoring_prompt(
-                    text,
-                    filter_catalog(catalog_summaries(), tools),
-                    proposed=proposed,
-                    tool_recipes=install_recipes or None,
+                DraftPipeline.skill_prompt(_TOOLS_SUGGESTOR),
+                DraftPipeline.tool_suggest_human(text),
+            )
+        )
+
+    @staticmethod
+    def write_skill(
+        prompt: str, *, tools: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Draft a Claude Agent Skill and return the skills-ref summary.
+
+        A catalog CLI becomes ``scripts/run.sh``. A missing CLI still gets
+        ``references/INSTALL.md`` from the tools-suggestor recipe.
+        """
+        text = (prompt or "").strip()
+        if not text:
+            raise ValueError("prompt is required")
+        require_llm()
+        catalog = DraftPipeline.filter_catalog(
+            DraftPipeline.catalog_summaries(),
+            tools,
+        )
+
+        tool_suggestion, proposed, install_recipes = (
+            DraftPipeline.propose_missing_tool(
+                text,
+                LearnAuthoring.suggest_tool,
+            )
+        )
+
+        system = DraftPipeline.skill_prompt(_SKILL_WRITER)
+        human = DraftPipeline.authoring_prompt(
+            text,
+            catalog,
+            proposed=proposed,
+            tool_recipes=install_recipes or None,
+        )
+
+        payload = chat_json(system, human)
+        if not isinstance(payload, dict):
+            raise RuntimeError("skill-writer returned non-object JSON")
+
+        name, skill_md, files, suggested, mode, lint = (
+            DraftPipeline.finalize_skill_payload(
+                payload,
+                prompt=text,
+                proposed=proposed,
+                install_recipes=install_recipes,
+            )
+        )
+
+        if not lint["compatible"]:
+            repair = chat_json(
+                system,
+                (
+                    f"{human}\n\n"
+                    f"The previous draft failed skills-ref:\n"
+                    f"{yaml.safe_dump(lint['errors'], sort_keys=False)}\n\n"
+                    "Return corrected JSON only for the stated authoring mode."
                 ),
-            ),
-            prompt=text,
-            author=role.id,
+            )
+            if isinstance(repair, dict):
+                try:
+                    name, skill_md, files, suggested, mode, lint = (
+                        DraftPipeline.finalize_skill_payload(
+                        repair,
+                        prompt=text,
+                        proposed=proposed,
+                        install_recipes=install_recipes,
+                        suggested=suggested,
+                        )
+                    )
+                except RuntimeError:
+                    pass
+
+        return DraftPipeline.skill_result_dict(
+            name=name,
+            skill_md=skill_md,
+            files=files,
+            notes=str(payload.get("notes") or "").strip(),
+            suggested=suggested,
+            mode=mode,
+            lint=lint,
             tool_suggestion=tool_suggestion,
         )
 
@@ -78,14 +126,13 @@ class LearnAuthoring(SharedServiceBase):
         install_script: str = "",
         error: str = "",
         feedback: str = "",
-        role_id: str = "",
     ) -> dict[str, Any]:
+        """Revise a tool recipe after a failed learn-lab install test."""
         require_llm()
-        role = _authoring_role(role_id)
-        return tool_suggestion_from_payload(
+        return DraftPipeline.tool_suggestion_from_payload(
             chat_json(
-                role.authoring_prompt_text("tool_replan"),
-                tool_replan_human(
+                DraftPipeline.skill_prompt(_TOOLS_SUGGESTOR),
+                DraftPipeline.tool_replan_human(
                     prompt=prompt,
                     yaml_text=yaml_text,
                     install_script=install_script,
@@ -96,15 +143,23 @@ class LearnAuthoring(SharedServiceBase):
         )
 
     @staticmethod
-    def lint_role(
-        *,
-        name: str,
-        role_yaml: str = "",
-        files: dict[str, str] | None = None,
+    def lint_skill(
+        *, name: str, skill_md: str, files: dict[str, str] | None = None
     ) -> dict[str, Any]:
-        """Lint a role pack before Learn save."""
-        return lint_role_pack(
-            name=name,
-            role_yaml=(role_yaml or "").strip(),
-            files=files,
-        )
+        """Lint editable skill content (no LLM)."""
+        nm = (name or "").strip().lower()
+        md = (skill_md or "").strip()
+        file_map = {str(k): str(v) for k, v in (files or {}).items()}
+        if not DraftPipeline.valid_skill_name(nm):
+            raise ValueError(f"invalid skill name {nm!r}")
+        if not md:
+            raise ValueError("skill_md is required")
+        with tempfile.TemporaryDirectory(prefix=f"peon-lint-{nm}-") as tmp:
+            skill_dir = Path(tmp) / nm
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(md + "\n", encoding="utf-8")
+            for rel, body in file_map.items():
+                path = skill_dir / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(str(body).rstrip() + "\n", encoding="utf-8")
+            return SkillLinter.check(skill_dir)

@@ -5,12 +5,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
-
 from orchestrator.config import get_config
 from orchestrator.llm import get_llm_provider
-from orchestrator.utils.strings import extract_json, plain_text
+from orchestrator.utils.strings import extract_json
 
 LLM_NOT_CONFIGURED = (
     "LLM not configured — set OPENROUTER_API_KEY (or OpenAI/LiteLLM)."
@@ -48,19 +45,23 @@ def llm_configured() -> bool:
 
 
 def require_llm() -> None:
+    """Raise ``RuntimeError`` when no upstream LLM credentials are configured."""
     if not llm_configured():
         raise RuntimeError(LLM_NOT_CONFIGURED)
 
 
-def chat_model() -> BaseChatModel:
-    return get_llm_provider().chat_model()
+def chat_messages(messages: list[dict[str, str]]) -> str:
+    """Chat completion from role/content dicts (system / user / assistant)."""
+    return get_llm_provider().complete(messages)
 
 
 def chat_text(system: str, human: str) -> str:
-    resp = chat_model().invoke(
-        [SystemMessage(content=system), HumanMessage(content=human)]
+    return chat_messages(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": human},
+        ]
     )
-    return plain_text(getattr(resp, "content", resp))
 
 
 def chat_json(system: str, human: str) -> dict:

@@ -9,9 +9,16 @@ from typing import Any
 
 from django.conf import settings
 
-from orchestrator.crew.roles.registry import manager_role
+from orchestrator.crew.roles.registry import RoleRegistry
 from peon.projects.lifecycle import ProjectLifecycle
-from peon.projects.models import Job, JobLifecycle, JobStatus, Project, ProjectStatus
+from peon.projects.models import (
+    Job,
+    JobDirectiveKind,
+    JobLifecycle,
+    JobStatus,
+    Project,
+    ProjectStatus,
+)
 from peon.projects.tasks import enqueue_job
 
 
@@ -51,9 +58,11 @@ def replan_project(project: Project, message: str) -> dict[str, Any]:
     text = (message or "").strip()
     if not text:
         raise ValueError("Replan message is required")
+    from peon.projects.models import FINISHED_PROJECT_STATUSES
+
     if project.status == ProjectStatus.CANCELLED:
         raise RuntimeError("Project is cancelled — cannot replan")
-    if project.status == ProjectStatus.PAUSED:
+    if project.status in FINISHED_PROJECT_STATUSES | {ProjectStatus.PAUSED}:
         project.status = ProjectStatus.ACTIVE
         project.save(update_fields=["status", "updated_at"])
 
@@ -104,11 +113,6 @@ def instruct_project(
     return result
 
 
-def stop_project(project: Project) -> Project:
-    """Pause project and mark crew paused (operator stop)."""
-    return pause_project(project)
-
-
 def _ensure_manager_job(
     project: Project,
     *,
@@ -118,10 +122,11 @@ def _ensure_manager_job(
 ) -> Job:
     """Find or create the engagement-manager job and enqueue it."""
 
-    mgr = manager_role()
+    mgr = RoleRegistry.shared().manager()
     if mgr is None:
         raise RuntimeError(
-            "No CrewAI manager role is loaded; check ROLES_DIR in web and worker"
+            "No CrewAI manager role is loaded; check "
+            "platform roles + skills/ on web and worker"
         )
     job = None
     for candidate in project.jobs.exclude(status=JobStatus.CANCELLED).order_by(
@@ -131,7 +136,10 @@ def _ensure_manager_job(
             job = candidate
             break
     if job is None:
-        job = Job.objects.create(
+        from peon.projects.db import ensure_project_database
+
+        alias = ensure_project_database(project.id)
+        job = Job.objects.using(alias).create(
             title=mgr.label or "Project Manager",
             description=(steer or project.summary or project.title or "")[:8000],
             lifecycle=JobLifecycle.LONG,
@@ -142,6 +150,9 @@ def _ensure_manager_job(
             plan_text="",
         )
     else:
+        from peon.projects.db import ensure_project_database
+
+        alias = ensure_project_database(project.id)
         if steer:
             job.description = (
                 f"{(job.description or '').strip()}\n\nOPERATOR:\n{steer}".strip()
@@ -152,6 +163,7 @@ def _ensure_manager_job(
         if resume:
             job.resume_from_checkpoint = True
         job.save(
+            using=alias,
             update_fields=[
                 "description",
                 "status",
@@ -161,10 +173,21 @@ def _ensure_manager_job(
                 "updated_at",
             ]
         )
-    # Stash replan flag on description prefix consumed via extras in worker — use directive.
     if replan and steer:
         ProjectLifecycle.enqueue_job_directive(
-            job, f"REPLAN:\n{steer}", kind="steer"
+            job, steer, kind=JobDirectiveKind.REPLAN
         )
     enqueue_job(str(job.id))
     return job
+
+
+class CrewControl:
+    """Crew-aware project lifecycle and manager-job orchestration."""
+
+    agent_module = staticmethod(agent_module)
+    set_status = staticmethod(set_crew_status)
+    pause = staticmethod(pause_project)
+    resume = staticmethod(resume_project)
+    replan = staticmethod(replan_project)
+    reprompt_manager = staticmethod(reprompt_manager)
+    instruct = staticmethod(instruct_project)

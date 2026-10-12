@@ -5,8 +5,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
-from langchain_core.language_models import BaseChatModel
-
 from orchestrator.config import get_config
 
 
@@ -25,8 +23,8 @@ class LLMProviderBase(ABC):
         """True when credentials/config allow chat calls."""
 
     @abstractmethod
-    def chat_model(self) -> BaseChatModel:
-        """LangChain chat model (agent tool binding)."""
+    def complete(self, messages: list[dict[str, str]]) -> str:
+        """Run a chat completion; return assistant text."""
 
     def describe(self) -> dict[str, Any]:
         """Operator-facing snapshot. Subclasses may extend via ``_describe_extra``."""

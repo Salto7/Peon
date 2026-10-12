@@ -2,7 +2,7 @@
 
 - ``runtime_base`` — project Flow DTOs + ``CrewRuntimeBase``
 - ``registry`` — ``AGENT_MODULE`` resolution (job runtime)
-- ``roles`` — ROLE.yaml catalog + CrewAI agent factory
+- ``roles`` — platform role store + affinity skill decoration + CrewAI agent factory
 - ``tools`` — sandbox / RoE / findings tool allowlists
 - ``runtimes`` — job role runtime + ``ProjectCrewRuntime`` Flow
 """

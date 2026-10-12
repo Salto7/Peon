@@ -19,9 +19,11 @@ class NullAgentBridge(AgentBridgeBase):
         title: str,
         description: str,
         role_ids: list[str] | None = None,
-        link: AgentLink = "peer",
+        link: AgentLink = "child",
+        scope_slice: dict[str, str] | None = None,
+        skill_ids: list[str] | None = None,
     ) -> str:
-        del title, description, role_ids, link
+        del title, description, role_ids, link, scope_slice, skill_ids
         raise RuntimeError("spawn_agent bridge not configured")
 
     def wait_agents(

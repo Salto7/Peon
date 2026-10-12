@@ -117,7 +117,7 @@ def to_apex(host: str, *, keep_hosts: bool = False) -> str:
 
 
 def sld_label(seed: str) -> str:
-    """Registrable label (example.com → example; foo.co.uk → foo)."""
+    """Registrable label (acme.com → acme; foo.co.uk → foo)."""
     host = host_from_token(seed) or (seed or "").strip().lower()
     if not host:
         return ""
