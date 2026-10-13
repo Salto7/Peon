@@ -7,7 +7,6 @@
 
 ## In-script
 - `stream("log", …)` for UI
-- `run_command()` / `sandbox_run` via RPC if needed
 - Prefer **script** mode (no LLM per tick); `mode="agent"` only when reasoning is required each interval
 
 ```python

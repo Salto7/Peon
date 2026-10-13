@@ -105,6 +105,17 @@ class DockerRuntime(Runtime):
         if not image:
             raise RuntimeError("sandbox image is required")
         volumes = self._volumes(spec)
+        extra_args = list(spec.extra_run_args or [])
+        if "host.docker.internal:host-gateway" not in extra_args:
+            # Services on the Peon machine are reachable from the sandbox.
+            # The sandbox stays off the Compose network.
+            extra_args = [*extra_args, "--add-host", "host.docker.internal:host-gateway"]
+        spec = RuntimeSpec(
+            **{
+                **spec.__dict__,
+                "extra_run_args": extra_args,
+            }
+        )
         fingerprint = self._runtime_fingerprint(spec, volumes)
         labels = dict(spec.labels or {})
         labels["peon.runtime_fingerprint"] = fingerprint

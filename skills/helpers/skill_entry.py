@@ -10,7 +10,6 @@ from context import SkillContext
 from runners import (
     BinaryRunner,
     CliRunner,
-    GlueRunner,
     ReportRunner,
     main,
 )
@@ -20,7 +19,6 @@ __all__ = [
     "main",
     "run_binary",
     "run_cli",
-    "run_glue",
     "run_report",
     "workspace_path",
 ]
@@ -60,7 +58,3 @@ def run_cli(
 
 def run_report(builder: Callable[[Path], str | Path]) -> int:
     return ReportRunner(builder, context=_ctx, store=_store).run()
-
-
-def run_glue(script_path: str | Path, *, imports: str = "") -> int:
-    return GlueRunner(script_path, imports=imports, context=_ctx).run()

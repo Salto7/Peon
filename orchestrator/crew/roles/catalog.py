@@ -94,11 +94,11 @@ def role_def_from_mapping(row: dict[str, Any]) -> RoleDef:
 
 
 def load_role_catalog() -> tuple[RoleDef, ...]:
-    """Active roles from the platform DB (defaults when DB unavailable)."""
+    """Active roles from the platform catalog (defaults when DB unavailable)."""
     try:
-        from peon.projects.role_store import list_role_defs
+        from peon.projects.platform_catalog import PlatformCatalog
 
-        return list_role_defs()
+        return PlatformCatalog.shared().list_roles()
     except Exception:
         return DEFAULT_ROLES
 

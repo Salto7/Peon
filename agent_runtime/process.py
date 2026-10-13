@@ -23,6 +23,7 @@ class HostProcessRunner:
         shell: bool = False,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        stdin: str | None = None,
     ) -> ExecResult:
         merged = {**os.environ, "DEBIAN_FRONTEND": "noninteractive", **(env or {})}
         try:
@@ -34,6 +35,7 @@ class HostProcessRunner:
                 timeout=timeout,
                 cwd=cwd,
                 env=merged,
+                input=stdin,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:

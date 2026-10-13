@@ -22,6 +22,10 @@ PLATFORM_ONLY_MODEL_NAMES = frozenset(
         "RuntimeSettings",
         "RoleSkillMemory",
         "EngagementRole",
+        "CatalogSkill",
+        "CatalogFile",
+        "CatalogBinding",
+        "CatalogMcp",
     }
 )
 
@@ -45,6 +49,7 @@ PROJECT_MODEL_NAMES = frozenset(
         "AssetGraph",
         "JobCheckpoint",
         "AgentMessage",
+        "ProjectMcpConfig",
     }
 )
 

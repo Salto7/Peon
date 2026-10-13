@@ -9,24 +9,19 @@ from django.urls import path
 from django.views.decorators.http import require_GET, require_POST
 
 from orchestrator.crew.roles.catalog import ROLE_KINDS
-from peon.projects.role_store import (
-    delete_role,
-    ensure_seeded,
-    roles_for_lab,
-    upsert_role,
-)
+from peon.projects.platform_catalog import PlatformCatalog
 
 
 @require_GET
 def lab_roles_page(request: HttpRequest) -> HttpResponse:
-    ensure_seeded()
+    PlatformCatalog.shared().ensure_seeded()
     return render(
         request,
         "lab/roles.html",
         {
             "nav": "lab",
             "lab_section": "roles",
-            "roles": roles_for_lab(),
+            "roles": PlatformCatalog.shared().roles_for_lab(),
             "kinds": sorted(ROLE_KINDS),
         },
     )
@@ -38,7 +33,9 @@ def lab_roles_save(request: HttpRequest) -> HttpResponse:
     kind = str(request.POST.get("kind") or "").strip()
     aliases = str(request.POST.get("aliases") or "")
     try:
-        saved = upsert_role(role_id=role_id, kind=kind, aliases=aliases)
+        saved = PlatformCatalog.shared().upsert_role(
+            role_id=role_id, kind=kind, aliases=aliases
+        )
     except ValueError as exc:
         messages.error(request, str(exc))
         return redirect("lab_roles")
@@ -52,7 +49,7 @@ def lab_roles_save(request: HttpRequest) -> HttpResponse:
 @require_POST
 def lab_roles_delete(request: HttpRequest, role_id: str) -> HttpResponse:
     try:
-        delete_role(role_id)
+        PlatformCatalog.shared().delete_role(role_id)
     except (KeyError, ValueError) as exc:
         messages.error(request, str(exc))
         return redirect("lab_roles")

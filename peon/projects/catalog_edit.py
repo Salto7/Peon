@@ -8,66 +8,28 @@ from typing import Any
 import yaml
 from django.conf import settings
 
-from orchestrator.crew.roles.registry import RoleRegistry
-from orchestrator.skills.registry import SkillRegistry
 from orchestrator.tools.catalog import ToolCatalog
 
 
-def _safe_rel(rel: str) -> str:
-    rel_s = str(rel or "").replace("\\", "/").lstrip("/")
-    if not rel_s or ".." in rel_s.split("/"):
-        raise ValueError(f"unsafe path {rel!r}")
-    return rel_s
-
-
-def _native_skill_dir(name: str) -> Path | None:
-    root = Path(settings.SKILLS_DIR) / name
-    if (root / "SKILL.md").is_file():
-        return root
-    return None
-
-
-def _imported_skill_dir(name: str) -> Path | None:
-    root = Path(settings.SKILLS_IMPORTED_DIR) / name
-    if (root / "SKILL.md").is_file():
-        return root
-    return None
-
-
 def load_skill_source(skill_id: str) -> dict[str, Any]:
-    from orchestrator.skills.providers.base import CLAUDE_PROVIDER, SkillId
+    from peon.projects.platform_catalog import PlatformCatalog
 
-    parsed = SkillId.parse(skill_id)
-    if parsed is None:
-        raise ValueError("invalid skill id")
-    if parsed.provider == CLAUDE_PROVIDER:
-        root = _imported_skill_dir(parsed.name)
-        public_id = parsed.public
-    else:
-        native = _native_skill_dir(parsed.name)
-        root = native or _imported_skill_dir(parsed.name)
-        public_id = parsed.name if native is not None else f"claude/{parsed.name}"
-    if root is None:
+    rec = PlatformCatalog.shared().get_skill(skill_id)
+    if rec is None:
         raise FileNotFoundError(f"skill {skill_id!r} not found")
-    sid = public_id
-    skill_md = root / "SKILL.md"
-    files: dict[str, str] = {}
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root).as_posix()
-        if rel == "SKILL.md" or path.name.startswith("."):
-            continue
-        try:
-            files[rel] = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            files[rel] = f"<<binary omitted: {rel}>>"
+    source = str((rec.manifest or {}).get("_source") or "").strip()
+    if not source:
+        source = f"---\nname: {rec.skill_id}\ndescription: {rec.description}\n---\n\n{rec.body}\n"
     return {
         "kind": "skill",
-        "id": sid,
-        "path": str(root),
-        "skill_md": skill_md.read_text(encoding="utf-8"),
-        "files": files,
+        "id": rec.skill_id,
+        "path": f"platform:{rec.skill_id}",
+        "skill_md": source,
+        "files": dict(rec.files),
+        "bindings": [
+            {"role_id": b.role_id, "score": b.score, "lead": b.lead}
+            for b in rec.bindings
+        ],
     }
 
 
@@ -76,34 +38,34 @@ def save_skill_source(
     *,
     skill_md: str,
     files: dict[str, str] | None = None,
+    bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from orchestrator.learn import LearnAuthoring
-    from orchestrator.learn.draft import draft_binary
-    from orchestrator.skills.author import save_claude_skill
-    from orchestrator.skills.providers.base import CLAUDE_PROVIDER, SkillId
+    from orchestrator.skills.providers.base import SkillId
 
-    parsed = SkillId.parse(skill_id)
-    if parsed is None:
-        raise ValueError("invalid skill id")
+    from peon.projects.platform_catalog import PlatformCatalog
+
+    hinted = str(skill_id or "").strip()
+    parsed = SkillId.parse(hinted) if hinted and hinted != "__new__" else None
     md = str(skill_md or "").strip()
     if not md:
         raise ValueError("skill_md is required")
     file_map = {str(k): str(v) for k, v in (files or {}).items()}
-    native = None if parsed.provider == CLAUDE_PROVIDER else _native_skill_dir(parsed.name)
-    if native is None:
-        saved = save_claude_skill(
-            name=parsed.name,
-            skill_md=md,
-            files=file_map,
-            source="catalog",
-            binary=draft_binary(md),
-        )
-        if saved.get("ok"):
-            RoleRegistry.shared().invalidate()
-        return saved
-    sid = parsed.name
-    checked = LearnAuthoring.shared().lint_skill(name=sid, skill_md=md, files=file_map)
-    if not checked.get("compatible"):
+    import re
+
+    matched = re.search(r"(?m)^name:\s*([A-Za-z0-9-]+)\s*$", md)
+    lint_name = (matched.group(1).lower() if matched else "") or (
+        parsed.name if parsed is not None else ""
+    )
+    checked: dict[str, Any] = {"compatible": True}
+    if lint_name:
+        try:
+            checked = LearnAuthoring.shared().lint_skill(
+                name=lint_name, skill_md=md, files=file_map
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+    if checked.get("compatible") is False:
         return {
             "ok": False,
             "error": "Skill failed lint — fix issues before saving.",
@@ -113,24 +75,19 @@ def save_skill_source(
                 "warnings": checked.get("warnings") or [],
             },
         }
-    root = Path(settings.SKILLS_DIR) / sid
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "SKILL.md").write_text(md.rstrip() + "\n", encoding="utf-8")
-    written = ["SKILL.md"]
-    for rel, content in file_map.items():
-        rel_s = _safe_rel(rel)
-        if content.startswith("<<binary omitted:"):
-            continue
-        path = root / rel_s
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(str(content).rstrip() + "\n", encoding="utf-8")
-        written.append(rel_s)
-    try:
-        SkillRegistry.shared().reload_skills()
-    except Exception:
-        pass
-    RoleRegistry.shared().invalidate()
-    return {"ok": True, "kind": "skill", "id": sid, "path": str(root), "files": written}
+    rec = PlatformCatalog.shared().upsert_skill(
+        skill_md=md,
+        files=file_map,
+        skill_id="" if hinted in {"", "__new__"} else hinted,
+        bindings=bindings,
+    )
+    return {
+        "ok": True,
+        "kind": "skill",
+        "id": rec.skill_id,
+        "path": f"platform:{rec.skill_id}",
+        "files": sorted(rec.files),
+    }
 
 
 def load_tool_source(tool_id: str) -> dict[str, Any]:

@@ -15,7 +15,6 @@ from agent_runtime.registry import RuntimeRegistry
 from orchestrator.utils.job_env import JobEnv
 from orchestrator.utils.paths import safe_workspace_key
 from orchestrator.utils.service import SharedServiceBase
-from orchestrator.skills.mounts import extra_skill_mount
 from peon.projects.models import Project, SandboxRuntime
 
 logger = logging.getLogger(__name__)
@@ -269,19 +268,12 @@ class ProjectSandbox(SharedServiceBase):
         skills, helpers, tools = self._mount_paths(
             skills_dir, helpers_dir, tools_dir
         )
-        imported = Path(
-            getattr(settings, "SKILLS_IMPORTED_DIR", "") or "skills_imported"
-        ).resolve()
-        imported.mkdir(parents=True, exist_ok=True)
+        # Catalog packs are materialized from PlatformCatalog into the
+        # workspace. Only the skill runtime helpers are mounted.
         extra_mounts = []
-        mounted_roots = {skills, imported}
-        for index, extra in enumerate(getattr(settings, "SKILLS_EXTRA_DIRS", ())):
-            extra_path = Path(extra).resolve()
-            if extra_path.is_dir() and extra_path not in mounted_roots:
-                extra_mounts.append(
-                    (str(extra_path), extra_skill_mount(index, extra_path))
-                )
-                mounted_roots.add(extra_path)
+        helper_pack = skills / "helpers"
+        if helper_pack.is_dir():
+            extra_mounts.append((str(helper_pack), "/skills/helpers"))
         mount = ws
         workdir = "/sandbox" if runtime_id == SandboxRuntime.OPENSHELL else "/workspace"
         role = "project"
@@ -298,8 +290,8 @@ class ProjectSandbox(SharedServiceBase):
             image=self.image_for(runtime_id),
             role=role,
             workspace_host=str(mount),
-            skills_host=str(skills),
-            skills_imported_host=str(imported),
+            skills_host="",
+            skills_imported_host="",
             extra_ro_mounts=extra_mounts,
             helpers_host=str(helpers),
             tools_host=str(tools),

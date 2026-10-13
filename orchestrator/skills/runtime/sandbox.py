@@ -123,6 +123,18 @@ def _gate(command: str) -> str | None:
     return None
 
 
+def _catalog_files(doc: SkillDocument) -> dict[str, str]:
+    try:
+        from peon.projects.platform_catalog import PlatformCatalog
+
+        rec = PlatformCatalog.shared().get_skill(doc.id)
+    except Exception:
+        return {}
+    if rec is None:
+        return {}
+    return dict(rec.files)
+
+
 def container_skill_root(doc: SkillDocument) -> str:
     if doc.container_root:
         return doc.container_root
@@ -147,10 +159,26 @@ def _setup_manifest(doc: SkillDocument) -> str:
     return "requirements.txt" if setup.kind == "pip" else "package.json"
 
 
-def _setup_fingerprint(doc: SkillDocument) -> str:
+def _setup_fingerprint(doc: SkillDocument, files: dict[str, str] | None = None) -> str:
     """Hash dependency metadata so workspace caches follow skill changes."""
     setup = doc.setup
-    if setup is None or doc.root is None:
+    if setup is None:
+        return ""
+    if files is not None:
+        manifest_name = _setup_manifest(doc)
+        content = files.get(manifest_name)
+        if content is None and setup.cwd not in {"", "."}:
+            content = files.get(f"{setup.cwd}/{manifest_name}")
+        if content is None:
+            return ""
+        digest = hashlib.sha256()
+        digest.update(setup.kind.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(manifest_name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content.encode("utf-8"))
+        return digest.hexdigest()
+    if doc.root is None:
         return ""
     root = (Path(doc.root) / (setup.cwd or ".")).resolve()
     names = [_setup_manifest(doc)]
@@ -211,14 +239,18 @@ def _write_setup_marker(session, marker: str, fingerprint: str):
     return result.ok
 
 
-def _ensure_skill_setup(doc: SkillDocument, session) -> tuple[str, dict[str, str], str]:
+def _ensure_skill_setup(
+    doc: SkillDocument,
+    session,
+    files: dict[str, str] | None = None,
+) -> tuple[str, dict[str, str], str]:
     """Install declared Python/Node dependencies into the writable workspace."""
     setup = doc.setup
     if setup is None or setup.kind not in {"pip", "npm"}:
         return "", {}, ""
     setup_root = doc.container_setup_root or container_skill_root(doc)
     manifest = f"{setup_root}/{_setup_manifest(doc)}"
-    fingerprint = _setup_fingerprint(doc)
+    fingerprint = _setup_fingerprint(doc, files)
     env = {
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "PLAYWRIGHT_BROWSERS_PATH": "/workspace/.cache/ms-playwright",
@@ -484,13 +516,21 @@ class SandboxTools:
         blocked = doc.access_error(role_id=role_id)
         if blocked:
             return blocked
-        if doc.root is None:
-            return f"Error: skill {doc.id} has no root."
         rel = normalize_rel_path(relative_entry)
-        host = safe_join(doc.root, rel) if rel else None
-        if host is None or not host.is_file():
+        if not rel:
             return f"Error: script {relative_entry!r} is not a file in {doc.id}."
-        prefix = interpreter_argv(host)
+        files = _catalog_files(doc)
+        if rel in files:
+            from orchestrator.skills.runtime.interp import interpreter_for_source
+
+            prefix = interpreter_for_source(rel, files[rel])
+        elif doc.root is not None:
+            host = safe_join(doc.root, rel)
+            if host is None or not host.is_file():
+                return f"Error: script {relative_entry!r} is not a file in {doc.id}."
+            prefix = interpreter_argv(host)
+        else:
+            return f"Error: script {relative_entry!r} is not a file in {doc.id}."
         if prefix is None:
             return f"Error: no interpreter for {rel}."
         script_args = [str(part) for part in (args or ())]
@@ -507,7 +547,15 @@ class SandboxTools:
                 return f"Error: {msg}"
         session = Session.current()
         root = container_skill_root(doc)
-        setup_python, setup_env, setup_error = _ensure_skill_setup(doc, session)
+        if files:
+            from orchestrator.sandbox.materialize import materialize_tree
+
+            wrote = materialize_tree(session, root, files)
+            if wrote:
+                return wrote
+        elif doc.root is None:
+            return f"Error: skill {doc.id} has no files in the platform catalog."
+        setup_python, setup_env, setup_error = _ensure_skill_setup(doc, session, files or None)
         if setup_error:
             return f"Error: could not prepare {doc.id}: {setup_error[:2000]}"
         if setup_python and prefix and Path(prefix[0]).name in {"python", "python3"}:

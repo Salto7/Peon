@@ -57,20 +57,15 @@ def read_skill_resource_body(name: str, path: str) -> str:
     blocked = doc.access_error(role_id=job_role_id(required=False))
     if blocked:
         return blocked
-    if doc.root is None:
-        return f"Error: {doc.id} has no root."
     try:
-        data = SkillRegistry.shared().load_path(doc, path).read_bytes()
+        text = SkillRegistry.shared().load_text(doc.id, path)
     except FileNotFoundError:
         return f"Error: {doc.id} has no file {path!r}."
     except OSError as exc:
         return f"Error: {doc.id} could not read {path!r} ({exc})."
-    if len(data) > 200_000:
+    if len(text) > 200_000:
         return "Error: resource is too large to return."
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return "Error: resource is not UTF-8 text."
+    return text
 
 
 def run_skill_script_body(

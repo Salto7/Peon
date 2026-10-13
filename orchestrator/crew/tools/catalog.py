@@ -49,6 +49,8 @@ TECHNICAL_RUNTIME_TOOLS: tuple[str, ...] = (
     *SANDBOX_RUNTIME_TOOLS,
     *OBJECTIVE_RUNTIME_TOOLS,
     *FINDINGS_RUNTIME_TOOLS,
+    "list_mcp_tools",
+    "call_mcp_tool",
 )
 MANAGER_RUNTIME_TOOLS: tuple[str, ...] = (
     *SANDBOX_RUNTIME_TOOLS,

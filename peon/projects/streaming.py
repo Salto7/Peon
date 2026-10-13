@@ -16,7 +16,6 @@ from typing import Any, Callable
 
 from django.conf import settings
 
-from orchestrator.rpc import RpcServer
 from peon.projects.models import Job, JobStatus, Project, StreamMessage, StreamMessageType
 
 logger = logging.getLogger(__name__)
@@ -480,18 +479,6 @@ def run_until_signal(*, on_stop: Callable[[], None] | None = None) -> None:
     finally:
         if on_stop is not None:
             on_stop()
-
-
-def start_peon_rpc_server():
-    """Listen on ``RPC_SOCKET_PATH`` with the shared ``RPC_TOKEN``."""
-
-    path = str(getattr(settings, "RPC_SOCKET_PATH", "") or "").strip()
-    if not path:
-        raise RuntimeError("RPC_SOCKET_PATH is not configured")
-    token = str(getattr(settings, "RPC_TOKEN", "") or "").strip() or None
-    server = RpcServer.start(path, token=token)
-    logger.info("RPC Unix socket listening on %s", path)
-    return server
 
 
 class StreamStore:

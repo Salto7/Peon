@@ -5,13 +5,14 @@
 <header class="page-header">
   <div>
     <h1>Catalog</h1>
-    <p class="lead">Roles, skills, and sandbox tools — view and edit shared catalogs.</p>
+    <p class="lead">Roles, skills, and MCP servers are stored in the platform catalog. Tools stay on disk.</p>
   </div>
 </header>
 
 <nav class="catalog-jump bar" aria-label="Catalog sections">
   <a class="btn secondary" href="#roles">Roles ({{ roles|length }})</a>
   <a class="btn secondary" href="#skills">Skills ({{ skills|length }})</a>
+  <a class="btn secondary" href="#mcp">MCP ({{ mcps|length }})</a>
   <a class="btn secondary" href="#tools">Tools ({{ tools|length }})</a>
 </nav>
 
@@ -25,12 +26,8 @@
       {% else %}
         <a class="btn secondary" href="{% url 'catalog' %}?all=1#roles">Show all</a>
       {% endif %}
-      <a class="btn" href="{% url 'lab_roles' %}">Edit roles in Lab</a>
-      <form method="post" action="{{ roles_reload.url }}" class="catalog-reload-form">
-        {% csrf_token %}
-        {% if show_all %}<input type="hidden" name="all" value="1">{% endif %}
-        <button type="submit" class="btn secondary" title="{{ roles_reload.title }}">{{ roles_reload.label }}</button>
-      </form>
+      <button type="button" class="btn" data-catalog-edit="role" data-id="__new__">New role</button>
+      <a class="btn secondary" href="{% url 'lab_roles' %}">Lab</a>
     </div>
   </div>
 
@@ -39,6 +36,10 @@
     <article class="catalog-card{% if not s.compatible %} catalog-card-incompatible{% endif %}" id="role-{{ s.name }}">
       <div class="catalog-card-name">
         <a href="{% url 'catalog_api_role' s.name %}"><code>{{ s.name }}</code></a>
+        <button type="button" class="btn secondary catalog-card-edit" data-catalog-edit="role" data-id="{{ s.name }}">Edit</button>
+        {% if s.deletable %}
+        <button type="button" class="btn danger catalog-card-edit" data-catalog-delete="role" data-id="{{ s.name }}">Delete</button>
+        {% endif %}
       </div>
       {% if s.kind %}<div class="catalog-card-cat">{{ s.kind }}</div>{% elif s.category %}<div class="catalog-card-cat">{{ s.category }}</div>{% endif %}
       <div class="catalog-card-desc">{{ s.description|default:"(no description)" }}</div>
@@ -55,7 +56,7 @@
       {% endif %}
     </article>
     {% empty %}
-    <p class="meta">No roles found. Add some in <a href="{% url 'lab_roles' %}">Lab → Roles</a>.</p>
+    <p class="meta">No roles in the platform catalog. Add one in <a href="{% url 'lab_roles' %}">Lab → Roles</a>.</p>
     {% endfor %}
   </div>
 </section>
@@ -65,10 +66,7 @@
     <h2 id="skills-heading">Skills</h2>
     <div class="bar catalog-section-actions">
       <span class="meta">{{ skills|length }} skill{{ skills|length|pluralize }}</span>
-      <form method="post" action="{{ skills_reload.url }}" class="catalog-reload-form">
-        {% csrf_token %}
-        <button type="submit" class="btn secondary" title="{{ skills_reload.title }}">{{ skills_reload.label }}</button>
-      </form>
+      <button type="button" class="btn" data-catalog-edit="skill" data-id="__new__">New skill</button>
     </div>
   </div>
 
@@ -78,6 +76,7 @@
       <div class="catalog-card-name">
         <a href="{% url 'catalog_api_skill' s.id %}"><code>{{ s.id }}</code></a>
         <button type="button" class="btn secondary catalog-card-edit" data-catalog-edit="skill" data-id="{{ s.id }}">Edit</button>
+        <button type="button" class="btn danger catalog-card-edit" data-catalog-delete="skill" data-id="{{ s.id }}">Delete</button>
       </div>
       <div class="catalog-card-desc">{{ s.description|default:"(no description)" }}</div>
       {% if s.tools %}
@@ -90,7 +89,36 @@
       {% endif %}
     </article>
     {% empty %}
-    <p class="meta">No skills found under <code>skills/</code> or <code>skills_imported/</code>.</p>
+    <p class="meta">No skills in the platform catalog.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="catalog-section" id="mcp" aria-labelledby="mcp-heading">
+  <div class="catalog-section-head">
+    <h2 id="mcp-heading">MCP servers</h2>
+    <div class="bar catalog-section-actions">
+      <span class="meta">{{ mcps|length }} server{{ mcps|length|pluralize }}</span>
+      <button type="button" class="btn" data-catalog-edit="mcp" data-id="__new__">New MCP server</button>
+    </div>
+  </div>
+  <div class="catalog-grid catalog-card-grid">
+    {% for s in mcps %}
+    <article class="catalog-card" id="mcp-{{ s.id }}">
+      <div class="catalog-card-name">
+        <code>{{ s.id }}</code>
+        <button type="button" class="btn secondary catalog-card-edit" data-catalog-edit="mcp" data-id="{{ s.id }}">Edit</button>
+        <button type="button" class="btn danger catalog-card-edit" data-catalog-delete="mcp" data-id="{{ s.id }}">Delete</button>
+      </div>
+      <div class="catalog-card-desc">{{ s.description|default:"(no description)" }}</div>
+      <div class="meta">command <code>{{ s.command }}</code>{% if not s.enabled %} · disabled{% endif %}</div>
+      {% if s.env %}<div class="meta">env: {{ s.env|join:", " }}</div>{% endif %}
+      {% if s.bindings %}
+      <div class="meta">roles: {% for b in s.bindings %}{{ b.role_id }}{% if not forloop.last %}, {% endif %}{% endfor %}</div>
+      {% endif %}
+    </article>
+    {% empty %}
+    <p class="meta">No MCP servers in the platform catalog.</p>
     {% endfor %}
   </div>
 </section>
@@ -144,6 +172,20 @@
       <label class="meta" for="catalog-edit-script">Install script (<code>{id}.sh</code>, optional)</label>
       <textarea id="catalog-edit-script" class="learn-edit catalog-edit-ta" rows="8" spellcheck="false"></textarea>
     </div>
+    <div id="catalog-edit-role" hidden>
+      <label class="meta" for="catalog-edit-role-id">Role id</label>
+      <input id="catalog-edit-role-id" type="text" pattern="[a-z0-9]+(-[a-z0-9]+)*">
+      <label class="meta" for="catalog-edit-role-kind">Kind</label>
+      <select id="catalog-edit-role-kind">
+        <option value="technical">technical</option>
+        <option value="engagement-pm">engagement-pm</option>
+        <option value="analyzer">analyzer</option>
+      </select>
+      <label class="meta" for="catalog-edit-role-aliases">Aliases (comma-separated)</label>
+      <input id="catalog-edit-role-aliases" type="text">
+    </div>
+    <label class="meta" for="catalog-edit-bindings" id="catalog-edit-bindings-label" hidden>Role mappings (one per line: role_id score lead)</label>
+    <textarea id="catalog-edit-bindings" class="learn-edit catalog-edit-ta" rows="5" spellcheck="false" hidden></textarea>
     <div id="catalog-edit-files" class="catalog-edit-files" hidden></div>
     <div class="bar catalog-edit-actions">
       <button type="button" class="btn" id="catalog-edit-save">Save</button>
@@ -158,5 +200,5 @@
 <script>
   window.PEON_CATALOG_EDIT = { urls: {{ catalog_edit_urls_json|safe }} };
 </script>
-<script src="{% static 'js/catalog-edit.js' %}?v=20261011a"></script>
+<script src="{% static 'js/catalog-edit.js' %}?v=20261013a"></script>
 {% endblock %}

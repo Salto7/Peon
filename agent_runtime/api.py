@@ -102,6 +102,7 @@ class RuntimeSession(ABC):
         shell: bool = False,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        stdin: str | None = None,
     ) -> ExecResult: ...
 
     def which(self, binary: str) -> bool:
@@ -170,8 +171,9 @@ class UnboundSession(RuntimeSession):
         shell: bool = False,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        stdin: str | None = None,
     ) -> ExecResult:
-        del cmd, timeout, shell, cwd, env
+        del cmd, timeout, shell, cwd, env, stdin
         raise RuntimeError(
             "No agent runtime bound — provision a project runtime before executing"
         )

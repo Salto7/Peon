@@ -72,7 +72,6 @@ PEON_META_FIELDS = frozenset(
         "protected",
         "direct_answer",
         "max_iterations",
-        "mcp",
         "allowed_tools",
         "author",
     }

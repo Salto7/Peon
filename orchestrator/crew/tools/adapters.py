@@ -343,3 +343,26 @@ def run_skill_script(
     args: str = "",
 ) -> str:
     return run_skill_script_body(name, relative_path, args)
+
+
+@crew_tool(
+    "list_mcp_tools",
+    "List tools on an MCP server bound to this role. The server process runs "
+    "inside the project sandbox. name is the catalog id.",
+)
+def list_mcp_tools(name: str) -> str:
+    from orchestrator.mcp.provision import list_mcp_tools as _list
+
+    return _list(name)
+
+
+@crew_tool(
+    "call_mcp_tool",
+    "Call a tool on an MCP server inside the project sandbox. "
+    "arguments_json is a JSON object. Endpoint values come from the project, "
+    "not from this call.",
+)
+def call_mcp_tool(name: str, tool: str, arguments_json: str = "{}") -> str:
+    from orchestrator.mcp.provision import call_mcp_tool as _call
+
+    return _call(name, tool, arguments_json)

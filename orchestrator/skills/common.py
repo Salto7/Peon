@@ -44,7 +44,6 @@ JOBABLE_BUILTIN = frozenset(
         "analyzer",
         "watchdog",
         "project-manager",
-        "mcp-bridge",
     }
 )
 

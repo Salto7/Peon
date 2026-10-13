@@ -74,6 +74,27 @@ def _prefer_path_binaries(parts: list[str]) -> list[str]:
     return parts
 
 
+def interpreter_for_source(name: str, text: str) -> list[str] | None:
+    """Same rules as ``interpreter_argv`` for catalog text that is not on disk."""
+    first = (text or "").splitlines()[:1]
+    line = first[0] if first else ""
+    if line.startswith("#!"):
+        body = line[2:].strip()
+        try:
+            parts = shlex.split(body)
+        except ValueError:
+            parts = []
+        if parts:
+            runtime = Path(parts[0]).name
+            if runtime in _RUNTIME_NAMES:
+                return [runtime, *parts[1:]]
+            return parts
+    suffix = Path(name).suffix.lower()
+    if suffix in _SUFFIX:
+        return list(_SUFFIX[suffix])
+    return None
+
+
 def interpreter_argv(path: Path) -> list[str] | None:
     """Argv prefix for ``path``, ``[]`` when the file itself is executable.
 

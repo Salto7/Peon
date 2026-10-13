@@ -30,8 +30,8 @@ Operators set Rules of Engagement, steer live jobs, promote discoveries into sco
 | Job queue | **Dramatiq** + **Redis** |
 | Edge | **Caddy** TLS → Django |
 | Execution | Per-project **Docker** sandbox docker|
-| Catalogs | `skills/` · `tools/catalog/` · `helpers/` |
-| Live feed / host helpers | Unix **stream** + **RPC** sockets |
+| Catalogs | Platform SQLite (`PlatformCatalog`) · `tools/catalog/` · `helpers/` |
+| Live feed | Unix **stream** socket |
 
 Compose services: `edge` · `web` · `redis` · `worker` · `cognee`. Build the job image with `--profile build`; enable LiteLLM via Peon Settings or `--profile llm-proxy`.
 
@@ -64,7 +64,7 @@ flowchart TD
 ### Crew
 
 - **PM** — `project-manager` plans objectives, steers/cancels, coordinates specialists.
-- **Roles** — platform DB identities (Lab → Roles) + skill affinity sidecars (`peon.affinity.yaml`); spawn armory is indexed, not hand-listed.
+- **Roles** — platform DB identities (Lab → Roles) plus skill affinity bindings stored in the same catalog.
 - **Workers** — One Dramatiq **Job** per objective/child in the sandbox; `spawn_work` / `wait_for_work` for fan-out.
 - **A2A** — Structured `AgentMessage` between live jobs (not chat scraping). Spawn creates jobs; A2A coordinates them.
 
@@ -81,10 +81,9 @@ flowchart TD
 ### Sandbox & tooling
 
 - **Per-project sandbox** — Isolated Docker; artifacts stay in-project; wiped on delete.
-- **Catalogs** — `skills/<id>/SKILL.md`, `tools/catalog/*.yaml`.
+- **Catalogs** — roles, skills, role mappings, and MCP servers live in the platform SQLite catalog; CLI tools stay in `tools/catalog/*.yaml`.
 - **Install cascade** — PATH → catalog YAML → LLM recipe (`apt` / `github_release` / `git_clone` / `pip` / `custom` + `verify`).
-- **Host RPC** — Sandbox helpers → host over Unix RPC (separate from live stream).
-- **MCP (optional)** — Operator MCP servers inside the sandbox.
+- **MCP** — MCP servers are parsed into the platform catalog and provisioned inside the project sandbox. Heavy backing services stay outside the container and are reached through per-project environment values.
 
 ### Lab
 

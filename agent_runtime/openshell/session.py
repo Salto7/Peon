@@ -21,6 +21,7 @@ class OpenShellSession(RuntimeSession):
         shell: bool = False,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        stdin: str | None = None,
     ) -> ExecResult:
         work = cwd or self.workdir()
         workspace = self.workdir()
@@ -52,4 +53,4 @@ class OpenShellSession(RuntimeSession):
             "--",
             *remote,
         ]
-        return HostProcessRunner.run(argv, timeout=timeout, shell=False)
+        return HostProcessRunner.run(argv, timeout=timeout, shell=False, stdin=stdin)

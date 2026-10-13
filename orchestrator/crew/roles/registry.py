@@ -175,9 +175,9 @@ class RoleRegistry(SharedServiceBase):
         except Exception:
             skill_stamp = str(skills._disk_mtime())
         try:
-            from peon.projects.role_store import catalog_mtime
+            from peon.projects.platform_catalog import PlatformCatalog
 
-            cat_m = catalog_mtime()
+            cat_m = PlatformCatalog.shared().revision()
         except Exception:
             cat_m = 0.0
         return f"{skill_stamp}|{float(cat_m or 0.0)}"

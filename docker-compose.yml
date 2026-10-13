@@ -101,8 +101,6 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost:8000}
       STREAM_SOCKET_PATH: /tmp/peon/stream.sock
       ORCHESTRATOR_STREAM_SOCKET: /tmp/peon/stream.sock
-      RPC_SOCKET_PATH: /tmp/peon/rpc.sock
-      ORCHESTRATOR_RPC_SOCKET: /tmp/peon/rpc.sock
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-peon-sandbox:local}
       OPENSHELL_IMAGE: ${OPENSHELL_IMAGE:-peon-sandbox:local}
       PROJECT_SANDBOX_PREFIX: ${PROJECT_SANDBOX_PREFIX:-peon-project}

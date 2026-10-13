@@ -7,14 +7,13 @@ from pathlib import Path
 
 from binary import NativeBinaryResolver
 from context import PackContext
-from runners import BinaryRunner, CliRunner, GlueRunner, main
+from runners import BinaryRunner, CliRunner, main
 from workspace import WorkspaceStore
 
 __all__ = [
     "main",
     "run_binary",
     "run_cli",
-    "run_glue",
     "workspace_path",
 ]
 
@@ -49,7 +48,3 @@ def run_cli(
     usage: str = "",
 ) -> int:
     return CliRunner(handler, usage=usage, context=_ctx).run()
-
-
-def run_glue(script_path: str | Path, *, imports: str = "") -> int:
-    return GlueRunner(script_path, imports=imports, context=_ctx).run()

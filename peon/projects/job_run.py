@@ -308,10 +308,6 @@ def _bind_job_env(job: Job, ws: Path):
         "ORCHESTRATOR_STREAM_SOCKET": str(
             getattr(settings, "STREAM_SOCKET_PATH", "") or ""
         ),
-        "ORCHESTRATOR_RPC_SOCKET": str(
-            getattr(settings, "RPC_SOCKET_PATH", "") or ""
-        ),
-        "ORCHESTRATOR_RPC_TOKEN": str(getattr(settings, "RPC_TOKEN", "") or ""),
         "SKILLS_DIR": str(settings.SKILLS_DIR),
         "HELPERS_DIR": str(settings.HELPERS_DIR),
         "TOOLS_CATALOG_DIR": str(settings.TOOLS_CATALOG_DIR),

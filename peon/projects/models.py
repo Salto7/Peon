@@ -1003,3 +1003,119 @@ class AgentMessage(ProjectScopedModel):
 
     def __str__(self) -> str:
         return f"{self.msg_type}:{str(self.id)[:8]}"
+
+
+class CatalogSkill(models.Model):
+    """Platform skill registry row. File bodies live in ``CatalogFile``."""
+
+    skill_id = models.CharField(max_length=128, primary_key=True)
+    provider = models.CharField(max_length=32, default="peon")
+    description = models.TextField(blank=True, default="")
+    body = models.TextField(blank=True, default="")
+    manifest = models.JSONField(default=dict, blank=True)
+    setup = models.JSONField(null=True, blank=True)
+    content_hash = models.CharField(max_length=64, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["skill_id"]
+
+    def __str__(self) -> str:
+        return self.skill_id
+
+
+class CatalogMcp(models.Model):
+    """Platform MCP server spec. Env values are never stored here."""
+
+    mcp_id = models.CharField(max_length=128, primary_key=True)
+    description = models.TextField(blank=True, default="")
+    transport = models.CharField(max_length=16, default="stdio")
+    command = models.CharField(max_length=256)
+    args = models.JSONField(default=list, blank=True)
+    install = models.JSONField(null=True, blank=True)
+    env_schema = models.JSONField(default=list, blank=True)
+    enabled = models.BooleanField(default=True)
+    content_hash = models.CharField(max_length=64, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["mcp_id"]
+
+    def __str__(self) -> str:
+        return self.mcp_id
+
+
+class CatalogFile(models.Model):
+    """Text file belonging to a skill or MCP server."""
+
+    owner_kind = models.CharField(max_length=16)
+    owner_id = models.CharField(max_length=128)
+    path = models.CharField(max_length=512)
+    body = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner_kind", "owner_id", "path"],
+                name="catalog_file_owner_path",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["owner_kind", "owner_id"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.owner_kind}:{self.owner_id}:{self.path}"
+
+
+class CatalogBinding(models.Model):
+    """Role mapping for a skill or MCP server."""
+
+    role_id = models.CharField(max_length=128)
+    owner_kind = models.CharField(max_length=16)
+    owner_id = models.CharField(max_length=128)
+    score = models.FloatField(default=1.0)
+    lead = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["role_id", "owner_kind", "owner_id"],
+                name="catalog_binding_role_owner",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["owner_kind", "owner_id"]),
+            models.Index(fields=["role_id"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.role_id}->{self.owner_kind}:{self.owner_id}"
+
+
+class ProjectMcpConfig(ProjectScopedModel):
+    """Per-project env values for an MCP server. Names live on ``CatalogMcp``."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+    )
+    mcp_id = models.CharField(max_length=128)
+    env = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "mcp_id"],
+                name="project_mcp_config_unique",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.project_id}:{self.mcp_id}"

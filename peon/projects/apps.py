@@ -34,7 +34,7 @@ def crewai_roles_check(app_configs, **kwargs):
         return [
             Error(
                 f"Could not load CrewAI roles: {exc}",
-                hint="Check Lab → Roles / peon.projects.role_store.",
+                hint="Check Lab → Roles / PlatformCatalog.",
                 id="projects.E001",
             )
         ]
@@ -191,9 +191,9 @@ class ProjectsConfig(AppConfig):
         argv = " ".join(sys.argv).lower()
         if not any(x in argv for x in ("migrate", "makemigrations", "test", "check")):
             try:
-                from peon.projects.role_store import ensure_seeded
+                from peon.projects.platform_catalog import PlatformCatalog
 
-                ensure_seeded()
+                PlatformCatalog.shared().ensure_seeded()
             except Exception:
                 pass
         RuntimeRegistry.shared().register_builtin()

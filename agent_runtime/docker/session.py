@@ -21,12 +21,15 @@ class DockerSession(RuntimeSession):
         shell: bool = False,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        stdin: str | None = None,
     ) -> ExecResult:
         work = cwd or self.workdir()
         workspace = self.workdir()
-        argv: list[str] = [
-            self._docker,
-            "exec",
+        argv: list[str] = [self._docker, "exec"]
+        if stdin is not None:
+            argv.append("-i")
+        argv.extend(
+            [
             "-w",
             work,
             "-e",
@@ -48,7 +51,8 @@ class DockerSession(RuntimeSession):
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "-e",
             "PYTHONPATH=/skills/helpers:/helpers",
-        ]
+            ]
+        )
         for key, val in forward_env_items(
             self.env_get,
             skip={"ORCHESTRATOR_WORKSPACE", "ORCHESTRATOR_SANDBOX_WORKDIR"},
@@ -59,4 +63,4 @@ class DockerSession(RuntimeSession):
                 argv.extend(["-e", f"{key}={val}"])
         argv.append(self.info.name)
         argv.extend(ExecTransport.command(cmd, shell=shell))
-        return HostProcessRunner.run(argv, timeout=timeout, shell=False)
+        return HostProcessRunner.run(argv, timeout=timeout, shell=False, stdin=stdin)

@@ -26,6 +26,69 @@ logger = logging.getLogger(__name__)
 __all__ = ["SkillRegistry", "discover_skill_manifests"]
 
 
+def _document_from_record(rec) -> SkillDocument:
+    """Build a runtime document from a platform catalog skill row."""
+    from orchestrator.skills.providers.base import (
+        DISCLOSURE_PROGRESSIVE,
+        SkillSetup,
+    )
+    from orchestrator.skills.providers.tool_bridge import classify_claude_tools
+
+    manifest = dict(rec.manifest or {})
+    tools = tuple(str(item) for item in (manifest.get("tools") or ()))
+    _, unmapped = classify_claude_tools(tools)
+    setup_raw = rec.setup if isinstance(rec.setup, dict) else None
+    setup = None
+    if setup_raw and setup_raw.get("kind") in {"pip", "npm"}:
+        setup = SkillSetup(
+            kind=str(setup_raw.get("kind") or ""),
+            cwd=str(setup_raw.get("cwd") or "."),
+            manifest=str(setup_raw.get("manifest") or ""),
+        )
+    role_ids = tuple(
+        b.role_id for b in (rec.bindings or ()) if float(b.score) >= 0.5
+    )
+    scores = tuple((b.role_id, float(b.score)) for b in (rec.bindings or ()) if b.role_id in role_ids)
+    leads = tuple(b.role_id for b in (rec.bindings or ()) if b.lead and b.role_id in role_ids)
+    parsed = SkillId.parse(rec.skill_id)
+    if parsed is None:
+        parsed = SkillId(provider=rec.provider or PEON_PROVIDER, name=rec.skill_id)
+    name = parsed.name
+    return SkillDocument(
+        skill_id=parsed,
+        description=rec.description,
+        instructions=rec.body,
+        root=None,
+        tools=tools,
+        allow_binaries=tuple(str(item) for item in (manifest.get("allow_binaries") or ())),
+        tags=tuple(str(item) for item in (manifest.get("tags") or ())),
+        disclosure=DISCLOSURE_PROGRESSIVE,
+        role_ids=role_ids,
+        lead_roles=leads,
+        affinity_scores=scores,
+        compatibility=str(manifest.get("compatibility") or ""),
+        setup=setup,
+        unmapped_tools=unmapped,
+        container_root=f"/workspace/.peon/skills/{name}",
+        container_setup_root=f"/workspace/.peon/skills/{name}",
+        license=str(manifest.get("license") or ""),
+        when_to_use=str(manifest.get("when_to_use") or ""),
+        argument_hint=str(manifest.get("argument_hint") or ""),
+        arguments=tuple(str(item) for item in (manifest.get("arguments") or ())),
+        disallowed_tools=tuple(str(item) for item in (manifest.get("disallowed_tools") or ())),
+        disable_model_invocation=bool(manifest.get("disable_model_invocation")),
+        user_invocable=bool(manifest.get("user_invocable", True)),
+        model=str(manifest.get("model") or ""),
+        context=str(manifest.get("context") or ""),
+        agent=str(manifest.get("agent") or ""),
+        background=bool(manifest.get("background", True)),
+        paths=tuple(str(item) for item in (manifest.get("paths") or ())),
+        shell=str(manifest.get("shell") or ""),
+        hooks=manifest.get("hooks") if isinstance(manifest.get("hooks"), dict) else None,
+        raw_frontmatter=dict(manifest.get("raw_frontmatter") or {}),
+    )
+
+
 def _xml_text(value: str) -> str:
     return (
         (value or "")
@@ -119,35 +182,36 @@ class SkillRegistry(SharedServiceBase):
         self.invalidate()
 
     def _disk_mtime(self) -> float:
-        """Legacy max-mtime helper (RoleRegistry / callers)."""
-        latest = 0.0
-        for provider in self.providers():
-            latest = max(latest, provider.mtime())
-        return latest
+        """Legacy stamp helper. The catalog revision replaces directory mtimes."""
+        try:
+            return float(self._disk_stamp())
+        except Exception:
+            return 0.0
 
     def _disk_stamp(self) -> str:
-        """Fingerprint across providers (manifest casing + sidecars)."""
-        parts: list[str] = []
-        for provider in self.providers():
-            parts.append(
-                f"{provider.name}:{provider.root.resolve()}:{provider.fingerprint()}"
-            )
+        """Platform catalog revision. Disk trees are not the registry."""
         try:
-            from peon.projects.role_store import catalog_mtime
+            from peon.projects.platform_catalog import PlatformCatalog
 
-            parts.append(f"roles:{catalog_mtime()}")
+            return str(PlatformCatalog.shared().revision())
         except Exception:
-            pass
-        return "|".join(parts)
+            return "0"
 
     def _scan(self) -> dict[str, SkillDocument]:
         out: dict[str, SkillDocument] = {}
-        for provider in self.providers():
-            for doc in provider.discover():
-                if doc.skill_id.key in out:
-                    logger.error("duplicate skill id %s; keeping first", doc.id)
-                    continue
-                out[doc.skill_id.key] = doc
+        try:
+            from peon.projects.platform_catalog import PlatformCatalog
+
+            records = PlatformCatalog.shared().list_skills()
+        except Exception:
+            logger.debug("platform skill catalog unavailable", exc_info=True)
+            return out
+        for rec in records:
+            doc = _document_from_record(rec)
+            if doc.skill_id.key in out:
+                logger.error("duplicate skill id %s; keeping first", doc.id)
+                continue
+            out[doc.skill_id.key] = doc
         return out
 
     def get_registry(self) -> dict[str, SkillDocument]:
@@ -182,8 +246,16 @@ class SkillRegistry(SharedServiceBase):
         skill = self.require(skill_id)
         if not relative:
             return skill.prompt_block()
+        try:
+            from peon.projects.platform_catalog import PlatformCatalog
+
+            rec = PlatformCatalog.shared().get_skill(skill.id)
+        except Exception:
+            rec = None
+        if rec is not None and relative in rec.files:
+            return rec.files[relative]
         if skill.root is None:
-            raise FileNotFoundError(f"skill {skill_id!r} has no root")
+            raise FileNotFoundError(f"skill {skill_id!r} missing {relative}")
         path = safe_join(skill.root, relative)
         if path is None or not path.is_file():
             raise FileNotFoundError(f"skill {skill_id!r} missing {relative}")
@@ -192,8 +264,8 @@ class SkillRegistry(SharedServiceBase):
     def load_path(self, skill: SkillDocument, relative: str) -> Path:
         """Resolve a resource against the document, not provider name.
 
-        Multiple Claude-compatible roots intentionally share the ``claude``
-        provider id, so provider-name lookup is ambiguous for external packs.
+        Catalog-backed skills have no host root; callers should use
+        ``load_text``. This remains for packs that still carry a filesystem root.
         """
         if skill.root is None:
             raise FileNotFoundError(f"skill {skill.id!r} has no root")

@@ -98,6 +98,14 @@ def build_crew_agent(
     skills_block = skills_prompt_block(selected, role_id=role.id)
     if skills_block:
         backstory = f"{backstory}\n\n{skills_block}".strip()
+    try:
+        from orchestrator.mcp.provision import mcp_prompt_block
+
+        mcp_block = mcp_prompt_block(role.id)
+    except Exception:
+        mcp_block = ""
+    if mcp_block:
+        backstory = f"{backstory}\n\n{mcp_block}".strip()
     if role.reports_to:
         backstory = (
             f"{backstory}\n\n## Hierarchy\nYou report to `{role.reports_to}`."

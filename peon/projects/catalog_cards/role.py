@@ -82,6 +82,7 @@ class RoleCards(CatalogCardsBase):
         card["aliases"] = list(defn.aliases) if defn else []
         card["skills"] = list(role.skills or ())
         card["kind"] = defn.kind if defn else getattr(role, "kind", "") or ""
+        card["deletable"] = not bool(defn.is_protected) if defn else False
         return card
 
     @classmethod
