@@ -23,24 +23,69 @@ class RoleDef:
     kind: str  # engagement-pm | analyzer | technical
     aliases: tuple[str, ...] = ()
     protected: bool = False
+    goal: str = ""
+    backstory: str = ""
 
     @property
     def is_protected(self) -> bool:
         return bool(self.protected) or self.kind in BOOKEND_KINDS
 
 
-# Seeded into the platform DB when empty.
+# Inserted once when the role table is empty. Later edits live on the row.
 DEFAULT_ROLES: tuple[RoleDef, ...] = (
-    RoleDef("project-manager", "engagement-pm", protected=True),
-    RoleDef("reporter", "analyzer", protected=True),
+    RoleDef(
+        "project-manager",
+        "engagement-pm",
+        protected=True,
+        goal=(
+            "Review RoE and the objective sequence, dispatch specialists, "
+            "recover from failures, replan when evidence changes, and hand "
+            "off to the analyzer. Do not probe targets or record findings."
+        ),
+        backstory=(
+            "You are the engagement lead. You govern technical experts, "
+            "track objectives, and replan or ask the operator when blocked. "
+            "Experts own discoveries; you do not probe targets."
+        ),
+    ),
+    RoleDef(
+        "reporter",
+        "analyzer",
+        protected=True,
+        goal=(
+            "From prior agents' workspace artifacts, batch-record structured "
+            "findings then write findings/report.md. No probing."
+        ),
+        backstory=(
+            "You are the reporting specialist. Turn workspace evidence into "
+            "Finding rows and a standalone report. Never invent discoveries."
+        ),
+    ),
     RoleDef(
         "recon-specialist",
         "technical",
         aliases=("network-scanner",),
+        goal="Map and enumerate in-scope hosts, services, and exposures.",
+        backstory="You lead authorized reconnaissance and stay inside the rules of engagement.",
     ),
-    RoleDef("osint-expert", "technical"),
-    RoleDef("web-crawler-expert", "technical"),
-    RoleDef("sql-injection-expert", "technical"),
+    RoleDef(
+        "osint-expert",
+        "technical",
+        goal="Collect public information about in-scope organizations, people, and assets.",
+        backstory="You lead authorized open-source intelligence and stay inside the rules of engagement.",
+    ),
+    RoleDef(
+        "web-crawler-expert",
+        "technical",
+        goal="Crawl and map in-scope web applications.",
+        backstory="You lead authorized web discovery and stay inside the rules of engagement.",
+    ),
+    RoleDef(
+        "sql-injection-expert",
+        "technical",
+        goal="Test in-scope inputs for SQL injection and record proven cases.",
+        backstory="You lead authorized injection testing and stay inside the rules of engagement.",
+    ),
 )
 
 
@@ -90,6 +135,24 @@ def role_def_from_mapping(row: dict[str, Any]) -> RoleDef:
         kind=kind,
         aliases=aliases,
         protected=bool(row.get("protected")),
+        goal=str(row.get("goal") or "").strip(),
+        backstory=str(row.get("backstory") or "").strip(),
+    )
+
+
+def seed_role_text(role_id: str, kind: str) -> tuple[str, str]:
+    """Editable copy used when a role is first created."""
+    rid = normalize_role_id(role_id)
+    for role in DEFAULT_ROLES:
+        if role.id == rid:
+            return role.goal, role.backstory
+    if kind == "engagement-pm":
+        return DEFAULT_ROLES[0].goal, DEFAULT_ROLES[0].backstory
+    if kind == "analyzer":
+        return DEFAULT_ROLES[1].goal, DEFAULT_ROLES[1].backstory
+    return (
+        f"Lead authorized work for `{rid or 'this role'}` using the skills bound to it.",
+        "You are a technical expert. Stay inside the rules of engagement.",
     )
 
 

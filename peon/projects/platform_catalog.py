@@ -149,12 +149,14 @@ class PlatformCatalog:
         try:
             with transaction.atomic():
                 for role in DEFAULT_ROLES:
-                    _, was = EngagementRole.objects.get_or_create(
+                    _, was =                     EngagementRole.objects.get_or_create(
                         role_id=role.id,
                         defaults={
                             "kind": role.kind,
                             "aliases": list(role.aliases),
                             "protected": bool(role.protected),
+                            "goal": role.goal,
+                            "backstory": role.backstory,
                         },
                     )
                     if was:
@@ -181,6 +183,8 @@ class PlatformCatalog:
                         str(a) for a in (row.aliases or []) if str(a).strip()
                     ),
                     protected=bool(row.protected),
+                    goal=str(row.goal or ""),
+                    backstory=str(row.backstory or ""),
                 )
                 for row in rows
             )
@@ -207,6 +211,8 @@ class PlatformCatalog:
         aliases: list[str] | tuple[str, ...] | str = (),
         protected: bool | None = None,
         previous_id: str = "",
+        goal: str | None = None,
+        backstory: str | None = None,
     ):
         from orchestrator.crew.roles.catalog import (
             BOOKEND_KINDS,
@@ -277,12 +283,30 @@ class PlatformCatalog:
                 )
 
         with transaction.atomic():
+            from orchestrator.crew.roles.catalog import seed_role_text
+
+            source = existing
+            if source is None and previous:
+                source = EngagementRole.objects.filter(role_id=previous).first()
+            seeded_goal, seeded_story = seed_role_text(defn.id, final_kind)
+            if goal is None:
+                goal_text = (source.goal if source is not None else "") or seeded_goal
+            else:
+                goal_text = str(goal).strip() or seeded_goal
+            if backstory is None:
+                story_text = (
+                    source.backstory if source is not None else ""
+                ) or seeded_story
+            else:
+                story_text = str(backstory).strip() or seeded_story
             EngagementRole.objects.update_or_create(
                 role_id=defn.id,
                 defaults={
                     "kind": final_kind,
                     "aliases": list(defn.aliases),
                     "protected": keep_protected,
+                    "goal": goal_text,
+                    "backstory": story_text,
                 },
             )
             if previous:

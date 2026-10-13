@@ -293,10 +293,7 @@ class Project(models.Model):
 
 
 class EngagementRole(models.Model):
-    """Platform-global engagement role identity (Lab-editable).
-
-    Skill membership comes from affinity sidecars, not this row.
-    """
+    """Platform-global engagement role. Skills are bindings, not columns here."""
 
     role_id = models.CharField(max_length=128, primary_key=True)
     kind = models.CharField(
@@ -304,6 +301,8 @@ class EngagementRole(models.Model):
         help_text="engagement-pm | analyzer | technical",
     )
     aliases = models.JSONField(default=list, blank=True)
+    goal = models.TextField(blank=True, default="")
+    backstory = models.TextField(blank=True, default="")
     protected = models.BooleanField(
         default=False,
         help_text="Bookend roles that Lab must not delete.",

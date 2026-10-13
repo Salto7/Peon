@@ -65,72 +65,54 @@ def _build_role(
 
     descriptions = [s.description.strip() for s in specs if s.description.strip()]
     label = _label(defn.id)
+    skill_list = ", ".join(f"`{s}`" for s in skill_ids) or "(none)"
+    goal = (defn.goal or "").strip()
+    backstory = (defn.backstory or "").strip()
     if defn.kind == "engagement-pm":
-        goal = (
-            "Review RoE and the objective sequence, dispatch specialists, "
-            "recover from failures, replan when evidence changes, and hand "
-            "off to the analyzer. Do not probe targets or record findings."
-        )
-        backstory = (
-            f"You are the engagement lead (`{defn.id}`). You govern technical "
-            "experts (not skill scripts directly), track objectives, replan or "
-            "`ask_operator` when blocked. Experts own discoveries; you do not "
-            "probe targets."
-        )
+        if not goal:
+            goal = (
+                "Review RoE and the objective sequence, dispatch specialists, "
+                "and hand off to the analyzer. Do not probe targets."
+            )
+        if not backstory:
+            backstory = f"You are the engagement lead (`{defn.id}`)."
         reports_to = ""
         allow_delegation = True
         advanced_reasoning = True
         max_iter = 12
         caps = ("orchestrate", "replan", "handover")
     elif defn.kind == "analyzer":
-        goal = (
-            "From prior agents' workspace artifacts, batch-record structured "
-            "findings then write findings/report.md. No probing."
-        )
-        backstory = (
-            f"You are the reporting specialist (`{defn.id}`). Turn workspace "
-            "evidence into Finding rows and a standalone report. Never invent "
-            "discoveries."
-        )
+        if not goal:
+            goal = "Turn workspace evidence into findings and a report. No probing."
+        if not backstory:
+            backstory = f"You are the reporting specialist (`{defn.id}`)."
         reports_to = manager_id or "project-manager"
         allow_delegation = False
         advanced_reasoning = False
         max_iter = 12
         caps = ("report",)
     else:
-        goal = (
-            descriptions[0]
-            if descriptions
-            else (
-                f"Lead authorized work for expert role `{defn.id}` using your "
-                "skill group; spawn skill workers when work fans out."
+        if not goal:
+            goal = descriptions[0] if descriptions else (
+                f"Lead authorized work for `{defn.id}` using the skills bound to you."
             )
-        )
-        skill_list = ", ".join(f"`{s}`" for s in skill_ids) or "(none)"
-        backstory = (
-            f"You are `{defn.id}`, a technical **expert** (domain lead under the "
-            "engagement PM). You own skills "
-            f"({skill_list}). Run the authorized scope **as given** (full CIDR, "
-            "host list, or URL set) in this job — do **not** subdivide "
-            "netblocks into smaller `scope_slice` / spawn_work chunks unless "
-            "the operator or brief explicitly asks for parallel fan-out. After "
-            "evidence lands, you may `spawn_work` in-lane follow-on skills "
-            "(empty `role_id`, focused `skill_ids`) then `wait_for_work`. No "
-            "PM replan for in-lane follow-ons. Never invent role or skill ids. "
-            "Out-of-lane / RoE conflict: `list_roles` or `ask_operator`. Stay "
-            "in RoE scope."
-        )
-        if len(descriptions) > 1:
+        if not backstory:
             backstory = (
-                backstory
-                + "\n\nSkill focus:\n"
-                + "\n".join(f"- {d}" for d in descriptions[:6])
+                f"You are `{defn.id}`, a technical expert. Run the authorized "
+                "scope as given. Stay in RoE scope."
             )
         reports_to = manager_id or "project-manager"
         allow_delegation = False
         advanced_reasoning = False
         max_iter = 25
         caps = _uniq(tags) or ("recon", "expert")
+        if descriptions:
+            backstory = (
+                backstory
+                + "\n\nSkill focus:\n"
+                + "\n".join(f"- {d}" for d in descriptions[:6])
+            )
+        backstory = f"{backstory}\n\nBound skills: {skill_list}".strip()
 
     return RoleSpec(
         id=defn.id,

@@ -323,6 +323,8 @@ def api_role_write(request: HttpRequest, name: str) -> JsonResponse:
                 "kind": role.kind,
                 "aliases": list(role.aliases),
                 "protected": role.is_protected,
+                "goal": role.goal,
+                "backstory": role.backstory,
                 "bindings": bindings,
             }
         )
@@ -342,6 +344,8 @@ def api_role_write(request: HttpRequest, name: str) -> JsonResponse:
             aliases=body.get("aliases") or [],
             protected=body.get("protected") if "protected" in body else None,
             previous_id="" if name in {"", "__new__"} else name,
+            goal=str(body.get("goal") or ""),
+            backstory=str(body.get("backstory") or ""),
         )
     except ValueError as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=400)
@@ -356,6 +360,8 @@ def api_role_create(request: HttpRequest) -> JsonResponse:
             role_id=str(body.get("role_id") or ""),
             kind=str(body.get("kind") or "technical"),
             aliases=body.get("aliases") or [],
+            goal=str(body.get("goal") or ""),
+            backstory=str(body.get("backstory") or ""),
         )
     except ValueError as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=400)

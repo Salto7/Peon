@@ -183,6 +183,10 @@
       </select>
       <label class="meta" for="catalog-edit-role-aliases">Aliases (comma-separated)</label>
       <input id="catalog-edit-role-aliases" type="text">
+      <label class="meta" for="catalog-edit-role-goal">Goal</label>
+      <textarea id="catalog-edit-role-goal" class="learn-edit catalog-edit-ta" rows="4"></textarea>
+      <label class="meta" for="catalog-edit-role-backstory">Backstory</label>
+      <textarea id="catalog-edit-role-backstory" class="learn-edit catalog-edit-ta" rows="6"></textarea>
     </div>
     <label class="meta" for="catalog-edit-bindings" id="catalog-edit-bindings-label" hidden>Role mappings (one per line: role_id score lead)</label>
     <textarea id="catalog-edit-bindings" class="learn-edit catalog-edit-ta" rows="5" spellcheck="false" hidden></textarea>
@@ -200,5 +204,5 @@
 <script>
   window.PEON_CATALOG_EDIT = { urls: {{ catalog_edit_urls_json|safe }} };
 </script>
-<script src="{% static 'js/catalog-edit.js' %}?v=20261013a"></script>
+<script src="{% static 'js/catalog-edit.js' %}?v=20261013b"></script>
 {% endblock %}

@@ -135,12 +135,16 @@
     var id = $("catalog-edit-role-id");
     var kind = $("catalog-edit-role-kind");
     var aliases = $("catalog-edit-role-aliases");
+    var goal = $("catalog-edit-role-goal");
+    var story = $("catalog-edit-role-backstory");
     if (id) {
       id.value = (data && data.id) || "";
       id.readOnly = !!(data && data.id && data.id !== "__new__");
     }
     if (kind) kind.value = (data && data.kind) || "technical";
     if (aliases) aliases.value = ((data && data.aliases) || []).join(", ");
+    if (goal) goal.value = (data && data.goal) || "";
+    if (story) story.value = (data && data.backstory) || "";
   }
 
   function configureForm(kind, id, data) {
@@ -343,6 +347,8 @@
             return part.trim();
           })
           .filter(Boolean),
+        goal: ($("catalog-edit-role-goal") || {}).value || "",
+        backstory: ($("catalog-edit-role-backstory") || {}).value || "",
       };
       var roleUrl =
         state.id === "__new__"
