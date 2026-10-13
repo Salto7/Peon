@@ -13,11 +13,21 @@ import os
 import select
 import socket
 import subprocess
-import traceback
 from pathlib import Path
 
 SOCK = os.environ.get("PEON_MCP_SOCK", "/tmp/peon-mcp/supervisor.sock")
-PROTOCOL = "2024-11-05"
+PID = os.environ.get("PEON_MCP_PID", "/tmp/peon-mcp/supervisor.pid")
+PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
+# Project config must not replace the sandbox runtime environment.
+_RESERVED_ENV = {
+    "PATH",
+    "HOME",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "PYTHONPATH",
+    "NODE_OPTIONS",
+    "PYTHONHOME",
+}
 
 
 class Child:
@@ -42,10 +52,15 @@ def _fingerprint(spec: dict) -> str:
 
 
 def _stop(child: Child) -> None:
-    try:
-        child.proc.kill()
-    except OSError:
-        pass
+    if child.proc.poll() is None:
+        try:
+            child.proc.kill()
+        except OSError:
+            pass
+        try:
+            child.proc.wait(timeout=2)
+        except Exception:
+            pass
     if child.err is not None:
         try:
             child.err.close()
@@ -61,7 +76,7 @@ def _frame(payload: dict) -> bytes:
     return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
 
 
-def _read_frame(proc, timeout=60):
+def _read_frame(proc, timeout):
     buf = b""
     while b"\r\n\r\n" not in buf:
         ready, _, _ = select.select([proc.stdout], [], [], timeout)
@@ -91,37 +106,84 @@ def _read_frame(proc, timeout=60):
     return json.loads(rest[:length].decode("utf-8"))
 
 
-def _rpc(child: Child, method: str, params: dict | None, *, note=False):
+def _send(child: Child, payload: dict) -> None:
+    child.proc.stdin.write(_frame(payload))
+    child.proc.stdin.flush()
+
+
+def _answer_server(child: Child, msg: dict) -> None:
+    """Reply to a server-initiated request so the session cannot deadlock."""
+    method = str(msg.get("method") or "")
+    mid = msg.get("id")
+    if mid is None:
+        return
+    if method == "ping":
+        result = {}
+    elif method == "roots/list":
+        result = {"roots": []}
+    else:
+        _send(
+            child,
+            {
+                "jsonrpc": "2.0",
+                "id": mid,
+                "error": {"code": -32601, "message": f"unsupported: {method}"},
+            },
+        )
+        return
+    _send(child, {"jsonrpc": "2.0", "id": mid, "result": result})
+
+
+def _rpc(child: Child, method: str, params: dict | None, *, note=False, timeout=60):
     msg = {"jsonrpc": "2.0", "method": method}
     if params is not None:
         msg["params"] = params
     if not note:
-        msg["id"] = child.nxt
+        msg["id"] = f"c{child.nxt}"
         child.nxt += 1
-    child.proc.stdin.write(_frame(msg))
-    child.proc.stdin.flush()
+    _send(child, msg)
     if note:
         return None
     while True:
-        reply = _read_frame(child.proc)
-        if reply.get("id") == msg["id"]:
-            if "error" in reply:
-                raise RuntimeError(str(reply["error"]))
-            return reply.get("result")
+        if child.proc.poll() is not None:
+            raise EOFError("MCP server exited")
+        reply = _read_frame(child.proc, timeout)
+        if not isinstance(reply, dict):
+            raise ValueError("MCP server sent a non-object")
+        if reply.get("method"):
+            _answer_server(child, reply)
+            continue
+        if reply.get("id") != msg["id"]:
+            continue
+        if "error" in reply:
+            raise RuntimeError(str(reply["error"]))
+        return reply.get("result")
 
 
-def _spawn(spec: dict) -> Child:
+def _timeout(spec: dict, default: float) -> float:
+    try:
+        value = float(spec.get("timeout") or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(5.0, min(value, 600.0))
+
+
+def _start_process(spec: dict) -> Child:
     command = str(spec.get("command") or "").strip()
     args = [str(a) for a in (spec.get("args") or [])]
     if not command:
         raise ValueError("command is required")
     cwd = str(spec.get("cwd") or "/workspace")
+    if not cwd.startswith("/workspace"):
+        raise ValueError("cwd must stay inside the sandbox workspace")
     env = os.environ.copy()
     extra = spec.get("env") or {}
     if isinstance(extra, dict):
         for key, value in extra.items():
-            if key:
-                env[str(key)] = str(value)
+            name = str(key or "").strip()
+            if not name or name in _RESERVED_ENV:
+                continue
+            env[name] = str(value)
     Path(cwd).mkdir(parents=True, exist_ok=True)
     log_dir = Path("/tmp/peon-mcp")
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -137,18 +199,31 @@ def _spawn(spec: dict) -> Child:
         env=env,
         bufsize=0,
     )
-    child = Child(proc, _fingerprint(spec), err)
-    _rpc(
-        child,
-        "initialize",
-        {
-            "protocolVersion": PROTOCOL,
-            "capabilities": {},
-            "clientInfo": {"name": "peon", "version": "1"},
-        },
-    )
-    _rpc(child, "notifications/initialized", {}, note=True)
-    return child
+    return Child(proc, _fingerprint(spec), err)
+
+
+def _spawn(spec: dict) -> Child:
+    timeout = _timeout(spec, 30)
+    last = "initialize failed"
+    for version in PROTOCOLS:
+        child = _start_process(spec)
+        try:
+            _rpc(
+                child,
+                "initialize",
+                {
+                    "protocolVersion": version,
+                    "capabilities": {},
+                    "clientInfo": {"name": "peon", "version": "1"},
+                },
+                timeout=timeout,
+            )
+            _rpc(child, "notifications/initialized", {}, note=True, timeout=timeout)
+            return child
+        except Exception as exc:
+            last = str(exc)
+            _stop(child)
+    raise RuntimeError(last)
 
 
 def _child(spec: dict) -> Child:
@@ -166,12 +241,26 @@ def _child(spec: dict) -> Child:
     return child
 
 
+def _list_tools(child: Child, timeout: float) -> list:
+    tools = []
+    cursor = ""
+    while True:
+        params = {"cursor": cursor} if cursor else {}
+        result = _rpc(child, "tools/list", params, timeout=timeout) or {}
+        batch = result.get("tools") or []
+        if isinstance(batch, list):
+            tools.extend(item for item in batch if isinstance(item, dict))
+        cursor = str(result.get("nextCursor") or "")
+        if not cursor or len(tools) >= 500:
+            return tools
+
+
 def _handle(req: dict) -> dict:
     op = str(req.get("op") or "")
     if op == "list_tools":
         child = _child(req)
-        result = _rpc(child, "tools/list", {}) or {}
-        return {"ok": True, "tools": result.get("tools") or []}
+        tools = _list_tools(child, _timeout(req, 60))
+        return {"ok": True, "tools": tools}
     if op == "call":
         child = _child(req)
         tool = str(req.get("tool") or "").strip()
@@ -184,6 +273,7 @@ def _handle(req: dict) -> dict:
             child,
             "tools/call",
             {"name": tool, "arguments": arguments},
+            timeout=_timeout(req, 90),
         )
         return {"ok": True, "result": result}
     if op == "close":
@@ -206,6 +296,7 @@ def serve():
         os.chmod(path, 0o600)
     except OSError:
         pass
+    Path(PID).write_text(str(os.getpid()), encoding="utf-8")
     server.listen(16)
     while True:
         conn, _ = server.accept()
@@ -225,8 +316,8 @@ def serve():
                     raise ValueError("request must be an object")
                 reply = _handle(req)
             except Exception as exc:
-                reply = {"ok": False, "error": str(exc), "trace": traceback.format_exc()[-800:]}
-            conn.sendall((json.dumps(reply) + "\n").encode("utf-8"))
+                reply = {"ok": False, "error": str(exc)}
+            conn.sendall((json.dumps(reply, default=str) + "\n").encode("utf-8"))
         finally:
             try:
                 conn.close()

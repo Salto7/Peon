@@ -57,6 +57,7 @@ class McpRecord:
     transport: str
     command: str
     args: tuple[str, ...]
+    cwd: str
     install: dict[str, Any] | None
     env_schema: tuple[tuple[str, bool], ...]
     enabled: bool
@@ -756,6 +757,7 @@ class PlatformCatalog:
             {
                 "command": spec.command,
                 "args": list(spec.args),
+                "cwd": spec.cwd,
                 "install": spec.install,
                 "env_schema": spec.env_schema,
                 "files": file_map,
@@ -770,6 +772,7 @@ class PlatformCatalog:
                     "transport": spec.transport,
                     "command": spec.command,
                     "args": list(spec.args),
+                    "cwd": spec.cwd,
                     "install": spec.install,
                     "env_schema": schema,
                     "enabled": keep_enabled,
@@ -855,6 +858,7 @@ class PlatformCatalog:
                 "transport": spec.transport,
                 "command": spec.command,
                 "args": list(spec.args),
+                "cwd": spec.cwd,
                 "env_schema": [
                     {"name": name, "required": required}
                     for name, required in spec.env_schema
@@ -1028,6 +1032,7 @@ def _mcp_from_row(row, bindings: tuple[Binding, ...], files: dict[str, str]) -> 
         transport=str(row.transport or "stdio"),
         command=str(row.command or ""),
         args=args,
+        cwd=str(getattr(row, "cwd", "") or ""),
         install=install,
         env_schema=tuple(schema),
         enabled=bool(row.enabled),

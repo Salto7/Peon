@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shlex
 from typing import Any
 
@@ -16,13 +17,17 @@ from orchestrator.mcp.supervisor_script import SUPERVISOR_SOURCE
 from orchestrator.sandbox.materialize import materialize_tree
 from orchestrator.skills.runtime.sandbox import job_role_id
 
+logger = logging.getLogger(__name__)
+
 _SOCK = "/tmp/peon-mcp/supervisor.sock"
+_PID = "/tmp/peon-mcp/supervisor.pid"
+_STAMP = "/workspace/.peon/mcp/supervisor.sha"
 _SUPERVISOR = "/workspace/.peon/mcp/supervisor.py"
 _CLIENT = r"""
 import json, socket, sys
 raw = sys.stdin.read()
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-sock.settimeout(110)
+sock.settimeout(float(sys.argv[2]))
 sock.connect(sys.argv[1])
 sock.sendall(raw.encode("utf-8") + b"\n")
 buf = b""
@@ -93,20 +98,25 @@ def _invoke(name: str, *, op: str, tool: str = "", arguments: dict | None = None
     wrote = materialize_tree(session, dest, files)
     if wrote:
         return wrote
-    installed = _install(session, rec, dest)
+    install, install_error = _effective_install(rec)
+    if install_error:
+        return install_error
+    installed = _install(session, rec, dest, install)
     if installed:
         return installed
     started = _ensure_supervisor(session)
     if started:
         return started
-    command, args = _runtime_command(rec, dest)
+    command, args = _runtime_command(rec, dest, install)
+    cwd = dest if not rec.cwd else f"{dest}/{rec.cwd}"
     request: dict[str, Any] = {
         "op": op,
         "mcp_id": rec.mcp_id,
         "command": command,
         "args": list(args),
-        "cwd": dest,
+        "cwd": cwd,
         "env": env,
+        "timeout": 60 if op == "list_tools" else 90,
     }
     if op == "call":
         request["tool"] = tool
@@ -183,19 +193,57 @@ def _project_env(project_id: str, rec) -> tuple[dict[str, str], list[str]]:
                 .first()
             )
             if row is not None and isinstance(row.env, dict):
-                stored = {str(k): str(v) for k, v in row.env.items() if v is not None}
-        except Exception:
-            stored = {}
+                stored = {
+                    str(k): str(v).strip()
+                    for k, v in row.env.items()
+                    if v is not None and str(v).strip()
+                }
+        except Exception as exc:
+            logger.warning("mcp project env read failed for %s: %s", rec.mcp_id, exc)
+            return {}, [f"project configuration ({exc})"]
     missing = [name for name, required in rec.env_schema if required and not stored.get(name)]
     allowed = {name for name, _req in rec.env_schema}
     env = {key: value for key, value in stored.items() if not allowed or key in allowed}
     return env, missing
 
 
-def _runtime_command(rec, dest: str) -> tuple[str, tuple[str, ...]]:
-    install = rec.install or {}
+def _command_name(command: str) -> str:
+    return str(command or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _effective_install(rec) -> tuple[dict | None, str]:
+    """Use the catalog install, or infer one from the server's own files."""
+    install = dict(rec.install) if isinstance(rec.install, dict) else {}
     kind = str(install.get("kind") or "")
-    base = PathName(rec.command)
+    if kind in {"pip", "npm"}:
+        return install, ""
+    files = rec.files or {}
+    has_req = "requirements.txt" in files
+    has_pyproject = "pyproject.toml" in files
+    has_npm = "package.json" in files
+    base = _command_name(rec.command)
+    if (has_req or has_pyproject) and has_npm:
+        if base in {"python", "python3"}:
+            has_npm = False
+        elif base in {"node", "npm", "npx"}:
+            has_req = has_pyproject = False
+        else:
+            return None, (
+                "Error: this MCP server has both Python and Node manifests. "
+                "Set install.kind to pip or npm."
+            )
+    if has_req or has_pyproject:
+        manifest = "requirements.txt" if has_req else "pyproject.toml"
+        return {"kind": "pip", "manifest": manifest}, ""
+    if has_npm:
+        return {"kind": "npm", "manifest": "package.json"}, ""
+    return None, ""
+
+
+def _runtime_command(rec, dest: str, install: dict | None) -> tuple[str, tuple[str, ...]]:
+    install = install or {}
+    kind = str(install.get("kind") or "")
+    base = _command_name(rec.command)
     if kind == "pip" and base in {"python", "python3"}:
         return f"/workspace/.peon/mcp-venvs/{rec.mcp_id}/bin/python", rec.args
     # node, npm, and npx stay on PATH. A bare package binary is local.
@@ -210,13 +258,9 @@ def _runtime_command(rec, dest: str) -> tuple[str, tuple[str, ...]]:
     return rec.command, rec.args
 
 
-def PathName(command: str) -> str:
-    return str(command or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
-
-
-def _install_digest(rec) -> str:
+def _install_digest(rec, install: dict | None) -> str:
     payload = json.dumps(
-        {"install": rec.install, "files": rec.files},
+        {"install": install, "files": rec.files},
         sort_keys=True,
         default=str,
     )
@@ -238,13 +282,15 @@ def _write_marker(session, marker: str, digest: str) -> None:
     )
 
 
-def _install(session, rec, dest: str) -> str:
-    install = rec.install or {}
+def _install(session, rec, dest: str, install: dict | None) -> str:
+    install = install or {}
     kind = str(install.get("kind") or "")
     if kind not in {"pip", "npm"}:
         return ""
     manifest = str(install.get("manifest") or "")
-    digest = _install_digest(rec)
+    if manifest and manifest not in (rec.files or {}):
+        return f"Error: MCP install manifest {manifest!r} is not in the server files."
+    digest = _install_digest(rec, install)
     if kind == "pip":
         venv = f"/workspace/.peon/mcp-venvs/{rec.mcp_id}"
         python = f"{venv}/bin/python"
@@ -284,12 +330,25 @@ def _install(session, rec, dest: str) -> str:
     return ""
 
 
-def _ensure_supervisor(session) -> str:
-    probe = session.exec(
-        ["sh", "-c", f"if [ -S {_SOCK} ]; then echo up; else echo down; fi"],
-        timeout=15,
+def _supervisor_stamp() -> str:
+    return hashlib.sha256(SUPERVISOR_SOURCE.encode("utf-8")).hexdigest()
+
+
+def _supervisor_alive(session, stamp: str) -> bool:
+    script = (
+        f"pid=$(cat {shlex.quote(_PID)} 2>/dev/null || true); "
+        f"have=$(cat {shlex.quote(_STAMP)} 2>/dev/null || true); "
+        f"if [ -n \"$pid\" ] && [ \"$have\" = {shlex.quote(stamp)} ] "
+        f"&& [ -S {shlex.quote(_SOCK)} ] && kill -0 \"$pid\" 2>/dev/null; then "
+        "echo up; else echo down; fi"
     )
-    if "up" in (probe.stdout or ""):
+    probe = session.exec(["sh", "-c", script], timeout=15)
+    return (probe.stdout or "").strip() == "up"
+
+
+def _ensure_supervisor(session) -> str:
+    stamp = _supervisor_stamp()
+    if _supervisor_alive(session, stamp):
         return ""
     wrote = materialize_tree(
         session,
@@ -298,24 +357,30 @@ def _ensure_supervisor(session) -> str:
     )
     if wrote:
         return wrote
-    session.exec(["mkdir", "-p", "/tmp/peon-mcp"], timeout=15)
-    launched = session.exec(
+    launch = "\n".join(
         [
-            "sh",
-            "-c",
+            "mkdir -p /tmp/peon-mcp /workspace/.peon/mcp",
+            "exec 9>/tmp/peon-mcp/supervisor.lock",
+            "flock -w 20 9 || exit 1",
+            f"pid=$(cat {shlex.quote(_PID)} 2>/dev/null || true)",
+            f"have=$(cat {shlex.quote(_STAMP)} 2>/dev/null || true)",
+            f"if [ -n \"$pid\" ] && [ \"$have\" = {shlex.quote(stamp)} ] "
+            f"&& [ -S {shlex.quote(_SOCK)} ] && kill -0 \"$pid\" 2>/dev/null; then",
+            "  exit 0",
+            "fi",
+            "if [ -n \"$pid\" ]; then kill \"$pid\" 2>/dev/null || true; sleep 0.2; fi",
+            f"rm -f {shlex.quote(_SOCK)} {shlex.quote(_PID)}",
+            f"printf %s {shlex.quote(stamp)} > {shlex.quote(_STAMP)}",
             "setsid nohup python3 /workspace/.peon/mcp/supervisor.py "
             ">/tmp/peon-mcp/supervisor.log 2>&1 < /dev/null &",
-        ],
-        timeout=20,
+        ]
     )
+    launched = session.exec(["sh", "-c", launch], timeout=30)
     if not launched.ok:
-        return "Error: could not start the MCP supervisor in the sandbox."
+        detail = (launched.stderr or launched.stdout or "supervisor launch failed").strip()
+        return f"Error: could not start the MCP supervisor in the sandbox: {detail[:400]}"
     for _ in range(25):
-        probe = session.exec(
-            ["sh", "-c", f"if [ -S {_SOCK} ]; then echo up; else echo down; fi"],
-            timeout=15,
-        )
-        if "up" in (probe.stdout or ""):
+        if _supervisor_alive(session, stamp):
             return ""
         session.exec(["sleep", "0.2"], timeout=5)
     log = session.exec(["sh", "-c", "tail -n 40 /tmp/peon-mcp/supervisor.log"], timeout=15)
@@ -324,10 +389,14 @@ def _ensure_supervisor(session) -> str:
 
 
 def _client(session, request: dict) -> dict:
+    try:
+        limit = float(request.get("timeout") or 90)
+    except (TypeError, ValueError):
+        limit = 90
     result = session.exec(
-        ["python3", "-c", _CLIENT, _SOCK],
+        ["python3", "-c", _CLIENT, _SOCK, str(int(limit) + 5)],
         stdin=json.dumps(request),
-        timeout=120,
+        timeout=limit + 20,
     )
     raw = (result.stdout or "").strip()
     if not raw:

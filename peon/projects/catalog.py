@@ -392,9 +392,10 @@ def api_mcp_detail(request: HttpRequest, mcp_id: str) -> JsonResponse:
                         "name": "",
                         "description": "",
                         "transport": "stdio",
-                        "command": "",
-                        "args": [],
-                        "env_schema": [],
+                    "command": "",
+                    "args": [],
+                    "cwd": "",
+                    "env_schema": [],
                     },
                     "bindings": [],
                     "files": {},
@@ -414,6 +415,7 @@ def api_mcp_detail(request: HttpRequest, mcp_id: str) -> JsonResponse:
                     "transport": rec.transport,
                     "command": rec.command,
                     "args": list(rec.args),
+                    "cwd": rec.cwd,
                     "install": rec.install,
                     "env_schema": [
                         {"name": name, "required": required}

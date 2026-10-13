@@ -35,6 +35,7 @@ class McpSpec:
     transport: str
     command: str
     args: tuple[str, ...]
+    cwd: str
     install: dict[str, Any] | None
     env_schema: tuple[tuple[str, bool], ...]
 
@@ -50,12 +51,17 @@ def parse_mcp_document(document: dict[str, Any] | str | list[Any]) -> tuple[McpS
     if isinstance(data, dict) and isinstance(data.get("mcpServers"), dict):
         servers = data["mcpServers"]
         specs = []
+        seen: set[str] = set()
         for name, body in servers.items():
             if not isinstance(body, dict):
                 raise McpParseError(f"mcpServers.{name} must be an object")
             merged = dict(body)
             merged.setdefault("name", name)
-            specs.append(_one(merged))
+            spec = _one(merged)
+            if spec.mcp_id in seen:
+                raise McpParseError(f"duplicate server {spec.mcp_id!r}")
+            seen.add(spec.mcp_id)
+            specs.append(spec)
         if not specs:
             raise McpParseError("mcpServers is empty")
         return tuple(specs)
@@ -78,33 +84,71 @@ def _load(document: dict[str, Any] | str | list[Any]) -> Any:
 
 def _one(raw: dict[str, Any]) -> McpSpec:
     name = str(raw.get("name") or raw.get("mcp_id") or raw.get("id") or "").strip().lower()
-    if not name or not SKILL_NAME_RE.match(name):
+    if not name or len(name) > 128 or not SKILL_NAME_RE.match(name):
         raise McpParseError(
             "server name is required and must be kebab-case "
             f"(got {name!r})"
         )
-    transport = str(raw.get("transport") or "stdio").strip().lower()
+    transport = str(raw.get("transport") or raw.get("type") or "stdio").strip().lower()
+    if transport in {"sse", "http", "streamable-http", "websocket"}:
+        raise McpParseError(
+            f"transport {transport!r} is not supported; the sandbox runs stdio servers"
+        )
     if transport != "stdio":
         raise McpParseError("only transport stdio is supported")
-    command = str(raw.get("command") or "").strip()
-    if not command or any(ch in command for ch in "\n\r\x00"):
-        raise McpParseError("command is required")
-    args_raw = raw.get("args") or []
-    if not isinstance(args_raw, list) or not all(isinstance(item, str) for item in args_raw):
-        raise McpParseError("args must be a list of strings")
-    if any(any(ch in item for ch in "\n\r\x00") for item in args_raw):
-        raise McpParseError("args must be single-line strings")
+    command, args = _command(raw)
     description = str(raw.get("description") or "").strip()
+    if len(description) > 4000:
+        raise McpParseError("description is too long")
     install = _install(raw.get("install"))
     return McpSpec(
         mcp_id=name,
         description=description,
         transport=transport,
         command=command,
-        args=tuple(args_raw),
+        args=args,
+        cwd=_cwd(raw.get("cwd")),
         install=install,
         env_schema=_env_schema(raw.get("env_schema") or raw.get("env")),
     )
+
+
+def _command(raw: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    command_raw = raw.get("command")
+    args_raw = raw.get("args") if raw.get("args") is not None else []
+    if not isinstance(args_raw, list) or not all(isinstance(item, str) for item in args_raw):
+        raise McpParseError("args must be a list of strings")
+    if isinstance(command_raw, list):
+        if not command_raw or not all(isinstance(item, str) for item in command_raw):
+            raise McpParseError("command list must be non-empty strings")
+        command = command_raw[0].strip()
+        args = tuple(item for item in (*command_raw[1:], *args_raw))
+    elif isinstance(command_raw, str):
+        command = command_raw.strip()
+        args = tuple(args_raw)
+    else:
+        raise McpParseError("command is required")
+    if not command or len(command) > 256 or any(ch in command for ch in "\n\r\x00"):
+        raise McpParseError("command is required and must be a single line")
+    if len(args) > 64:
+        raise McpParseError("too many args")
+    if any(any(ch in item for ch in "\n\r\x00") or len(item) > 4096 for item in args):
+        raise McpParseError("args must be single-line strings")
+    return command, args
+
+
+def _cwd(raw: Any) -> str:
+    if raw in (None, "", "."):
+        return ""
+    text = str(raw).strip().replace("\\", "/")
+    if text.startswith("/") or text.startswith("~"):
+        raise McpParseError("cwd must be a relative path inside the server directory")
+    parts = [part for part in text.split("/") if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        raise McpParseError("cwd must be a relative path inside the server directory")
+    if len("/".join(parts)) > 256:
+        raise McpParseError("cwd is too long")
+    return "/".join(parts)
 
 
 def _install(raw: Any) -> dict[str, Any] | None:
@@ -126,14 +170,21 @@ def _install(raw: Any) -> dict[str, Any] | None:
 
 
 def _env_schema(raw: Any) -> tuple[tuple[str, bool], ...]:
-    """Names only. A mapping of name to value is rejected (that is a secret)."""
+    """Names only. A mapping may declare names, but its values are never kept."""
     if raw in (None, "", []):
         return ()
     if isinstance(raw, dict):
-        raise McpParseError(
-            "env must be a list of names, not values. "
-            "Set values on the project, not in the catalog."
-        )
+        filled = [
+            str(key)
+            for key, value in raw.items()
+            if value is not None and str(value).strip()
+        ]
+        if filled:
+            raise McpParseError(
+                "env values are not stored in the catalog "
+                f"({', '.join(filled)}). Declare the names and set values on the project."
+            )
+        raw = list(raw.keys())
     if not isinstance(raw, list):
         raise McpParseError("env_schema must be a list")
     out: list[tuple[str, bool]] = []

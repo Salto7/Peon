@@ -1032,6 +1032,7 @@ class CatalogMcp(models.Model):
     transport = models.CharField(max_length=16, default="stdio")
     command = models.CharField(max_length=256)
     args = models.JSONField(default=list, blank=True)
+    cwd = models.CharField(max_length=256, blank=True, default="")
     install = models.JSONField(null=True, blank=True)
     env_schema = models.JSONField(default=list, blank=True)
     enabled = models.BooleanField(default=True)
