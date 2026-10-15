@@ -49,7 +49,7 @@ def build_engagement_crew(
     specialist_specs = reg.specialists(role_ids)
     # CrewAI hierarchical mode injects delegation tools into a custom manager
     # and rejects manager_agent instances that already carry role tools.
-    manager = build_crew_agent(manager_spec, tools=[], **agent_kwargs)
+    manager = build_crew_agent(manager_spec, tools=[], collaborate=True, **agent_kwargs)
     # Specialists collaborate peer-to-peer via CrewAI's native coworker tools
     # (ask/delegate), so they can consult each other, not only the manager.
     specialists = [

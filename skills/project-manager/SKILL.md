@@ -24,8 +24,15 @@ JSON only: `{"roles":["id",...],"reason":"short"}`.
    workers** for fan-out.
 3. **Analyzer** — after specialists finish, synthesize `findings/report.md`.
 
-Prefer `spawn_work` / `wait_for_work` with existing catalog `role_id`s. Empty
-`role_id` = same role (skill fan-out under that expert).
+Prefer `spawn_work` with existing catalog `role_id`s; experts then `go_idle`
+until their workers report back (not busy-poll `wait_for_work`). Empty `role_id`
+= same role (skill fan-out under that expert).
+
+## Governance (A2A)
+You stay in the loop without polling: spawns arrive as informs and blockers or
+scope/RoE changes **wake** you. On wake, `check_inbox`, act on the backlog
+(redirect, reprioritize, `update_objective_status`, replan, or `ask_operator`),
+then end your turn — you park again automatically.
 
 ## Conflicts / blocks
 On contradiction, missing deps, RoE ambiguity, or stalled work:

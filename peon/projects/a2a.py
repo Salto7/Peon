@@ -29,6 +29,7 @@ from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
     AgentMessage,
     Job,
+    JobLifecycle,
     JobStatus,
     Objective,
     ObjectiveStatus,
@@ -304,11 +305,37 @@ def send_message(
         from_job_id=str(from_job.pk) if from_job else "",
         to_job_id=str(to_job.pk),
     )
+    if not wake:
+        # Coalescing backstop: wake=False messages (interim handoffs, fan-out
+        # informs) accumulate cost-free, but once enough pile up on an idle
+        # consumer we wake it anyway so streamed work is not stranded until the
+        # producer's objective completes. The governor (escalation-only) and
+        # dependency standbys (scheduler-owned) are exempt.
+        wake = _interim_backstop_reached(to_job, alias)
     if wake:
         to_job.refresh_from_db()
         if to_job.status == JobStatus.IDLE and can_wake(to_job):
             wake_job(to_job, reason=f"message from {sender_label}")
     return row
+
+
+def _interim_backstop_reached(to_job: Job, alias: str) -> bool:
+    if to_job.profile == GOVERNANCE_PROFILE or to_job.idle_reason == "dependencies":
+        return False
+    to_job.refresh_from_db()
+    if to_job.status != JobStatus.IDLE or not can_wake(to_job):
+        return False
+    from peon.projects.runtime_settings import PeonSettings
+
+    threshold = PeonSettings.get_int("A2A_INTERIM_WAKE_UNREAD", 3)
+    if threshold <= 0:
+        return False
+    unread_n = (
+        AgentMessage.objects.using(alias)
+        .filter(to_job=to_job, delivered_at__isnull=True)
+        .count()
+    )
+    return unread_n >= threshold
 
 
 def unread(job: Job) -> list[AgentMessage]:
@@ -438,6 +465,162 @@ def deliver_handoffs(objective: Objective) -> int:
     return sent
 
 
+def _parent_handoff_text(child: Job) -> str:
+    who = ((child.role_ids or [""])[0] if child.role_ids else "") or child.title or "sub-agent"
+    verb = {
+        JobStatus.COMPLETED: "completed",
+        JobStatus.FAILED: "failed",
+        JobStatus.CANCELLED: "was cancelled",
+    }.get(child.status, child.status)
+    lines = [f"Sub-agent {who} ({child.title}) {verb}."]
+    if child.status == JobStatus.FAILED and (child.error or "").strip():
+        lines.append("Error:\n" + child.error.strip()[:HANDOFF_EXCERPT])
+    result = _result_excerpt(child, HANDOFF_EXCERPT)
+    if result:
+        lines.append("Result:\n" + result)
+    lines.append(
+        "Use `list_findings` / `list_workspace_artifacts` for its findings and files."
+    )
+    return "\n\n".join(lines)
+
+
+def deliver_parent_handoff(child: Job) -> bool:
+    """Push a terminal child's result to its parent, waking it only if parked.
+
+    The symmetric twin of :func:`deliver_handoffs` for the parent/child edge:
+    ``deliver_handoffs`` covers objective dependencies, this covers spawn fan-out.
+    A running parent is not woken (``send_message`` wakes only an idle recipient);
+    a terminal parent is skipped. Deduped to one handoff per child.
+    """
+    if not child.parent_id or not child.project_id:
+        return False
+    from peon.projects.db import using_project
+
+    alias = _alias(child.project_id)
+    with using_project(child.project_id):
+        parent = Job.objects.using(alias).filter(pk=child.parent_id).first()
+        if parent is None or parent.status in TERMINAL_JOB_STATUSES:
+            return False
+        if (
+            AgentMessage.objects.using(alias)
+            .filter(to_job=parent, from_job=child, kind=AgentMessage.Kind.HANDOFF)
+            .exists()
+        ):
+            return False
+        project = Project.objects.using("default").get(pk=child.project_id)
+    send_message(
+        project,
+        to_job=parent,
+        text=_parent_handoff_text(child),
+        from_job=child,
+        kind=AgentMessage.Kind.HANDOFF,
+        wake=True,  # send_message wakes only if the parent is idle & wakeable
+    )
+    return True
+
+
+# ── resident governance PM ────────────────────────────────────────────────
+#
+# One per project, born IDLE, not tied to a middle objective. It costs nothing
+# while parked (event-driven, no poll/LLM), receives spawn/finding informs
+# (wake=False) and wakes only on escalations. Identified durably by
+# ``profile == GOVERNANCE_PROFILE`` (survives wake, unlike ``idle_reason``).
+
+GOVERNANCE_PROFILE = "governance"
+
+
+def governance_pm(project: Project) -> Job | None:
+    """The live resident governance PM for ``project`` (or None)."""
+    alias = _alias(project.pk)
+    return (
+        Job.objects.using(alias)
+        .filter(project_id=project.pk, profile=GOVERNANCE_PROFILE)
+        .exclude(status__in=TERMINAL_JOB_STATUSES)
+        .order_by("created_at")
+        .first()
+    )
+
+
+def ensure_governance_pm(project: Project) -> Job | None:
+    """Create the single resident IDLE governance PM if none is live."""
+    from orchestrator.crew.roles.registry import RoleRegistry
+    from peon.projects.db import ensure_project_database, using_project
+
+    manager_id, _ = RoleRegistry.shared().engagement_bookends()
+    if not manager_id or governance_pm(project) is not None:
+        return governance_pm(project)
+    alias = ensure_project_database(project.pk)
+    with using_project(project.pk):
+        return Job.objects.using(alias).create(
+            title="Governance PM",
+            description=(
+                "Resident engagement governor. You receive spawn and progress "
+                "informs from the crew and wake only when an agent escalates a "
+                "block or a scope/plan change. On wake, read your whole inbox, "
+                "govern (redirect, reprioritize, update objectives, replan, or "
+                "ask_operator), then end your turn — you park again automatically."
+            ),
+            lifecycle=JobLifecycle.LONG,
+            status=JobStatus.IDLE,
+            role_ids=[manager_id],
+            project_id=project.pk,
+            profile=GOVERNANCE_PROFILE,
+            idle_reason="governance",
+            idle_note="governing engagement",
+            workspace_id=str(project.pk),
+        )
+
+
+def notify_governor(
+    project: Project,
+    *,
+    text: str,
+    from_job: Job | None = None,
+    escalate: bool = False,
+) -> AgentMessage | None:
+    """Inform (wake=False) or escalate (wake=True) the resident governance PM."""
+    pm = governance_pm(project)
+    if pm is None or (from_job is not None and pm.pk == from_job.pk):
+        return None
+    return send_message(
+        project,
+        to_job=pm,
+        text=text,
+        from_job=from_job,
+        kind=AgentMessage.Kind.REQUEST if escalate else AgentMessage.Kind.INFORM,
+        wake=escalate,
+    )
+
+
+def repark_governor(job: Job) -> Job:
+    """Re-park the governance PM IDLE after a turn; re-wake if mail arrived."""
+    park_idle(job, reason="governance", note="governing engagement", checkpoint=True)
+    job.refresh_from_db()
+    if job.status == JobStatus.IDLE and unread(job) and can_wake(job):
+        wake_job(job, reason="escalation arrived while re-parking")
+        job.refresh_from_db()
+    return job
+
+
+def cancel_governor(project: Project) -> int:
+    """Retire the resident governance PM when the engagement finishes."""
+    from peon.projects.db import using_project
+
+    alias = _alias(project.pk)
+    with using_project(project.pk):
+        return Job.objects.using(alias).filter(
+            project_id=project.pk,
+            profile=GOVERNANCE_PROFILE,
+            status=JobStatus.IDLE,
+        ).update(
+            status=JobStatus.CANCELLED,
+            error="Engagement finished",
+            completed_at=dj_tz.now(),
+            idle_reason="",
+            updated_at=dj_tz.now(),
+        )
+
+
 def sweep_orphan_standby(project: Project) -> int:
     """Cancel idle agents whose objective vanished, finished or was cancelled."""
     from peon.projects.db import using_project
@@ -447,7 +630,7 @@ def sweep_orphan_standby(project: Project) -> int:
     with using_project(project.pk):
         qs = Job.objects.using(alias).filter(
             project_id=project.pk, status=JobStatus.IDLE, parent__isnull=True
-        )
+        ).exclude(profile=GOVERNANCE_PROFILE)
         for job in qs.select_related("objective"):
             obj = job.objective
             if obj is None or obj.status in {

@@ -25,3 +25,9 @@ bash("nxc ldap <host> -u '' -p '' --naming-contexts")
 ## Boundaries
 Host/port discovery → `recon-specialist` / skill `network-scanner`. HTTP app mapping → `http-prober` / `web`.
 Final report → `analyzer`. RoE conflicts → parent / `ask_operator`.
+
+## Collaboration & memory
+- Before repeating a method, tool, or target, `recall_memory`; `save_memory` for durable lessons a later agent would otherwise rediscover.
+- Report up: `send_message` findings, blockers, and scope changes to your parent / role agent — blockers and scope/RoE changes reach the governance PM.
+- Stream, don't hoard: as you discover something a waiting agent needs, `list_team` then `send_message` it (OBJ-n or role id) so it can start while you continue — batch per subject, do not wait for completion.
+- `check_inbox` between steps; when you can only wait on another agent's output, `go_idle` (never poll).

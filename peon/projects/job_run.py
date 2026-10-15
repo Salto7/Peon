@@ -142,6 +142,15 @@ def finish_job(job: Job, *, status: str, error: str = "", result: str | None = N
         emit(job, "error", error)
     emit(job, "status", f"Job → {status}", job_status=status)
 
+    # Report up to the spawning parent (wakes it only if parked waiting).
+    if job.parent_id and job.project_id:
+        try:
+            from peon.projects import a2a
+
+            a2a.deliver_parent_handoff(job)
+        except Exception as exc:
+            logger.warning("parent handoff failed for %s: %s", job.id, exc, exc_info=True)
+
     if job.project_id and status == JobStatus.COMPLETED:
         try:
             project = job.project
@@ -601,11 +610,14 @@ def run_job_via_agent(
             extras["crew_flow_id"] = str(project.crew_flow_id)
         # Objective-backed projects use one Job per objective. Only a manager
         # Job outside that graph requests an all-in-one crew flow.
+        from peon.projects.a2a import GOVERNANCE_PROFILE
+
         manager_id, _ = RoleRegistry.shared().engagement_bookends()
         if (
             manager_id
             and extras.get("role_id") == manager_id
             and not job.objective_id
+            and job.profile != GOVERNANCE_PROFILE  # resident governor runs solo
         ):
             extras["crew_mode"] = "project"
 
@@ -672,6 +684,21 @@ def run_job_via_agent(
         except Exception as exc:
             logger.warning("set_crew_status failed: %s", exc, exc_info=True)
     result = run_agent(scope, cfg, resume=resume, steer=steer)
+    # The resident governance PM re-parks after each turn instead of completing,
+    # so it stays available to the crew for the whole engagement.
+    from peon.projects import a2a
+    from peon.projects.a2a import GOVERNANCE_PROFILE
+
+    if result.ok and job.profile == GOVERNANCE_PROFILE:
+        from peon.projects.db import project_alias_or_default, using_project
+
+        alias = project_alias_or_default(job.project_id)
+        with using_project(job.project_id):
+            Job.objects.using(alias).filter(pk=job.pk).update(
+                result=(result.output or "")[:200_000]
+            )
+        job.refresh_from_db()
+        return a2a.repark_governor(job)
     if result.ok and bridge.idle_requested:
         parked = _park_after_run(job, bridge, result.output or "")
         if parked is not None:

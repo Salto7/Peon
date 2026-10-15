@@ -337,6 +337,22 @@ class JobAgentBridge(AgentBridgeBase):
                 payload=payload,
             )
         )
+        # Keep the governor in the picture: spawns are informs (no wake).
+        if self._job.project_id:
+            try:
+                from peon.projects import a2a
+
+                a2a.notify_governor(
+                    self._job.project,
+                    text=(
+                        f"{self._role_id() or 'agent'} spawned {link} agent "
+                        f"{child.id} ({role_id or '-'}): {(title or '')[:160]}"
+                    ),
+                    from_job=self._job,
+                    escalate=False,
+                )
+            except Exception:
+                logger.debug("governor spawn-inform failed", exc_info=True)
 
     def append_transcript(self, record: Any) -> None:
         """Append structured transcript to project workspace jsonl (+ optional memory)."""
@@ -532,6 +548,20 @@ class JobAgentBridge(AgentBridgeBase):
             )
         sched.mark(obj, status, reason=reason)
         if status == ObjectiveStatus.BLOCKED:
+            try:
+                from peon.projects import a2a
+
+                a2a.notify_governor(
+                    project,
+                    text=(
+                        f"OBJ-{obj.seq} {obj.title} blocked: "
+                        f"{reason or obj.blocked_reason or 'blocked'}"
+                    ),
+                    from_job=self._job,
+                    escalate=True,
+                )
+            except Exception:
+                logger.debug("governor block-escalate failed", exc_info=True)
             try:
                 from peon.projects.models import OperatorPromptKind
 

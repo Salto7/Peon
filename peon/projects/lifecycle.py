@@ -158,6 +158,12 @@ def reconcile_project_status(project: Project | None) -> Project | None:
         _save_registry(status=next_status)
     if newly_terminal:
         try:
+            from peon.projects import a2a
+
+            a2a.cancel_governor(project)
+        except Exception as exc:
+            logger.warning("cancel_governor failed: %s", exc, exc_info=True)
+        try:
             from peon.projects.memory_store import record_project_digest
 
             record_project_digest(project, next_status)

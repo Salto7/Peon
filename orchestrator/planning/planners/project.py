@@ -43,6 +43,11 @@ You produce the shared project plan (objectives + dependencies) for CrewAI roles
 - When a middle objective needs artifacts/targets/findings produced by an
   earlier middle, set depends_on to that earlier index (middle→middle is
   required for correct ordering — do not rely on agents to wait informally)
+- Producer→consumer hand-offs (host/port scan → HTTP probing, recon → web
+  testing, …): prefer a DISTINCT consumer objective with depends_on on its
+  producer, so the consumer exists as a standby the producer can stream partial
+  findings to mid-run — over folding the consumer into the producer objective or
+  leaving it to runtime spawn_work
 - Analyzer bookend waits until every middle specialist completes
 - Technical experts run authorized scope as given. They may spawn_work for
   in-lane follow-on skills after evidence lands — never invent role ids, and

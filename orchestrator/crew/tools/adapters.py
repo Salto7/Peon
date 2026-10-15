@@ -316,8 +316,10 @@ def list_roles() -> str:
     "Optional skill_ids (comma-separated subset of this role's skill group). "
     "link=child|peer. Optional scope_slice_json under RoE — do not invent smaller "
     "CIDR slices of an authorized netblock unless the operator asked. After "
-    "spawning, poll wait_for_work until children finish. Do not replan via PM "
-    "for work already in your skill group.",
+    "spawning, if you have nothing else to do, go_idle('waiting on children') — "
+    "each child's result wakes you; use wait_for_work only for a quick status "
+    "peek, never as a wait loop. Do not replan via PM for work already in your "
+    "skill group.",
 )
 def spawn_work(
     title: str,

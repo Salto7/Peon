@@ -9,9 +9,10 @@ ToolFactory = Callable[[], Any]
 _FACTORIES: dict[str, ToolFactory] = {}
 
 # Engagement roles get these without listing them on every skill pack.
-# Peer messaging among agents uses CrewAI's native collaboration tools
-# ("Ask question to coworker" / "Delegate work to coworker"), injected by
-# CrewAI when ``allow_delegation`` is set — not a Peon-custom message bus.
+# In the job model (one role per Dramatiq Job — the default) peer messaging is
+# Peon A2A: send_message / check_inbox / go_idle wake idle agents across jobs.
+# CrewAI's native "Ask/Delegate to coworker" tools apply only to the in-process
+# crew (crew_mode=project), where several agents share one Crew.
 COLLAB_TOOLS: tuple[str, ...] = (
     "list_roles",
     "spawn_work",
