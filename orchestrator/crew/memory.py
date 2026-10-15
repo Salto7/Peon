@@ -377,7 +377,6 @@ class MemoryService(SharedServiceBase):
     @staticmethod
     def for_job(job: Any) -> None:
         del job
-        return None
 
     @staticmethod
     def remember_into(target: Any, content: str, meta: dict[str, Any] | None = None) -> bool:

@@ -115,9 +115,7 @@ def default_allowed_tools(*, mode: str = "catalog_wrapper") -> str:
             if entry is None:
                 continue
             if entry.group == CapabilityGroup.SANDBOX:
-                if name in _CATALOG_SANDBOX:
-                    names.append(name)
-                elif mode == "capability" and "shell" in entry.tags:
+                if name in _CATALOG_SANDBOX or mode == "capability" and "shell" in entry.tags:
                     names.append(name)
                 continue
             names.append(name)

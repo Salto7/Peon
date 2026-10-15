@@ -11,7 +11,6 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 from ..plugin import Plugin
-from ..http import AsyncHttpClient
 
 RIPE_NET = "https://stat.ripe.net/data/network-info/data.json?resource={ip}"
 RIPE_AS = "https://stat.ripe.net/data/as-overview/data.json?resource=AS{asn}"

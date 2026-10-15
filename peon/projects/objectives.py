@@ -307,22 +307,21 @@ class ObjectiveScheduler:
 
         del workspace_id  # project identity is the only workspace identity
         alias = _project_alias(project.id)
-        with using_project(project.id):
-            with transaction.atomic(using=alias):
-                objective = (
-                    Objective.objects.using(alias)
-                    .select_for_update()
-                    .get(pk=objective.pk)
-                )
-                job, created = self._create_run_locked(
-                    project,
-                    objective,
-                    alias=alias,
-                    plan_text=plan_text,
-                    plan_path=plan_path,
-                    role_ids=role_ids,
-                    standby=standby,
-                )
+        with using_project(project.id), transaction.atomic(using=alias):
+            objective = (
+                Objective.objects.using(alias)
+                .select_for_update()
+                .get(pk=objective.pk)
+            )
+            job, created = self._create_run_locked(
+                project,
+                objective,
+                alias=alias,
+                plan_text=plan_text,
+                plan_path=plan_path,
+                role_ids=role_ids,
+                standby=standby,
+            )
         if job is None:
             return None
         if job.status == JobStatus.IDLE:
@@ -532,11 +531,10 @@ class ObjectivePlanSync:
         from peon.projects.db import ensure_project_database, using_project
 
         alias = ensure_project_database(project.id)
-        with using_project(project.id):
-            with transaction.atomic(using=alias):
-                return self._sync_locked(
-                    project, objectives_payload, alias=alias, replace=replace
-                )
+        with using_project(project.id), transaction.atomic(using=alias):
+            return self._sync_locked(
+                project, objectives_payload, alias=alias, replace=replace
+            )
 
     def _sync_locked(
         self,

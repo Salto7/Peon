@@ -352,19 +352,18 @@ def drain_inbox(job: Job) -> list[AgentMessage]:
     from peon.projects.db import using_project
 
     alias = _alias(job.project_id)
-    with using_project(job.project_id):
-        with transaction.atomic(using=alias):
-            rows = list(
-                AgentMessage.objects.using(alias)
-                .select_for_update()
-                .filter(to_job=job, delivered_at__isnull=True)
-                .order_by("created_at")
-            )
-            if rows:
-                now = dj_tz.now()
-                for r in rows:
-                    r.delivered_at = now
-                AgentMessage.objects.using(alias).bulk_update(rows, ["delivered_at"])
+    with using_project(job.project_id), transaction.atomic(using=alias):
+        rows = list(
+            AgentMessage.objects.using(alias)
+            .select_for_update()
+            .filter(to_job=job, delivered_at__isnull=True)
+            .order_by("created_at")
+        )
+        if rows:
+            now = dj_tz.now()
+            for r in rows:
+                r.delivered_at = now
+            AgentMessage.objects.using(alias).bulk_update(rows, ["delivered_at"])
     return rows
 
 

@@ -85,7 +85,7 @@ class Plugin(ABC):
 
     async def close(self) -> None:
         """Optional cleanup (browsers, pools)."""
-        return None
+        return
 
 
 class BrowserSupport:

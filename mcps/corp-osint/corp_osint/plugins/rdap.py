@@ -9,7 +9,6 @@ import shutil
 from typing import Any, Optional
 
 from ..plugin import Plugin
-from ..http import AsyncHttpClient
 
 RDAP_URL = "https://rdap.org/domain/{domain}"
 

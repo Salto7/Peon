@@ -61,7 +61,6 @@ class AgentBridgeBase(ABC):
     def append_transcript(self, record: Any) -> None:
         """Persist a structured transcript record (optional)."""
         del record
-        return None
 
     def list_objectives(self) -> str:
         return "Objectives bridge not configured."
