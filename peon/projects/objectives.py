@@ -454,8 +454,9 @@ class ObjectiveScheduler:
 
         try:
             a2a.sweep_orphan_standby(project)
+            a2a.ensure_governance_pm(project)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("standby sweep failed: %s", exc, exc_info=True)
+            logger.warning("standby sweep / governance PM failed: %s", exc, exc_info=True)
         plan_text = (
             project.jobs.order_by("-created_at")
             .values_list("plan_text", flat=True)

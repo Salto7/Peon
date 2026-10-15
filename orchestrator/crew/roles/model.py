@@ -119,17 +119,28 @@ def build_crew_agent(
             f"{backstory}\n\n## Hierarchy\nYou report to `{role.reports_to}`."
         ).strip()
     if role.is_technical or role.is_manager:
-        backstory = (
-            f"{backstory}\n\n## Collaboration\n"
+        # CrewAI-native coworker tools exist only in the in-process crew
+        # (``collaborate``). In the job model peers are reached via A2A
+        # (see "Working with the other agents"), so only instruct coworker
+        # delegation when those tools are actually present.
+        coworker_hint = (
             "Talk to your crew peers directly: use **Ask question to coworker** "
             "to get another specialist's input and **Delegate work to coworker** "
             "to hand a peer a focused sub-task — prefer these over working blind "
-            "or escalating. Engagement PM owns the objective bookend; you govern "
+            "or escalating. "
+            if collaborate
+            else ""
+        )
+        backstory = (
+            f"{backstory}\n\n## Collaboration\n"
+            f"{coworker_hint}"
+            "Engagement PM owns the objective bookend; you govern "
             "**in-lane** work and **must parallelize** heavy fan-out via Dramatiq "
             "child jobs: for multi-host/CIDR/target lists or multi-skill "
             "follow-ons use `spawn_work` (empty `role_id` = this expert) with "
-            "focused `skill_ids` + `scope_slice`, then `wait_for_work` before "
-            "synthesizing. Do **not** ask the PM to replan for follow-ups "
+            "focused `skill_ids` + `scope_slice`, then `go_idle` until they "
+            "report back (a child's result wakes you) before synthesizing. Do "
+            "**not** ask the PM to replan for follow-ups "
             "already in your skill group. You are a specialized PM: your job is "
             "to make sure in-lane objectives are fulfilled, mainly by spawning "
             "and directing workers, not by running the scan/probe yourself. "

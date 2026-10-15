@@ -26,3 +26,9 @@ For corporate recon, invoke **`ai-osint-subsidiaries` `workflow`** first — do 
 chain discovery and this skill.
 
 See [reference](references/REFERENCE.md) for prerequisites, paths, subcommands, dnsx notes, and RoE.
+
+## Collaboration & memory
+- Before repeating a method, tool, or target, `recall_memory`; `save_memory` for durable lessons a later agent would otherwise rediscover.
+- Report up: `send_message` findings, blockers, and scope changes to your parent / role agent — blockers and scope/RoE changes reach the governance PM.
+- Stream, don't hoard: as you discover something a waiting agent needs, `list_team` then `send_message` it (OBJ-n or role id) so it can start while you continue — batch per subject, do not wait for completion.
+- `check_inbox` between steps; when you can only wait on another agent's output, `go_idle` (never poll).

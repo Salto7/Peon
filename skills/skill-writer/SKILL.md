@@ -13,6 +13,13 @@ Produce a **skills-ref-clean** Claude Agent Skill under `workspace/learn/skill/<
 
 Do not emit Peon-only helpers or `metadata.jobable`.
 
+**Collaboration & memory are runtime, not authored.** Peon injects the A2A
+(`send_message`/`check_inbox`/`go_idle`) and memory (`recall_memory`/`save_memory`)
+contract through the role at run time, so a portable pack must **not** hardcode
+those tool names. Describe reporting findings up / consuming upstream results in
+plain prose only; the standard "Collaboration & memory" block belongs in
+Peon-native packs, not skills-ref-clean ones.
+
 ## Scripts
 - `scripts/run.sh` — authoring entry (argv = skill request)
 
