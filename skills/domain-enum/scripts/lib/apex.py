@@ -91,8 +91,7 @@ def host_from_token(token: str) -> str:
         except Exception:
             return ""
     host = host.strip(".").lower()
-    if host.startswith("www."):
-        host = host[4:]
+    host = host.removeprefix("www.")
     if not host or "." not in host or not HOST_RE.fullmatch(host):
         return ""
     return host

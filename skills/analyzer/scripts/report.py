@@ -174,7 +174,7 @@ def build_report(ws: Path) -> Path:
 
     body = "\n".join(
         [
-            f"# Security report",
+            "# Security report",
             "",
             f"Generated: {stamp}",
             "Synthesizer: analyzer skill (offline)",

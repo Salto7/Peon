@@ -7,13 +7,13 @@ import json
 import re
 from typing import Any
 
-_TRUE = frozenset("1 true yes y on".split())
-_FALSE = frozenset("0 false no n off".split())
+_TRUE = frozenset(["1", "true", "yes", "y", "on"])
+_FALSE = frozenset(["0", "false", "no", "n", "off"])
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 _KEBAB = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
 _JSON_OBJ = re.compile(r"\{.*\}", re.S)
-_THINK = frozenset("thinking reasoning thought".split())
+_THINK = frozenset(["thinking", "reasoning", "thought"])
 
 
 def as_bool(value: Any, *, default: bool = False) -> bool:

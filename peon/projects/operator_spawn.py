@@ -197,18 +197,17 @@ def add_child_agent(
         raise ValueError("task prompt is required")
 
     alias = ensure_project_database(project.id)
-    with using_project(project.id):
-        with transaction.atomic(using=alias):
-            result = _add_child_agent_locked(
-                project,
-                parent,
-                alias=alias,
-                role=role,
-                title_s=title_s,
-                prompt_s=prompt_s,
-                selected=selected,
-                reg=reg,
-            )
+    with using_project(project.id), transaction.atomic(using=alias):
+        result = _add_child_agent_locked(
+            project,
+            parent,
+            alias=alias,
+            role=role,
+            title_s=title_s,
+            prompt_s=prompt_s,
+            selected=selected,
+            reg=reg,
+        )
     enqueue_job(str(result["job_id"]))
     upsert_role_skills(
         role.id,

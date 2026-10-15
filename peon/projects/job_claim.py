@@ -144,27 +144,26 @@ def _claim_in_alias(
                 continue
         parent = job.parent
         if parent is not None and parent.status in orphan_parent:
-            with using_project(project_id):
-                with transaction.atomic(using=alias):
-                    locked = (
-                        Job.objects.using(alias)
-                        .select_for_update()
-                        .filter(pk=job.pk, status=JobStatus.PENDING)
-                        .first()
-                    )
-                    if locked is None:
-                        continue
-                    locked.status = JobStatus.CANCELLED
-                    locked.error = f"Orphaned: parent job is {parent.status}"
-                    locked.completed_at = dj_tz.now()
-                    locked.save(
-                        update_fields=[
-                            "status",
-                            "error",
-                            "completed_at",
-                            "updated_at",
-                        ]
-                    )
+            with using_project(project_id), transaction.atomic(using=alias):
+                locked = (
+                    Job.objects.using(alias)
+                    .select_for_update()
+                    .filter(pk=job.pk, status=JobStatus.PENDING)
+                    .first()
+                )
+                if locked is None:
+                    continue
+                locked.status = JobStatus.CANCELLED
+                locked.error = f"Orphaned: parent job is {parent.status}"
+                locked.completed_at = dj_tz.now()
+                locked.save(
+                    update_fields=[
+                        "status",
+                        "error",
+                        "completed_at",
+                        "updated_at",
+                    ]
+                )
             continue
         if not job_slots_available(job):
             continue

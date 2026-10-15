@@ -31,7 +31,7 @@ def _unwrap_bing(href: str) -> str:
     u = (qs.get("u") or [None])[0]
     if not u:
         return href
-    raw = u[2:] if u.startswith("a1") else u
+    raw = u.removeprefix("a1")
     pad = "=" * (-len(raw) % 4)
     try:
         decoded = base64.urlsafe_b64decode(raw + pad).decode("utf-8", errors="replace")

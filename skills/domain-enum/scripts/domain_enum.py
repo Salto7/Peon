@@ -45,10 +45,10 @@ def _corp_details(args: argparse.Namespace) -> dict[str, object]:
         return cached
     if not getattr(args, "from_corp", False):
         details: dict[str, object] = {"names": [], "domains": [], "excluded_low_confidence": []}
-        setattr(args, "_corp_handoff_cache", details)
+        args._corp_handoff_cache = details
         return details
     details = load_corp_handoff_details(getattr(args, "workspace", "workspace") or "workspace")
-    setattr(args, "_corp_handoff_cache", details)
+    args._corp_handoff_cache = details
     return details
 
 
@@ -682,9 +682,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
     brands = _brand_labels(args)
     for row in by_domain.values():
         src = set(row["sources"])
-        if "seed" in src:
-            row["confidence"] = "high"
-        elif any("whois" in s for s in src):
+        if "seed" in src or any("whois" in s for s in src):
             row["confidence"] = "high"
         elif len(src) >= 2:
             row["confidence"] = "medium"

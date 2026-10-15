@@ -43,7 +43,7 @@ class LearnLab(SharedServiceBase):
 
     def staging_root(self) -> Path:
         root = (
-            Path(getattr(settings, "PLATFORM_WORKSPACE_DIR")).resolve()
+            Path(settings.PLATFORM_WORKSPACE_DIR).resolve()
             / "learn_lab"
         )
         root.mkdir(parents=True, exist_ok=True)
