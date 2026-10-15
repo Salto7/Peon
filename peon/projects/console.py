@@ -7,12 +7,13 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.http import JsonResponse
 from django.urls import reverse
 from orchestrator.utils.llm import LLM_NOT_CONFIGURED, chat_json, chat_text, llm_configured
-from peon.projects.crew_control import CrewControl
+from peon.projects.crew_control import instruct_project, pause_project, replan_project
 from peon.projects.http_helpers import json_or_redirect, request_values, wants_json as request_wants_json
-from peon.projects.lifecycle import ProjectLifecycle
+from peon.projects.lifecycle import project_allows_operator
 from peon.projects.roe_ops import authorize_operator_scope
 from peon.projects.hitl import first_open_prompt, resolve_operator_prompt
 from peon.projects.models import (
+    AgentMessage,
     Finding,
     Job,
     JobStatus,
@@ -20,8 +21,14 @@ from peon.projects.models import (
     Project,
     ProjectStatus,
     OperatorPrompt,
+    StreamMessage,
 )
-from peon.projects.streaming import StreamStore
+from peon.projects.streaming import (
+    anchor_job,
+    audit_project_stream,
+    has_live_agents,
+    with_stream_reply,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +60,7 @@ send a work request (the console will replan)."""
 
 def _record_user(project: Project, text: str, *, event: str = "console_user") -> Job | None:
 
-    return StreamStore.audit_project(
+    return audit_project_stream(
         project, text, tag="you", event=event, role="user", message_type="log"
     )
 
@@ -71,7 +78,7 @@ def _replan_narration(project: Project, result: dict, operator_text: str) -> str
     """Conversational ack for a replan — always shown in the chat thread."""
     n = int(result.get("objectives") or 0)
     lines = [
-        f"Got it — I'm replanning from your request"
+        "Got it — I'm replanning from your request"
         + (f" (“{(operator_text or '').strip()[:120]}”)" if operator_text.strip() else "")
         + f". {n} objective(s) are on the board:"
     ]
@@ -103,7 +110,12 @@ def _project_brief(project: Project) -> str:
     )
     jobs_live = project.jobs.filter(
         parent__isnull=True,
-        status__in={JobStatus.RUNNING, JobStatus.PENDING, JobStatus.PAUSED},
+        status__in={
+            JobStatus.RUNNING,
+            JobStatus.PENDING,
+            JobStatus.PAUSED,
+            JobStatus.IDLE,
+        },
     ).count()
     lines = [
         f"Project: {project.title}",
@@ -149,7 +161,7 @@ def _fallback_intent(project: Project, text: str) -> str:
         return "stop"
     if normalized.endswith("?"):
         return "answer"
-    return "instruct" if StreamStore.has_live_agents(project) else "replan"
+    return "instruct" if has_live_agents(project) else "replan"
 
 def _classify(project: Project, text: str) -> str:
     """Return answer|instruct|replan|stop for default chat mode."""
@@ -160,7 +172,7 @@ def _classify(project: Project, text: str) -> str:
         data = chat_json(
             _ROUTE_SYSTEM,
             f"Project context:\n{_project_brief(project)}\n\n"
-            f"Live agents: {'yes' if StreamStore.has_live_agents(project) else 'no'}\n\n"
+            f"Live agents: {'yes' if has_live_agents(project) else 'no'}\n\n"
             f"Operator message:\n{text}",
         )
     except Exception:
@@ -185,16 +197,17 @@ def _do_replan(project: Project, text: str) -> dict:
         authorize_operator_scope(roe, text)
         try:
             project.roe.refresh_from_db()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("RoE refresh failed: %s", exc, exc_info=True)
     user_job = _record_user(project, text, event="console_replan")
-    result = CrewControl.replan(project, text)
+    _remember_feedback(project, text, source="replan request")
+    result = replan_project(project, text)
     # Anchor may be a newly created job after replan.
-    job = StreamStore.anchor_job(project) or user_job
+    job = anchor_job(project) or user_job
     if user_job is None and job is not None:
         _record_user(project, text, event="console_replan")
     reply = _replan_narration(project, result, text)
-    return StreamStore.reply(
+    return with_stream_reply(
         {"ok": True, **result},
         project,
         reply,
@@ -207,29 +220,213 @@ def _do_instruct(
     project: Project, text: str, *, job_id: str | None = None
 ) -> dict:
     """Steer live agents only. If none are live, escalate to replan."""
-    if not job_id and not StreamStore.has_live_agents(project):
+    if not job_id and not has_live_agents(project):
         return _do_replan(project, text)
-    ProjectLifecycle.project_allows_operator(project)
-    job = _record_user(project, text, event="console_instruct")
+    project_allows_operator(project)
+    target = _agent_target(project, job_id) if job_id else None
+    if target is not None and target.status in {
+        JobStatus.COMPLETED,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+    }:
+        raise ValueError(
+            f"{_agent_label(target)} has finished ({target.status}) and cannot take "
+            "new instructions. Ask it about its work, or send a replan for new work."
+        )
+    job = (
+        _record_to_agent(project, text, target, event="console_instruct_agent")
+        if target is not None
+        else _record_user(project, text, event="console_instruct")
+    )
+    _remember_feedback(project, text, source="instruction")
     try:
-        result = CrewControl.instruct(project, text, job_id=job_id)
+        result = instruct_project(project, text, job_id=job_id)
     except RuntimeError as exc:
         if "No running agents" in str(exc):
             return _do_replan(project, text)
         raise
     n = len(result.get("job_ids") or [])
-    reply = (
-        f"Instructed {n} live agent(s) with your note. "
-        "They will adjust under Rules of Engagement — ask me for a status update anytime."
-    )
-    return StreamStore.reply(
+    if target is not None:
+        target.refresh_from_db()
+        label = _agent_label(target)
+        state = {
+            JobStatus.PENDING: "It was idle and has been woken — it will pick this up now.",
+            JobStatus.RUNNING: "It is working; it will see this at its next inbox check.",
+            JobStatus.PAUSED: "It is paused; it will see this when resumed.",
+            JobStatus.IDLE: "It is waiting on its dependencies and will see this when it starts.",
+        }.get(target.status, "")
+        reply = f"Sent to {label}. {state}".strip()
+        result = {**result, "agent": {"id": str(target.id), "label": label, "status": target.status}}
+        meta = {"agent_label": label, "from_job_id": str(target.id)}
+    else:
+        reply = (
+            f"Instructed {n} live agent(s) with your note. "
+            "They will adjust under Rules of Engagement — ask me for a status update anytime."
+        )
+        meta = None
+    return with_stream_reply(
         {"ok": True, "mode": "instruct", **result},
         project,
         reply,
         job=job,
         tag="steer",
         event="console_instruct_reply",
+        meta=meta,
     )
+
+_AGENT_SYSTEM = """You are one agent on a Peon engagement, answering the operator
+who is talking to YOU directly. Speak in the first person as that agent.
+Answer using only the context provided about your own work: your objective,
+what you ran, what you found, what you are waiting for. Be concise and concrete.
+Do not invent results. If the context does not contain the answer, say what you
+do know and what you would need to find out. You cannot take new actions in this
+reply — if the operator wants you to do something, tell them to send it as an
+instruction (Instruct) and you will pick it up."""
+
+
+def _remember_feedback(project: Project, text: str, *, source: str) -> None:
+    """Durable operator guidance → project memory (never blocks the chat)."""
+    try:
+        from peon.projects import memory_store
+
+        memory_store.record_feedback(project, text, source=source)
+    except Exception:  # noqa: BLE001
+        logger.debug("feedback capture failed", exc_info=True)
+
+
+def _agent_target(project: Project, job_id: str) -> Job:
+    """The addressed agent. Terminal agents can still be asked about their work."""
+    from peon.projects.db import qs_using
+
+    job = (
+        qs_using(Job, project.id)
+        .filter(project_id=project.id, pk=str(job_id).strip())
+        .select_related("objective")
+        .first()
+    )
+    if job is None:
+        raise ValueError("That agent is not on this project")
+    return job
+
+
+def _agent_label(job: Job) -> str:
+    from orchestrator.crew.roles.registry import RoleRegistry
+
+    rid = ((job.role_ids or [""])[0] or "").strip()
+    role = RoleRegistry.shared().get(rid) if rid else None
+    return (getattr(role, "label", "") or rid or job.title or "agent").strip()
+
+
+def _addressing(job: Job) -> dict:
+    return {
+        "to_job_id": str(job.id),
+        "to_title": job.title,
+        "agent_label": _agent_label(job),
+        "agent_role": ((job.role_ids or [""])[0] or ""),
+    }
+
+
+def _agent_context(project: Project, job: Job) -> str:
+    """What this agent knows about its own work (for a persona answer)."""
+    from orchestrator.crew.roles.registry import RoleRegistry
+    from peon.projects import a2a
+    from peon.projects.db import qs_using
+
+    rid = ((job.role_ids or [""])[0] or "").strip()
+    role = RoleRegistry.shared().get(rid) if rid else None
+    obj = job.objective
+    lines = [
+        f"You are: {_agent_label(job)} (role {rid or '-'})",
+        f"Your goal: {(getattr(role, 'goal', '') or '').strip() or '(none recorded)'}",
+        f"Your task: {job.title}",
+        f"State: {a2a.a2a_state(job.status)} [{job.status}]",
+    ]
+    if job.status == JobStatus.IDLE:
+        waiting = job.idle_note or (
+            "dependencies completing" if job.idle_reason == "dependencies" else "a message"
+        )
+        lines.append(f"You are idle, waiting for: {waiting}")
+    if job.error:
+        lines.append(f"Last error: {job.error[:500]}")
+    if obj is not None:
+        lines += [
+            f"Objective OBJ-{obj.seq} [{obj.status}]: {obj.title}",
+            f"Objective detail: {(obj.description or '').strip()[:800]}",
+            f"Acceptance: {(obj.acceptance_criteria or '').strip()[:400]}",
+        ]
+    result = (job.result or "").strip()
+    if result:
+        lines.append("Your result so far:\n" + result[:2500])
+    recent = list(
+        qs_using(StreamMessage, project.id)
+        .filter(job_id=job.id)
+        .exclude(message_type="thinking")
+        .order_by("-id")[:30]
+    )
+    if recent:
+        lines.append("Your recent activity (oldest first):")
+        for m in reversed(recent):
+            lines.append(f"- [{m.message_type}] {(m.content or '').strip()[:220]}")
+    mail = list(
+        qs_using(AgentMessage, project.id)
+        .filter(to_job_id=job.id)
+        .order_by("-created_at")[:6]
+    )
+    if mail:
+        lines.append("Messages you received:")
+        for m in reversed(mail):
+            lines.append(f"- from {m.sender}: {m.text[:300]}")
+    return "\n".join(lines)
+
+
+def _ask_agent(project: Project, text: str, job: Job) -> dict:
+    """Conversational answer from one agent, without disturbing its work."""
+    addr = _addressing(job)
+    _record_to_agent(project, text, job, event="console_ask_agent")
+    if not llm_configured():
+        reply = (
+            f"{LLM_NOT_CONFIGURED} {addr['agent_label']} is {job.status}"
+            + (f" — {job.idle_note}" if job.idle_note else "")
+            + "."
+        )
+    else:
+        try:
+            reply = chat_text(
+                _AGENT_SYSTEM,
+                f"Context about your work:\n{_agent_context(project, job)}\n\n"
+                f"Operator asks you:\n{text}",
+            ).strip() or "I could not produce an answer."
+        except Exception as exc:
+            logger.exception("console agent ask failed")
+            reply = f"Could not answer right now: {exc}"
+    return with_stream_reply(
+        {
+            "ok": True,
+            "mode": "agent_answer",
+            "agent": {"id": str(job.id), "label": addr["agent_label"], "status": job.status},
+        },
+        project,
+        reply,
+        job=job,
+        tag="ask",
+        event="console_agent_reply",
+        meta={"agent_label": addr["agent_label"], "from_job_id": str(job.id)},
+    )
+
+
+def _record_to_agent(project: Project, text: str, job: Job, *, event: str) -> Job | None:
+    """Operator line addressed to ``job`` (shows as ``You → <agent>`` in chat)."""
+    return audit_project_stream(
+        project,
+        text,
+        tag="you",
+        event=event,
+        role="user",
+        message_type="log",
+        job=job,
+        meta=_addressing(job),
+    )
+
 
 def _answer(project: Project, text: str) -> dict:
     job = _record_user(project, text, event="console_ask")
@@ -244,7 +441,7 @@ def _answer(project: Project, text: str) -> dict:
         except Exception as exc:
             logger.exception("console ask failed")
             reply = f"Could not answer right now: {exc}"
-    return StreamStore.reply(
+    return with_stream_reply(
         {
             "ok": True,
             "mode": "answer",
@@ -262,12 +459,12 @@ def _do_stop(project: Project, text: str) -> dict:
     if project.status == ProjectStatus.CANCELLED:
         raise RuntimeError("Project is cancelled — cannot stop")
 
-    CrewControl.pause(project)
+    pause_project(project)
     project.refresh_from_db()
     note = (text or "").strip() or "Operator stopped the engagement (project paused)."
     job = _record_user(project, note, event="operator_stop")
     reply = "Project paused — resume from the control bar when you want to continue."
-    return StreamStore.reply(
+    return with_stream_reply(
         {
             "ok": True,
             "mode": "stop",
@@ -325,6 +522,10 @@ def handle_console_chat(
             raise RuntimeError("No pending operator prompt to answer")
         return resolve_operator_prompt(pending, text)
 
+    if m == "chat" and job_id:
+        # Addressed to one agent: a direct conversation, no intent routing.
+        return _ask_agent(project, text, _agent_target(project, job_id))
+
     if m == "chat":
         pending = first_open_prompt(project)
         intent = _classify(project, text)
@@ -367,7 +568,7 @@ def http_handle_console_chat(request, project: Project):
         )
 
     try:
-        result = ConsoleChatRouter.dispatch(
+        result = handle_console_chat(
             project, message, mode=mode, job_id=job_id, prompt_id=prompt_id
         )
     except RuntimeError as exc:
@@ -407,9 +608,3 @@ def http_handle_console_chat(request, project: Project):
     return json_or_redirect(
         request, ok=True, redirect_to=detail, flash=flash, flash_level="success"
     )
-
-
-class ConsoleChatRouter:
-    """Project console classification and action dispatch."""
-
-    dispatch = staticmethod(handle_console_chat)

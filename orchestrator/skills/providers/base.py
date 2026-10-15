@@ -189,12 +189,6 @@ class SkillProvider(ABC):
                 return doc
         return None
 
-    def load_instructions(self, name: str) -> str:
-        doc = self.document(name)
-        if doc is None:
-            raise KeyError(name)
-        return doc.instructions
-
     def list_resources(self, name: str) -> Sequence[str]:
         doc = self.document(name)
         if doc is None or doc.root is None:

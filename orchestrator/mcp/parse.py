@@ -130,6 +130,12 @@ def _command(raw: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
         raise McpParseError("command is required")
     if not command or len(command) > 256 or any(ch in command for ch in "\n\r\x00"):
         raise McpParseError("command is required and must be a single line")
+    # Sandbox PATH only — reject host absolute paths from Desktop configs.
+    if command.startswith(("/", "~")) or "/" in command or "\\" in command:
+        raise McpParseError(
+            "command must be a bare executable on the sandbox PATH "
+            "(python, python3, node, npm, npx, uv, uvx, …), not a host filesystem path"
+        )
     if len(args) > 64:
         raise McpParseError("too many args")
     if any(any(ch in item for ch in "\n\r\x00") or len(item) > 4096 for item in args):
@@ -157,13 +163,16 @@ def _install(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         raise McpParseError("install must be an object")
     kind = str(raw.get("kind") or "").strip().lower()
-    if kind not in {"pip", "npm", "none"}:
-        raise McpParseError("install.kind must be pip, npm, or none")
+    if kind not in {"pip", "uv", "npm", "none"}:
+        raise McpParseError("install.kind must be pip, uv, npm, or none")
     if kind == "none":
         return None
-    manifest = str(raw.get("manifest") or "").strip() or (
-        "requirements.txt" if kind == "pip" else "package.json"
-    )
+    default_manifest = {
+        "pip": "requirements.txt",
+        "uv": "pyproject.toml",
+        "npm": "package.json",
+    }.get(kind, "requirements.txt")
+    manifest = str(raw.get("manifest") or "").strip() or default_manifest
     if ".." in manifest.split("/") or manifest.startswith("/"):
         raise McpParseError("install.manifest must be a relative file name")
     return {"kind": kind, "manifest": manifest}

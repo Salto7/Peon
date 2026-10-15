@@ -23,18 +23,6 @@ def peon_memory_enabled() -> bool:
     return memory_enabled() and bool(getattr(settings, "PEON_MEMORY_ENABLED", True))
 
 
-def memory_required_for_project(project: Any | None) -> bool:
-    """Durable projects always keep memory on; timed follows COGNEE_ENABLED."""
-    if not memory_enabled():
-        return False
-    if project is None:
-        return True
-    kind = getattr(project, "kind", "") or ""
-    if str(kind).strip().lower() == "durable":
-        return True
-    return True
-
-
 def project_dataset(project_id: str) -> str:
     pid = str(project_id or "").strip()
     return f"project_{pid}" if pid else "peon"
@@ -203,182 +191,102 @@ def write_project_bootstrap(project_id: str, text: str) -> Path | None:
         return None
 
 
+def _project_of(dataset: str, titles: dict[str, str]) -> str:
+    """``project_<id>`` dataset → known project id (else ``""``)."""
+    pid = dataset.removeprefix("project_") if dataset.startswith("project_") else ""
+    return pid if pid in titles else ""
+
+
 def build_lab_catalog() -> dict[str, Any]:
     """Enrich Cognee datasets/sessions with Peon project + job labels for Lab UI."""
+    from peon.projects.db import using_project
+    from peon.projects.models import Job, Project
+
     backend = CogneeBackend.shared()
     health = backend.health()
     cognee_ds = backend.datasets()
     cognee_sess = backend.sessions(range_="all", limit=200)
+    titles = {
+        str(p.id): (p.title or "").strip()
+        for p in Project.objects.using("default").only("id", "title")
+    }
 
-    projects: dict[str, Any] = {}
-    try:
-        from peon.projects.models import Project
-
-        for p in Project.objects.using("default").all().only("id", "title", "status"):
-            projects[str(p.id)] = p
-    except Exception as exc:
-        logger.debug("lab_catalog projects: %s", exc)
-
-    datasets_by_name: dict[str, dict[str, Any]] = {}
-
-    def _add_dataset(name: str, *, project_id: str = "", source: str = "") -> None:
-        key = str(name or "").strip()
-        if not key:
-            return
-        row = datasets_by_name.get(key) or {
-            "name": key,
-            "project_id": "",
-            "project_title": "",
-            "label": key,
-            "source": source or "cognee",
-        }
-        if project_id and not row.get("project_id"):
-            row["project_id"] = project_id
-            proj = projects.get(project_id)
-            title = str(getattr(proj, "title", "") or "").strip()
-            row["project_title"] = title
-            row["label"] = f"{title} · {key}" if title else key
-        elif key == "peon":
-            row["label"] = "peon — platform memory"
-            row["source"] = row.get("source") or "platform"
-        datasets_by_name[key] = row
-
-    _add_dataset("peon", source="platform")
-    for pid, proj in projects.items():
-        _add_dataset(project_dataset(pid), project_id=pid, source="project")
-
+    # name -> {"project_id", "source"}; the first source seen wins.
+    datasets: dict[str, dict[str, str]] = {"peon": {"project_id": "", "source": "platform"}}
+    for pid in titles:
+        datasets.setdefault(project_dataset(pid), {"project_id": pid, "source": "project"})
     for raw in cognee_ds.get("datasets") or []:
-        if isinstance(raw, str):
-            _add_dataset(raw, source="cognee")
-            continue
-        if not isinstance(raw, dict):
-            continue
-        name = str(raw.get("name") or raw.get("id") or "").strip()
-        pid = ""
-        if name.startswith("project_"):
-            pid = name[len("project_") :]
-        _add_dataset(name, project_id=pid if pid in projects else "", source="cognee")
+        name = raw if isinstance(raw, str) else str(raw.get("name") or raw.get("id") or "")
+        if name.strip():
+            datasets.setdefault(
+                name.strip(),
+                {"project_id": _project_of(name.strip(), titles), "source": "cognee"},
+            )
 
-    sessions_by_id: dict[str, dict[str, Any]] = {}
+    # session id -> merged facts; earlier non-empty values win, a specific
+    # dataset replaces the "peon" default.
+    sessions: dict[str, dict[str, str]] = {}
 
-    def _add_session(
-        session_id: str,
-        *,
-        dataset: str = "",
-        project_id: str = "",
-        job_title: str = "",
-        status: str = "",
-        source: str = "",
-    ) -> None:
-        sid = str(session_id or "").strip()
+    def add_session(sid: str, *, dataset: str, project_id: str = "", job_title: str = "",
+                    status: str = "", source: str) -> None:
+        sid, dataset = sid.strip(), dataset.strip()
         if not sid:
             return
-        ds = str(dataset or "").strip()
-        pid = str(project_id or "").strip()
-        if not pid and ds.startswith("project_"):
-            maybe = ds[len("project_") :]
-            if maybe in projects:
-                pid = maybe
-        if not ds and pid:
-            ds = project_dataset(pid)
-        proj = projects.get(pid)
-        ptitle = str(getattr(proj, "title", "") or "").strip()
-        jtitle = str(job_title or "").strip()
-        label_bits = [b for b in (ptitle, jtitle or sid, status) if b]
-        row = sessions_by_id.get(sid) or {
-            "session_id": sid,
-            "dataset": ds or "peon",
-            "project_id": pid,
-            "project_title": ptitle,
-            "job_title": jtitle,
-            "status": str(status or "").strip(),
-            "label": " · ".join(label_bits) if label_bits else sid,
-            "source": source or "peon",
-        }
-        if ds and (not row.get("dataset") or row["dataset"] == "peon"):
-            row["dataset"] = ds
-        if pid and not row.get("project_id"):
-            row["project_id"] = pid
-            row["project_title"] = ptitle
-        if jtitle and not row.get("job_title"):
-            row["job_title"] = jtitle
-        if status and not row.get("status"):
-            row["status"] = str(status).strip()
-        row["label"] = " · ".join(
-            b
-            for b in (
-                row.get("project_title") or ptitle,
-                row.get("job_title") or jtitle or sid,
-                row.get("status") or status,
-            )
-            if b
-        )
-        sessions_by_id[sid] = row
+        project_id = project_id or _project_of(dataset, titles)
+        dataset = dataset or (project_dataset(project_id) if project_id else "")
+        row = sessions.setdefault(sid, {"dataset": "", "project_id": "", "job_title": "",
+                                        "status": "", "source": source})
+        if dataset and row["dataset"] in ("", "peon"):
+            row["dataset"] = dataset
+        for key, value in (("project_id", project_id), ("job_title", job_title.strip()),
+                           ("status", status.strip())):
+            row[key] = row[key] or value
 
     for raw in cognee_sess.get("sessions") or []:
-        if not isinstance(raw, dict):
+        if isinstance(raw, dict):
+            add_session(
+                str(raw.get("session_id") or raw.get("id") or raw.get("name") or ""),
+                dataset=str(raw.get("dataset") or raw.get("dataset_name")
+                            or raw.get("datasetName") or ""),
+                status=str(raw.get("status") or ""),
+                source="cognee",
+            )
+    for pid in titles:
+        try:
+            with using_project(pid):
+                jobs = list(Job.objects.order_by("-updated_at").only(
+                    "id", "title", "status", "project_id", "updated_at")[:80])
+        except Exception as exc:
+            logger.warning("lab catalog: jobs for project %s unavailable: %s", pid, exc)
             continue
-        sid = str(
-            raw.get("session_id") or raw.get("id") or raw.get("name") or ""
-        ).strip()
-        ds = str(
-            raw.get("dataset") or raw.get("dataset_name") or raw.get("datasetName") or ""
-        ).strip()
-        _add_session(
-            sid,
-            dataset=ds,
-            status=str(raw.get("status") or ""),
-            source="cognee",
-        )
+        for job in jobs:
+            add_session(job_session_id(job), dataset=project_dataset(pid), project_id=pid,
+                        job_title=job.title or "", status=job.status or "", source="job")
 
-    try:
-        from peon.projects.db import using_project
-        from peon.projects.models import Job
+    def dataset_row(name: str, facts: dict[str, str]) -> dict[str, Any]:
+        title = titles.get(facts["project_id"], "")
+        label = "peon — platform memory" if name == "peon" else (
+            f"{title} · {name}" if title else name)
+        return {"name": name, "project_id": facts["project_id"], "project_title": title,
+                "label": label, "source": facts["source"]}
 
-        for pid, _proj in projects.items():
-            try:
-                with using_project(pid):
-                    jobs = list(
-                        Job.objects.order_by("-updated_at").only(
-                            "id",
-                            "title",
-                            "status",
-                            "objective_id",
-                            "project_id",
-                            "updated_at",
-                        )[:80]
-                    )
-            except Exception as exc:
-                logger.debug("lab_catalog jobs project=%s: %s", pid, exc)
-                continue
-            for job in jobs:
-                _add_session(
-                    job_session_id(job),
-                    dataset=project_dataset(pid),
-                    project_id=pid,
-                    job_title=str(getattr(job, "title", "") or "").strip(),
-                    status=str(getattr(job, "status", "") or "").strip(),
-                    source="job",
-                )
-    except Exception as exc:
-        logger.debug("lab_catalog jobs: %s", exc)
+    def session_row(sid: str, facts: dict[str, str]) -> dict[str, Any]:
+        title = titles.get(facts["project_id"], "")
+        bits = (title, facts["job_title"] or sid, facts["status"])
+        return {"session_id": sid, **facts, "dataset": facts["dataset"] or "peon",
+                "project_title": title, "label": " · ".join(b for b in bits if b)}
 
-    datasets = sorted(
-        datasets_by_name.values(),
-        key=lambda r: (0 if r["name"] == "peon" else 1, r.get("label") or r["name"]),
-    )
-    sessions = sorted(
-        sessions_by_id.values(),
-        key=lambda r: (
-            r.get("project_title") or "",
-            r.get("job_title") or r.get("session_id") or "",
-        ),
-    )
     return {
         "ok": bool(health.get("ok")),
         "cognee": health,
-        "datasets": datasets,
-        "sessions": sessions,
+        "datasets": sorted(
+            (dataset_row(n, f) for n, f in datasets.items()),
+            key=lambda r: (r["name"] != "peon", r["label"] or r["name"]),
+        ),
+        "sessions": sorted(
+            (session_row(sid, f) for sid, f in sessions.items()),
+            key=lambda r: (r["project_title"], r["job_title"] or r["session_id"]),
+        ),
         "datasets_error": str(cognee_ds.get("error") or ""),
         "sessions_error": str(cognee_sess.get("error") or ""),
     }
@@ -388,8 +296,6 @@ class MemoryService(SharedServiceBase):
     """Cognee-backed project and Peon memory lifecycle."""
 
     enabled = staticmethod(memory_enabled)
-    peon_enabled = staticmethod(peon_memory_enabled)
-    required_for_project = staticmethod(memory_required_for_project)
     remember_transcript = staticmethod(remember_transcript)
     remember_peon = staticmethod(remember_peon)
     recall_for_new_project = staticmethod(recall_for_new_project)
@@ -469,18 +375,8 @@ class MemoryService(SharedServiceBase):
     # --- Compatibility stubs (CrewAI memory removed) ---
 
     @staticmethod
-    def build_project(project_id: str, *, project: Any | None = None) -> None:
-        del project_id, project
-        return None
-
-    @staticmethod
     def for_job(job: Any) -> None:
         del job
-        return None
-
-    @staticmethod
-    def from_scope(scope: Any) -> None:
-        del scope
         return None
 
     @staticmethod

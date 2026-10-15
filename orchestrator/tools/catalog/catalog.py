@@ -120,8 +120,8 @@ class ToolCatalog(SharedServiceBase):
     def invalidate(self) -> None:
         try:
             clear_command_caches()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("clearing command caches failed: %s", exc, exc_info=True)
 
         self._cache = None
 

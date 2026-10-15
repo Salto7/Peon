@@ -26,8 +26,16 @@ __all__ = [
     "provision_cli",
     "provision_cli_body",
     "record_finding",
+    "check_inbox",
+    "forget_memory",
+    "go_idle",
+    "list_team",
+    "record_assets",
     "record_findings",
+    "recall_memory",
     "run_periodic",
+    "save_memory",
+    "send_message",
     "sandbox_status",
     "sandbox_status_text",
     "update_objective_status",
@@ -128,6 +136,56 @@ def record_finding(
 def record_findings(findings_json: str) -> str:
     """Record multiple engagement findings from a JSON list (not status updates)."""
     return EngagementTools.record_findings(findings_json)
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def recall_memory(query: str) -> str:
+    """Search persistent memory for this engagement and platform lessons."""
+    return EngagementTools.recall_memory(query)
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def save_memory(
+    name: str, kind: str, description: str, body: str = "", scope: str = "project"
+) -> str:
+    """Save a durable memory (lesson | feedback | fact | decision | reference)."""
+    return EngagementTools.save_memory(name, kind, description, body, scope or "project")
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def forget_memory(name: str, scope: str = "project") -> str:
+    """Retire a stale memory entry."""
+    return EngagementTools.forget_memory(name, scope or "project")
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def list_team() -> str:
+    """List agents on this project (id, objective, role, A2A state)."""
+    return EngagementTools.list_team()
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def send_message(to: str, content: str, kind: str = "inform") -> str:
+    """Send an A2A message to another agent (wakes it if idle)."""
+    return EngagementTools.send_message(to, content, kind=kind or "inform")
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def check_inbox() -> str:
+    """Read and consume messages from other agents or the operator."""
+    return EngagementTools.check_inbox()
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def go_idle(reason: str = "") -> str:
+    """Park this agent until it receives a message."""
+    return EngagementTools.go_idle(reason or "")
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def record_assets(assets_json: str, relations_json: str = "") -> str:
+    """Add discovered assets and typed relations to the engagement asset graph."""
+    return EngagementTools.record_assets(assets_json or "[]", relations_json or "[]")
 
 
 @capability(CapabilityGroup.ENGAGEMENT)

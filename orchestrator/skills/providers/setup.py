@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 from orchestrator.skills.affinity import (
-    AffinityBinding,
     SkillAffinity,
     classify_skill_affinity,
     read_affinity,
+    score_roles,
 )
 from orchestrator.skills.manifest import (
     ParseProfile,
@@ -28,8 +27,6 @@ _SETUP_FILES: tuple[tuple[str, str], ...] = (
     ("pip", "pyproject.toml"),
     ("npm", "package.json"),
 )
-_WORD_RE = re.compile(r"[a-z0-9]+")
-_ROLE_STOPWORDS = frozenset({"expert", "specialist", "role"})
 
 
 def find_setup(root: Path, boundary: Path) -> tuple[SkillSetup | None, Path | None]:
@@ -127,58 +124,26 @@ def infer_skill_affinity(
         except (OSError, SkillParseError):
             return SkillAffinity()
 
-    corpus = " ".join(
-        (
-            spec.command_name,
-            spec.description,
-            spec.license,
-            spec.compatibility,
-            spec.when_to_use,
-            " ".join(spec.tags),
-            spec.body[:4000],
-            " ".join(spec.allowed_tools),
-            " ".join(spec.allow_binaries),
-        )
-    ).lower()
-    words = set(_WORD_RE.findall(corpus))
-    name_words = set(_WORD_RE.findall(spec.command_name.lower()))
-    description_words = set(
-        _WORD_RE.findall(
-            f"{spec.description} {spec.when_to_use} {' '.join(spec.tags)}".lower()
-        )
+    bindings = score_roles(
+        catalog,
+        name=spec.command_name,
+        description=f"{spec.description} {spec.when_to_use} {' '.join(spec.tags)}",
+        corpus=" ".join(
+            (
+                spec.command_name,
+                spec.description,
+                spec.license,
+                spec.compatibility,
+                spec.when_to_use,
+                " ".join(spec.tags),
+                spec.body[:4000],
+                " ".join(spec.allowed_tools),
+                " ".join(spec.allow_binaries),
+            )
+        ),
     )
-    bindings = []
-    for role in catalog:
-        labels = {role.id, *role.aliases}
-        tokens = {
-            token
-            for label in labels
-            for token in _WORD_RE.findall(label.lower())
-            if token not in _ROLE_STOPWORDS
-        }
-        if not tokens:
-            continue
-        name_hits = len(tokens & name_words)
-        description_hits = len(tokens & description_words)
-        body_hits = len(tokens & words)
-        if name_hits:
-            score = 0.95
-        elif description_hits:
-            score = 0.75
-        elif body_hits:
-            score = 0.55
-        else:
-            continue
-        bindings.append((role.id, score, name_hits > 0))
-
     if bindings:
-        return SkillAffinity(
-            bindings=tuple(
-                AffinityBinding(role_id=role, score=score, lead=lead)
-                for role, score, lead in bindings
-            ),
-            source="dynamic-keyword",
-        )
+        return SkillAffinity(bindings=bindings, source="dynamic-keyword")
     try:
         return classify_skill_affinity(pack, known_roles=catalog_ids)
     except Exception:

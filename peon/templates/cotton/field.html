@@ -1,0 +1,7 @@
+{% comment %}<c-field label="Title" for="id_title" help="…" error="…"><input id="id_title" class="ui-input" …></c-field>{% endcomment %}
+<c-vars label="" for="" help="" error="" class="" />
+<div class="space-y-1.5 {{ class }}">
+  {% if label %}<label class="ui-label block" for="{{ for }}">{{ label }}</label>{% endif %}
+  {{ slot }}
+  {% if error %}<p class="text-xs text-destructive">{{ error }}</p>{% elif help %}<p class="ui-help">{{ help }}</p>{% endif %}
+</div>

@@ -1,0 +1,8 @@
+{% load ui %}
+<c-vars href="" icon="" label="" active="" badge="" />
+<a href="{{ href }}" title="{{ label }}"{% if active %} aria-current="page"{% endif %}
+   class="group/nav flex h-8 items-center gap-2.5 rounded-md px-2 text-sm font-medium transition-colors sidebar-collapsed:md:justify-center sidebar-collapsed:md:px-0 {% if active %}bg-sidebar-accent text-sidebar-accent-foreground{% else %}text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground aria-[current=page]:bg-sidebar-accent aria-[current=page]:text-sidebar-accent-foreground{% endif %}" {{ attrs }}>
+  {% icon icon "size-4" %}
+  <span class="truncate sidebar-collapsed:md:sr-only">{{ label }}</span>
+  {% if badge %}<span {{ badge }} hidden class="ml-auto rounded-full bg-warning px-1.5 text-[11px] leading-5 font-semibold text-background tabular-nums sidebar-collapsed:md:absolute sidebar-collapsed:md:ml-5 sidebar-collapsed:md:-mt-4">0</span>{% endif %}
+</a>

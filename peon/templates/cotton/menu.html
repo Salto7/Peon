@@ -1,0 +1,15 @@
+{% comment %}
+<c-menu label="Project actions">…<button class="ui-menu-item">…</button>…</c-menu>
+A <details>-based dropdown (no JS required; lib/behaviors.ts closes it on outside click / Esc).
+{% endcomment %}
+{% load ui %}
+<c-vars label="More actions" icon="ellipsis" align="right" />
+<details data-menu data-menu-align="{{ align }}" class="relative" {{ attrs }}>
+  <summary aria-label="{{ label }}" title="{{ label }}"
+           class="inline-flex size-8 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground [&::-webkit-details-marker]:hidden">
+    {% icon icon %}
+  </summary>
+  <div data-menu-panel role="menu" class="fixed z-[var(--z-dropdown)] min-w-44 rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
+    {{ slot }}
+  </div>
+</details>

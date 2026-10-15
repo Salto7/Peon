@@ -4,8 +4,9 @@ Roles, skills, MCP server specs, file bodies, and role mappings live in
 ``workspaces/platform/db.sqlite3``. Callers use this module. They do not query
 those models directly.
 
-``skills/`` and ``skills_imported/`` are a one-time bootstrap when the skill
-table is empty. After that the database is the registry.
+``skills/`` is a one-time bootstrap when the skill table is empty. Pack type
+(peon vs claude) is inferred per directory. After that the database is the
+registry.
 """
 
 from __future__ import annotations
@@ -80,7 +81,7 @@ def _invalidate() -> None:
         SkillRegistry.shared().invalidate()
         RoleRegistry.shared().invalidate()
     except Exception:
-        logger.debug("catalog cache invalidate skipped", exc_info=True)
+        logger.warning("catalog cache invalidate skipped", exc_info=True)
 
 
 def _hash_payload(payload: object) -> str:
@@ -130,9 +131,10 @@ class PlatformCatalog:
     # --- roles -------------------------------------------------------------
 
     def ensure_seeded(self) -> None:
-        """Insert default roles and, once, bootstrap skills from disk."""
+        """Insert default roles and, once, bootstrap skills/MCPs from disk."""
         self._seed_roles()
         self._import_skill_trees()
+        self._import_mcp_packs()
 
     def _seed_roles(self) -> int:
         from orchestrator.crew.roles.catalog import DEFAULT_ROLES
@@ -400,63 +402,6 @@ class PlatformCatalog:
             logger.debug("list_bindings failed: %s", exc)
             return ()
 
-    def upsert_binding(
-        self,
-        *,
-        role_id: str,
-        owner_kind: str,
-        owner_id: str,
-        score: float = 1.0,
-        lead: bool = False,
-    ) -> Binding:
-        from orchestrator.crew.roles.catalog import normalize_role_id
-
-        from peon.projects.models import CatalogBinding
-
-        rid = normalize_role_id(role_id)
-        kind = str(owner_kind or "").strip().lower()
-        oid = str(owner_id or "").strip()
-        if not rid:
-            raise ValueError("invalid role id")
-        if kind not in {OWNER_SKILL, OWNER_MCP}:
-            raise ValueError("owner_kind must be skill or mcp")
-        if not oid:
-            raise ValueError("owner id is required")
-        if self.get_role(rid) is None:
-            raise ValueError(f"unknown role {rid!r}")
-        if kind == OWNER_SKILL and self.get_skill(oid) is None:
-            raise ValueError(f"unknown skill {oid!r}")
-        if kind == OWNER_MCP and self.get_mcp(oid) is None:
-            raise ValueError(f"unknown mcp server {oid!r}")
-        score_f = float(score)
-        if score_f < 0 or score_f > 1:
-            raise ValueError("score must be between 0 and 1")
-        CatalogBinding.objects.update_or_create(
-            role_id=rid,
-            owner_kind=kind,
-            owner_id=oid,
-            defaults={"score": score_f, "lead": bool(lead)},
-        )
-        _invalidate()
-        return Binding(rid, kind, oid, score_f, bool(lead))
-
-    def delete_binding(
-        self, *, role_id: str, owner_kind: str, owner_id: str
-    ) -> None:
-        from orchestrator.crew.roles.catalog import normalize_role_id
-
-        from peon.projects.models import CatalogBinding
-
-        rid = normalize_role_id(role_id)
-        deleted, _ = CatalogBinding.objects.filter(
-            role_id=rid,
-            owner_kind=str(owner_kind or "").strip().lower(),
-            owner_id=str(owner_id or "").strip(),
-        ).delete()
-        if not deleted:
-            raise KeyError("binding not found")
-        _invalidate()
-
     def replace_bindings(
         self,
         *,
@@ -513,6 +458,80 @@ class PlatformCatalog:
             )
         _invalidate()
         return tuple(cleaned)
+
+    def _apply_owner_bindings(
+        self,
+        *,
+        owner_kind: str,
+        owner_id: str,
+        bindings: list[dict[str, Any]] | None,
+        rename_from: str = "",
+        infer_id: str = "",
+        infer_description: str = "",
+        infer_body: str = "",
+        infer_tags: tuple[str, ...] = (),
+    ) -> None:
+        """Write explicit bindings, else rename carry, else auto-infer roles.
+
+        ``bindings is None`` → auto-infer (install / omit).
+        Non-empty list → replace with those rows.
+        ``bindings == []`` → clear when mappings already exist; otherwise auto-infer
+        (catalog UI always posts an empty list for new items).
+        """
+        if bindings:
+            self.replace_bindings(
+                owner_kind=owner_kind, owner_id=owner_id, bindings=bindings
+            )
+            return
+        if bindings is not None:
+            existing = self.list_bindings(owner_kind=owner_kind, owner_id=owner_id)
+            if existing:
+                self.replace_bindings(
+                    owner_kind=owner_kind, owner_id=owner_id, bindings=[]
+                )
+                return
+        if rename_from and rename_from != owner_id:
+            carried = self.list_bindings(owner_kind=owner_kind, owner_id=rename_from)
+            if carried:
+                self.replace_bindings(
+                    owner_kind=owner_kind,
+                    owner_id=owner_id,
+                    bindings=[
+                        {
+                            "role_id": b.role_id,
+                            "score": b.score,
+                            "lead": b.lead,
+                        }
+                        for b in carried
+                    ],
+                )
+                return
+        try:
+            from orchestrator.skills.affinity import infer_catalog_bindings
+
+            inferred = infer_catalog_bindings(
+                owner_id=infer_id or owner_id,
+                owner_kind=owner_kind,
+                description=infer_description,
+                body=infer_body,
+                tags=infer_tags,
+            )
+        except Exception as exc:
+            logger.warning(
+                "auto-bind failed for %s %s: %s", owner_kind, owner_id, exc
+            )
+            inferred = []
+        if inferred:
+            try:
+                self.replace_bindings(
+                    owner_kind=owner_kind, owner_id=owner_id, bindings=inferred
+                )
+                return
+            except ValueError as exc:
+                logger.warning(
+                    "auto-bind rejected for %s %s: %s", owner_kind, owner_id, exc
+                )
+        _invalidate()
 
     # --- skills ------------------------------------------------------------
 
@@ -584,6 +603,7 @@ class PlatformCatalog:
         skill_id: str = "",
         provider: str = "peon",
         bindings: list[dict[str, Any]] | None = None,
+        keep_bindings: bool = False,
     ) -> SkillRecord:
         from orchestrator.skills.manifest import ParseProfile, SkillParseError, parse_skill_manifest
         from orchestrator.skills.providers.base import PEON_PROVIDER, SkillId
@@ -642,6 +662,7 @@ class PlatformCatalog:
         payload["_source"] = md if md.endswith("\n") else md + "\n"
         setup = _setup_from_files(file_map)
         digest = _hash_payload({"md": md, "files": file_map, "provider": prov})
+        existed = CatalogSkill.objects.filter(skill_id=public).exists()
         with transaction.atomic():
             CatalogSkill.objects.update_or_create(
                 skill_id=public,
@@ -668,29 +689,19 @@ class PlatformCatalog:
                     for rel, text in sorted(file_map.items())
                 ]
             )
-        if bindings is not None:
-            self.replace_bindings(
-                owner_kind=OWNER_SKILL, owner_id=public, bindings=bindings
-            )
-        elif rename_from and rename_from != public:
-            carried = self.list_bindings(owner_kind=OWNER_SKILL, owner_id=rename_from)
-            if carried:
-                self.replace_bindings(
-                    owner_kind=OWNER_SKILL,
-                    owner_id=public,
-                    bindings=[
-                        {
-                            "role_id": b.role_id,
-                            "score": b.score,
-                            "lead": b.lead,
-                        }
-                        for b in carried
-                    ],
-                )
-            else:
-                _invalidate()
-        else:
+        if keep_bindings and existed and not rename_from:
             _invalidate()
+        else:
+            self._apply_owner_bindings(
+                owner_kind=OWNER_SKILL,
+                owner_id=public,
+                bindings=bindings,
+                rename_from=rename_from if rename_from != public else "",
+                infer_id=public,
+                infer_description=manifest.description,
+                infer_body=manifest.body,
+                infer_tags=tuple(manifest.tags or ()),
+            )
         if rename_from and rename_from != public:
             self.delete_skill(rename_from)
         rec = self.get_skill(public)
@@ -755,6 +766,7 @@ class PlatformCatalog:
         bindings: list[dict[str, Any]] | None = None,
         enabled: bool | None = None,
         rename_from: str = "",
+        keep_bindings: bool = False,
     ) -> McpRecord:
         from orchestrator.mcp.parse import parse_mcp_document
 
@@ -772,11 +784,22 @@ class PlatformCatalog:
                 raise ValueError(f"unknown mcp server {previous!r}")
             if CatalogMcp.objects.filter(mcp_id=spec.mcp_id).exists():
                 raise ValueError(f"mcp server {spec.mcp_id!r} already exists")
-        file_map = {_safe_rel(k): str(v) for k, v in (files or {}).items()}
         existing = CatalogMcp.objects.filter(mcp_id=spec.mcp_id).first()
+        existed = existing is not None
         keep_enabled = bool(existing.enabled) if existing is not None else True
         if enabled is not None:
             keep_enabled = bool(enabled)
+        # None = leave files; {} = clear; dict = replace.
+        replace_files = files is not None
+        if replace_files:
+            file_map = {_safe_rel(k): str(v) for k, v in files.items()}
+        else:
+            file_map = {
+                str(item.path): str(item.body or "")
+                for item in CatalogFile.objects.filter(
+                    owner_kind=OWNER_MCP, owner_id=spec.mcp_id
+                )
+            }
         digest = _hash_payload(
             {
                 "command": spec.command,
@@ -803,42 +826,42 @@ class PlatformCatalog:
                     "content_hash": digest,
                 },
             )
-            CatalogFile.objects.filter(owner_kind=OWNER_MCP, owner_id=spec.mcp_id).delete()
-            if file_map:
-                CatalogFile.objects.bulk_create(
-                    [
-                        CatalogFile(
-                            owner_kind=OWNER_MCP,
-                            owner_id=spec.mcp_id,
-                            path=rel,
-                            body=text,
-                        )
-                        for rel, text in sorted(file_map.items())
-                    ]
-                )
-        if bindings is not None:
-            self.replace_bindings(
-                owner_kind=OWNER_MCP, owner_id=spec.mcp_id, bindings=bindings
-            )
-        elif previous:
-            carried = self.list_bindings(owner_kind=OWNER_MCP, owner_id=previous)
-            if carried:
-                self.replace_bindings(
-                    owner_kind=OWNER_MCP,
-                    owner_id=spec.mcp_id,
-                    bindings=[
-                        {
-                            "role_id": b.role_id,
-                            "score": b.score,
-                            "lead": b.lead,
-                        }
-                        for b in carried
-                    ],
-                )
-            else:
-                _invalidate()
-        else:
+            if replace_files:
+                CatalogFile.objects.filter(
+                    owner_kind=OWNER_MCP, owner_id=spec.mcp_id
+                ).delete()
+                if file_map:
+                    CatalogFile.objects.bulk_create(
+                        [
+                            CatalogFile(
+                                owner_kind=OWNER_MCP,
+                                owner_id=spec.mcp_id,
+                                path=rel,
+                                body=text,
+                            )
+                            for rel, text in sorted(file_map.items())
+                        ]
+                    )
+        if keep_bindings and existed and not previous:
             _invalidate()
+        else:
+            self._apply_owner_bindings(
+                owner_kind=OWNER_MCP,
+                owner_id=spec.mcp_id,
+                bindings=bindings,
+                rename_from=previous,
+                infer_id=spec.mcp_id,
+                infer_description=spec.description,
+                infer_body=" ".join(
+                    (
+                        spec.command,
+                        " ".join(spec.args),
+                        spec.cwd,
+                        " ".join(name for name, _req in spec.env_schema),
+                    )
+                ),
+                infer_tags=(),
+            )
         if previous:
             self.delete_mcp(previous)
         rec = self.get_mcp(spec.mcp_id)
@@ -906,11 +929,25 @@ class PlatformCatalog:
             row.delete()
         _invalidate()
 
-    # --- bootstrap ---------------------------------------------------------
+    # --- bootstrap / disk sync ---------------------------------------------
 
-    def _import_skill_trees(self) -> int:
+    def _skill_disk_roots(self) -> list[tuple[Path, str]]:
         from django.conf import settings
 
+        roots: list[tuple[Path, str]] = []
+        skills = Path(getattr(settings, "SKILLS_DIR", "") or "")
+        imported = Path(getattr(settings, "SKILLS_IMPORTED_DIR", "") or "")
+        if skills.is_dir():
+            roots.append((skills, "infer"))
+        if imported.is_dir() and imported.resolve() != skills.resolve():
+            roots.append((imported, "claude"))
+        for extra in getattr(settings, "SKILLS_EXTRA_DIRS", ()) or ():
+            path = Path(extra)
+            if path.is_dir():
+                roots.append((path, "claude"))
+        return roots
+
+    def _import_skill_trees(self) -> int:
         from peon.projects.models import CatalogSkill
 
         try:
@@ -919,44 +956,120 @@ class PlatformCatalog:
         except Exception as exc:
             logger.debug("skill table unavailable: %s", exc)
             return 0
-        roots: list[tuple[Path, str]] = []
-        skills = Path(getattr(settings, "SKILLS_DIR", "") or "")
-        imported = Path(getattr(settings, "SKILLS_IMPORTED_DIR", "") or "")
         self._seed_roles()
-        if skills.is_dir():
-            roots.append((skills, "peon"))
-        if imported.is_dir() and imported.resolve() != skills.resolve():
-            roots.append((imported, "claude"))
-        for extra in getattr(settings, "SKILLS_EXTRA_DIRS", ()) or ():
-            path = Path(extra)
-            if path.is_dir():
-                roots.append((path, "claude"))
         count = 0
-        for root, provider in roots:
-            count += self._import_skill_root(root, provider)
+        for root, mode in self._skill_disk_roots():
+            count += len(
+                self._import_skill_root(root, mode, keep_bindings=False)
+            )
         if count:
             logger.info("bootstrapped %s skills into the platform catalog", count)
         return count
 
-    def _import_skill_root(self, root: Path, provider: str) -> int:
+    def sync_skills_from_disk(self) -> dict[str, list[str]]:
+        """Re-read ``skills/`` into the catalog. Preserves existing role bindings."""
+        from peon.projects.models import CatalogSkill
+
+        self._seed_roles()
+        before = {
+            str(row.skill_id): str(row.content_hash or "")
+            for row in CatalogSkill.objects.all()
+        }
+        seen: set[str] = set()
+        for root, mode in self._skill_disk_roots():
+            for skill_id in self._import_skill_root(
+                root, mode, keep_bindings=True
+            ):
+                seen.add(skill_id)
+        after = {
+            str(row.skill_id): str(row.content_hash or "")
+            for row in CatalogSkill.objects.filter(skill_id__in=seen)
+        }
+        added = sorted(sid for sid in seen if sid not in before)
+        modified = sorted(
+            sid
+            for sid in seen
+            if sid in before and before[sid] != after.get(sid, "")
+        )
+        # Disk is additive: catalog-only skills (UI-authored) are not removed.
+        return {"added": added, "removed": [], "modified": modified}
+
+    def _import_mcp_packs(self) -> int:
+        """Bootstrap ``mcps/`` into an empty catalog (first boot)."""
+        from peon.projects.models import CatalogMcp
+
+        try:
+            if CatalogMcp.objects.exists():
+                return 0
+        except Exception as exc:
+            logger.debug("mcp table unavailable: %s", exc)
+            return 0
+        result = self.sync_mcps_from_disk()
+        added = len(result.get("added") or [])
+        if added:
+            logger.info("bootstrapped %s MCP servers into the platform catalog", added)
+        return added
+
+    def sync_mcps_from_disk(self) -> dict[str, list[str]]:
+        """Re-read ``mcps/`` packs into the catalog. Preserves role bindings."""
+        from django.conf import settings
+
+        from peon.projects.models import CatalogMcp
+
+        root = Path(getattr(settings, "MCPS_DIR", "") or "")
+        if not root.is_dir():
+            return {"added": [], "removed": [], "modified": []}
+        before = {
+            str(row.mcp_id): str(row.content_hash or "")
+            for row in CatalogMcp.objects.all()
+        }
+        from orchestrator.mcp.install import refresh_mcp_root
+
+        ids = refresh_mcp_root(root, keep_bindings=True)
+        after = {
+            str(row.mcp_id): str(row.content_hash or "")
+            for row in CatalogMcp.objects.filter(mcp_id__in=ids)
+        }
+        seen = set(ids)
+        added = sorted(mid for mid in seen if mid not in before)
+        modified = sorted(
+            mid
+            for mid in seen
+            if mid in before and before[mid] != after.get(mid, "")
+        )
+        return {"added": added, "removed": [], "modified": modified}
+
+    def _import_skill_root(
+        self, root: Path, mode: str, *, keep_bindings: bool
+    ) -> list[str]:
         from orchestrator.skills.affinity import read_affinity
+        from orchestrator.skills.kind import catalog_id_for, infer_skill_kind
+        from orchestrator.skills.providers.base import CLAUDE_PROVIDER, PEON_PROVIDER
         from orchestrator.skills.registry_scan import discover_skill_candidates
 
-        count = 0
-        source = "native" if provider == "peon" else "imported"
+        imported: list[str] = []
+        default = PEON_PROVIDER if mode == "infer" else CLAUDE_PROVIDER
+        source = "native" if mode == "infer" else "imported"
         try:
             candidates = discover_skill_candidates(
                 root, source=source, skip_helpers=True
             )
         except Exception as exc:
             logger.warning("skill bootstrap scan failed for %s: %s", root, exc)
-            return 0
+            return []
         for candidate in candidates:
             try:
                 text = candidate.manifest.read_text(encoding="utf-8")
             except OSError as exc:
                 logger.warning("unreadable skill %s: %s", candidate.manifest, exc)
                 continue
+            kind = (
+                infer_skill_kind(candidate.root, default_provider=default)
+                if mode == "infer"
+                else infer_skill_kind(
+                    candidate.root, default_provider=CLAUDE_PROVIDER
+                )
+            )
             files: dict[str, str] = {}
             for path in sorted(candidate.root.rglob("*")):
                 if not path.is_file():
@@ -973,7 +1086,7 @@ class PlatformCatalog:
             except Exception:
                 affinity = None
             binding_rows = []
-            if affinity is not None:
+            if affinity is not None and not keep_bindings:
                 for binding in affinity.bindings:
                     if binding.score < _AFFINITY_THRESHOLD:
                         continue
@@ -988,18 +1101,83 @@ class PlatformCatalog:
                         }
                     )
             try:
-                self.upsert_skill(
+                rec = self.upsert_skill(
                     skill_md=text,
                     files=files,
-                    skill_id=candidate.root.name if provider == "peon" else f"claude/{candidate.root.name}",
-                    provider=provider,
-                    bindings=binding_rows,
+                    skill_id=catalog_id_for(candidate.root.name, kind),
+                    provider=kind.provider,
+                    bindings=binding_rows or None,
+                    keep_bindings=keep_bindings,
                 )
             except Exception as exc:
                 logger.warning("skipped skill %s: %s", candidate.root, exc)
                 continue
-            count += 1
-        return count
+            imported.append(rec.skill_id)
+        return imported
+
+    def ingest_imported_skill(self, name: str) -> str:
+        """Load a pack from ``skills/<name>`` into the platform catalog."""
+        from django.conf import settings
+
+        from orchestrator.skills.affinity import read_affinity
+        from orchestrator.skills.common import find_manifest
+        from orchestrator.skills.kind import catalog_id_for, infer_skill_kind
+        from orchestrator.skills.providers.base import CLAUDE_PROVIDER
+
+        slug = str(name or "").strip().lower()
+        if not slug:
+            raise ValueError("skill name is required")
+        skills_root = Path(getattr(settings, "SKILLS_DIR", "") or "")
+        legacy = Path(getattr(settings, "SKILLS_IMPORTED_DIR", "") or "")
+        root = skills_root / slug
+        if not root.is_dir() and legacy.resolve() != skills_root.resolve():
+            root = legacy / slug
+        if not root.is_dir():
+            raise ValueError(f"skill directory missing: {skills_root / slug}")
+        manifest = find_manifest(root)
+        if manifest is None:
+            raise ValueError(f"{root} has no SKILL.md")
+        text = manifest.read_text(encoding="utf-8")
+        files: dict[str, str] = {}
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel in {"SKILL.md", "peon.affinity.yaml"} or path.name.startswith("."):
+                continue
+            try:
+                files[rel] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+        binding_rows: list[dict[str, Any]] = []
+        try:
+            affinity = read_affinity(root)
+        except Exception:
+            affinity = None
+        if affinity is not None:
+            for binding in affinity.bindings:
+                if binding.score < _AFFINITY_THRESHOLD:
+                    continue
+                role = self.get_role(binding.role_id)
+                if role is None:
+                    continue
+                binding_rows.append(
+                    {
+                        "role_id": role.id,
+                        "score": binding.score,
+                        "lead": binding.lead,
+                    }
+                )
+        # Installed / Lab packs default to claude unless signals say otherwise.
+        kind = infer_skill_kind(root, default_provider=CLAUDE_PROVIDER)
+        rec = self.upsert_skill(
+            skill_md=text,
+            files=files,
+            skill_id=catalog_id_for(slug, kind),
+            provider=kind.provider,
+            bindings=binding_rows or None,
+        )
+        return rec.skill_id
 
 
 def _manifest_payload(manifest) -> dict[str, Any]:

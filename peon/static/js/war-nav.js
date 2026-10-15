@@ -6,6 +6,7 @@
     assets: true,
     results: true,
     attack: true,
+    memory: true,
     reports: true,
     settings: true,
   };

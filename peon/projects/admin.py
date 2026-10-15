@@ -55,15 +55,15 @@ class ProjectAdmin(admin.ModelAdmin):
     readonly_fields = ("id", "created_at", "updated_at")
 
     def delete_model(self, request, obj) -> None:
-        from peon.projects.lifecycle import ProjectLifecycle
+        from peon.projects.lifecycle import delete_project
 
-        ProjectLifecycle.delete_project(obj)
+        delete_project(obj)
 
     def delete_queryset(self, request, queryset) -> None:
-        from peon.projects.lifecycle import ProjectLifecycle
+        from peon.projects.lifecycle import delete_project
 
         for project in queryset.iterator():
-            ProjectLifecycle.delete_project(project)
+            delete_project(project)
 
 
 @admin.register(Objective)

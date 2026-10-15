@@ -11,6 +11,7 @@ from orchestrator.skills.providers.base import (
     SkillSetup,
 )
 from orchestrator.skills.providers.claude_agent import ClaudeAgentSkillsProvider
+from orchestrator.skills.providers.disk import DiskSkillsProvider
 from orchestrator.skills.providers.peon_native import PeonNativeProvider
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "DISCLOSURE_PROGRESSIVE",
     "PEON_PROVIDER",
     "ClaudeAgentSkillsProvider",
+    "DiskSkillsProvider",
     "PeonNativeProvider",
     "SkillDocument",
     "SkillId",

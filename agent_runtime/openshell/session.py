@@ -32,11 +32,10 @@ class OpenShellSession(RuntimeSession):
             [
                 f"ORCHESTRATOR_WORKSPACE={workspace}",
                 "SKILLS_DIR=/skills",
-                "SKILLS_IMPORTED_DIR=/skills-imported",
-                "HELPERS_DIR=/helpers",
+                "SKILLS_IMPORTED_DIR=/skills",
                 "TOOLS_CATALOG_DIR=/tools/catalog",
                 "PROJECT_WORKSPACES_DIR=/workspace",
-                "PYTHONPATH=/skills/helpers:/helpers",
+                "PYTHONPATH=/skills/helpers",
             ]
         )
         for key, val in (env or {}).items():

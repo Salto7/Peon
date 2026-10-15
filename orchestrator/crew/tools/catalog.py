@@ -9,14 +9,25 @@ ToolFactory = Callable[[], Any]
 _FACTORIES: dict[str, ToolFactory] = {}
 
 # Engagement roles get these without listing them on every skill pack.
+# Peer messaging among agents uses CrewAI's native collaboration tools
+# ("Ask question to coworker" / "Delegate work to coworker"), injected by
+# CrewAI when ``allow_delegation`` is set — not a Peon-custom message bus.
 COLLAB_TOOLS: tuple[str, ...] = (
     "list_roles",
     "spawn_work",
     "wait_for_work",
     "list_work",
     "propose_work",
-    "send_agent_message",
     "ask_operator",
+    # Persistent memory (index is injected at start; these fetch/record detail).
+    "recall_memory",
+    "save_memory",
+    "forget_memory",
+    # A2A: address other agents directly; idle agents wake on messages.
+    "list_team",
+    "send_message",
+    "check_inbox",
+    "go_idle",
 )
 MANAGER_COLLAB_TOOLS: tuple[str, ...] = (*COLLAB_TOOLS, "list_delegations")
 
@@ -32,6 +43,7 @@ SANDBOX_RUNTIME_TOOLS: tuple[str, ...] = (
 FINDINGS_RUNTIME_TOOLS: tuple[str, ...] = (
     "record_finding",
     "record_findings",
+    "record_assets",
     "list_findings",
 )
 OBJECTIVE_RUNTIME_TOOLS: tuple[str, ...] = (
@@ -41,6 +53,12 @@ OBJECTIVE_RUNTIME_TOOLS: tuple[str, ...] = (
 ANALYZER_RUNTIME_TOOLS: tuple[str, ...] = (
     *OBJECTIVE_RUNTIME_TOOLS,
     *FINDINGS_RUNTIME_TOOLS,
+    "list_team",
+    "send_message",
+    "check_inbox",
+    "recall_memory",
+    "save_memory",
+    "forget_memory",
     "list_workspace_artifacts",
     "read_workspace_artifact",
     "write_report_note",
@@ -51,6 +69,8 @@ TECHNICAL_RUNTIME_TOOLS: tuple[str, ...] = (
     *FINDINGS_RUNTIME_TOOLS,
     "list_mcp_tools",
     "call_mcp_tool",
+    "list_mcp_resources",
+    "read_mcp_resource",
 )
 MANAGER_RUNTIME_TOOLS: tuple[str, ...] = (
     *SANDBOX_RUNTIME_TOOLS,

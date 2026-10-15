@@ -97,34 +97,33 @@ class ProjectSandbox(SharedServiceBase):
         )
 
     @classmethod
-    def dedicated_name(cls, project_id: str) -> str:
-        self = cls.shared()
-        runtime = self.runtime_for(project_id)
-        return runtime.resource_name(str(project_id or ""), prefix=self.prefix(), shared=False)
-
-    @classmethod
     def provision(
         cls,
         project_id: str,
         *,
-        workspace: Path | None = None,
-        skills_dir: Path | None = None,
-        helpers_dir: Path | None = None,
-        tools_dir: Path | None = None,
+        bind: bool = True,
+        warm_mcp: bool = True,
     ) -> SessionInfo:
-        self = cls.shared()
-        pid = str(project_id or "").strip()
-        runtime = self.runtime_for(pid)
-        spec = self._project_spec(
-            pid,
-            runtime_id=runtime.id,
-            workspace=workspace,
-            skills_dir=skills_dir,
-            helpers_dir=helpers_dir,
-            tools_dir=tools_dir,
-        )
+        """Create or attach the project runtime.
+
+        Job paths bind the session and warm the MCP supervisor. The operator
+        terminal passes ``bind=False, warm_mcp=False``: it only needs the
+        container up, and the MCP warm-up can take minutes on a cold image.
+        """
+        runtime, spec = cls.spec_for(str(project_id or "").strip())
         session = runtime.provision(spec)
-        bind_runtime_session(session, default_workdir="/workspace")
+        if bind:
+            bind_runtime_session(session, default_workdir="/workspace")
+        mode = (session.info.mode or "").strip().lower()
+        if warm_mcp and mode and mode != "openshell":
+            try:
+                from orchestrator.mcp.provision import ensure_mcp_runtime
+
+                warm = ensure_mcp_runtime(session)
+                if warm:
+                    logger.warning("mcp supervisor warm-up: %s", warm[:300])
+            except Exception as exc:
+                logger.warning("mcp supervisor warm-up skipped: %s", exc)
         return session.info
 
     @classmethod
@@ -240,81 +239,37 @@ class ProjectSandbox(SharedServiceBase):
             action = "missing"
         return {"action": action, "project_id": pid, "backends": results}
 
-    def _project_spec(
-        self,
-        project_id: str,
-        *,
-        runtime_id: str,
-        workspace: Path | None,
-        skills_dir: Path | None,
-        helpers_dir: Path | None,
-        tools_dir: Path | None,
-    ) -> RuntimeSpec:
+    @classmethod
+    def spec_for(cls, project_id: str) -> tuple[Runtime, RuntimeSpec]:
+        """Runtime and spec for the project's dedicated environment."""
+        self = cls.shared()
         try:
             project_id = str(uuid.UUID(str(project_id)))
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                "valid project_id is required for an isolated sandbox"
-            ) from exc
-        root = Path(getattr(settings, "PROJECT_WORKSPACES_DIR")).resolve()
-        expected = (root / safe_workspace_key(project_id)).resolve()
-        expected.relative_to(root)
-        ws = Path(workspace or expected).resolve()
-        if ws != expected:
-            raise ValueError(
-                f"workspace {ws} does not belong to project {project_id}"
-            )
+            raise ValueError("valid project_id is required for an isolated sandbox") from exc
+        runtime = self.runtime_for(project_id)
+        ws = Path(settings.PROJECT_WORKSPACES_DIR).resolve() / safe_workspace_key(project_id)
         ws.mkdir(parents=True, exist_ok=True)
-        skills, helpers, tools = self._mount_paths(
-            skills_dir, helpers_dir, tools_dir
-        )
         # Catalog packs are materialized from PlatformCatalog into the
         # workspace. Only the skill runtime helpers are mounted.
-        extra_mounts = []
-        helper_pack = skills / "helpers"
-        if helper_pack.is_dir():
-            extra_mounts.append((str(helper_pack), "/skills/helpers"))
-        mount = ws
-        workdir = "/sandbox" if runtime_id == SandboxRuntime.OPENSHELL else "/workspace"
-        role = "project"
-        name = self.runtime_for(project_id).resource_name(
-            project_id, prefix=self.prefix(), shared=False
-        )
-        labels = {"peon.role": "project-sandbox", "peon.project_id": project_id}
-
+        helper_pack = Path(settings.SKILLS_DIR).resolve() / "helpers"
+        extra_mounts = [(str(helper_pack), "/skills/helpers")] if helper_pack.is_dir() else []
         sock = str(getattr(settings, "STREAM_SOCKET_PATH", "") or "")
         volume = str(getattr(settings, "SANDBOX_SOCKETS_VOLUME", "") or "").strip()
-        return RuntimeSpec(
+        spec = RuntimeSpec(
             project_id=project_id,
-            name=name,
-            image=self.image_for(runtime_id),
-            role=role,
-            workspace_host=str(mount),
-            skills_host="",
-            skills_imported_host="",
+            name=runtime.resource_name(project_id, prefix=self.prefix(), shared=False),
+            image=self.image_for(runtime.id),
+            role="project",
+            workspace_host=str(ws),
             extra_ro_mounts=extra_mounts,
-            helpers_host=str(helpers),
-            tools_host=str(tools),
+            tools_host=str(Path(settings.TOOLS_CATALOG_DIR).resolve()),
             socket_dir_host="" if volume else (str(Path(sock).parent) if sock else ""),
             socket_volume=volume,
-            container_workdir=workdir,
-            labels=labels,
+            container_workdir=(
+                "/sandbox" if runtime.id == SandboxRuntime.OPENSHELL else "/workspace"
+            ),
+            labels={"peon.role": "project-sandbox", "peon.project_id": project_id},
             state_dir=str(runtime_state_dir()),
         )
-
-    def _mount_paths(
-        self,
-        skills_dir: Path | None,
-        helpers_dir: Path | None,
-        tools_dir: Path | None,
-    ) -> tuple[Path, Path, Path]:
-        skills = Path(
-            skills_dir or getattr(settings, "SKILLS_DIR", "skills")
-        ).resolve()
-        helpers = Path(
-            helpers_dir or getattr(settings, "HELPERS_DIR", "helpers")
-        ).resolve()
-        tools = Path(
-            tools_dir or getattr(settings, "TOOLS_CATALOG_DIR", "tools/catalog")
-        ).resolve()
-        return skills, helpers, tools
+        return runtime, spec

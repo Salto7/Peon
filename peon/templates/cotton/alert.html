@@ -1,0 +1,10 @@
+{% comment %}<c-alert tone="warning|danger|info|success" title="…">body</c-alert>{% endcomment %}
+{% load ui %}
+<c-vars tone="info" title="" />
+<div role="{% if tone == 'danger' %}alert{% else %}status{% endif %}" class="flex gap-3 rounded-lg border px-4 py-3 text-sm {% if tone == 'danger' %}border-destructive/30 bg-destructive/5{% elif tone == 'warning' %}border-warning/30 bg-warning/5{% elif tone == 'success' %}border-success/30 bg-success/5{% else %}border-info/30 bg-info/5{% endif %}" {{ attrs }}>
+  <span class="mt-0.5 {% if tone == 'danger' %}text-destructive{% elif tone == 'warning' %}text-warning{% elif tone == 'success' %}text-success{% else %}text-info{% endif %}">{% if tone == 'success' %}{% icon "circle-check" %}{% elif tone == 'info' %}{% icon "circle-alert" %}{% else %}{% icon "triangle-alert" %}{% endif %}</span>
+  <div class="min-w-0 flex-1 space-y-1">
+    {% if title %}<p class="font-medium">{{ title }}</p>{% endif %}
+    <div class="text-muted-foreground">{{ slot }}</div>
+  </div>
+</div>

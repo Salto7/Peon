@@ -179,17 +179,18 @@
     if (status) {
       if (lab.error) {
         status.textContent = lab.error;
-      } else if (lab.running) {
-        status.innerHTML =
-          "Running on image <code>" + (lab.image || "") + "</code>";
-      } else if (lab.exists) {
-        status.innerHTML =
-          "Exists but stopped · image <code>" + (lab.image || "") + "</code>";
       } else if (lab.docker === false) {
         status.textContent = "Docker unavailable from web — remount docker.sock and recreate web";
       } else {
-        status.innerHTML =
-          "Not created · image <code>" + (lab.image || "") + "</code>";
+        var code = document.createElement("code");
+        code.className = "ui-code";
+        code.textContent = lab.image || "";
+        var lead = lab.running
+          ? "Running on image "
+          : lab.exists
+            ? "Exists but stopped · image "
+            : "Not created · image ";
+        status.replaceChildren(document.createTextNode(lead), code);
       }
     }
   }
@@ -234,12 +235,12 @@
     root.replaceChildren();
     Object.keys(map || {}).forEach(function (rel) {
       var label = document.createElement("label");
-      label.className = "meta";
+      label.className = "ui-label mt-4 block font-mono text-xs";
       label.textContent = rel;
       label.setAttribute("for", "skill-file-" + rel.replace(/[^\w.-]+/g, "-"));
       var ta = document.createElement("textarea");
       ta.id = label.getAttribute("for");
-      ta.className = "learn-edit";
+      ta.className = "ui-textarea mt-1.5 font-mono";
       ta.rows = 10;
       ta.spellcheck = false;
       ta.setAttribute("data-rel", rel);

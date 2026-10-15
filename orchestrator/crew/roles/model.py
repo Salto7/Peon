@@ -76,8 +76,14 @@ def build_crew_agent(
     max_iterations: int | None = None,
     reasoning_effort: str | None = None,
     reasoning_max_attempts: int | None = None,
+    collaborate: bool = False,
 ) -> Any:
-    """Instantiate a CrewAI ``Agent`` for ``role`` (lazy crewai import)."""
+    """Instantiate a CrewAI ``Agent`` for ``role`` (lazy crewai import).
+
+    ``collaborate`` forces ``allow_delegation`` on, so CrewAI injects its native
+    "Ask question to coworker" / "Delegate work to coworker" tools and the agent
+    can talk to its crew peers directly (used for in-process engagement crews).
+    """
     try:
         from crewai import Agent
     except ImportError as exc:  # pragma: no cover
@@ -98,14 +104,16 @@ def build_crew_agent(
     skills_block = skills_prompt_block(selected, role_id=role.id)
     if skills_block:
         backstory = f"{backstory}\n\n{skills_block}".strip()
-    try:
-        from orchestrator.mcp.provision import mcp_prompt_block
+    # MCP Crew tools are technical-only; keep the prompt aligned.
+    if role.is_technical or role.kind == "technical":
+        try:
+            from orchestrator.mcp.provision import mcp_prompt_block
 
-        mcp_block = mcp_prompt_block(role.id)
-    except Exception:
-        mcp_block = ""
-    if mcp_block:
-        backstory = f"{backstory}\n\n{mcp_block}".strip()
+            mcp_block = mcp_prompt_block(role.id)
+        except Exception:
+            mcp_block = ""
+        if mcp_block:
+            backstory = f"{backstory}\n\n{mcp_block}".strip()
     if role.reports_to:
         backstory = (
             f"{backstory}\n\n## Hierarchy\nYou report to `{role.reports_to}`."
@@ -113,16 +121,61 @@ def build_crew_agent(
     if role.is_technical or role.is_manager:
         backstory = (
             f"{backstory}\n\n## Collaboration\n"
-            "Engagement PM owns the objective bookend; you govern **in-lane** "
-            "work and **must parallelize** via Dramatiq child jobs. For "
-            "multi-host/CIDR/target lists or multi-skill follow-ons: "
-            "`spawn_work` (empty `role_id` = this expert) with focused "
-            "`skill_ids` + `scope_slice`, then `wait_for_work` before "
+            "Talk to your crew peers directly: use **Ask question to coworker** "
+            "to get another specialist's input and **Delegate work to coworker** "
+            "to hand a peer a focused sub-task — prefer these over working blind "
+            "or escalating. Engagement PM owns the objective bookend; you govern "
+            "**in-lane** work and **must parallelize** heavy fan-out via Dramatiq "
+            "child jobs: for multi-host/CIDR/target lists or multi-skill "
+            "follow-ons use `spawn_work` (empty `role_id` = this expert) with "
+            "focused `skill_ids` + `scope_slice`, then `wait_for_work` before "
             "synthesizing. Do **not** ask the PM to replan for follow-ups "
-            "already in your skill group. Solo in-process `bash` only for "
-            "one host/URL or a quick verify. Out-of-lane work, unknown roles, "
+            "already in your skill group. You are a specialized PM: your job is "
+            "to make sure in-lane objectives are fulfilled, mainly by spawning "
+            "and directing workers, not by running the scan/probe yourself. "
+            "Solo in-process `bash` is only for a single host/URL or a quick "
+            "verify — **never** for a CIDR/subnet, a host or target list, or "
+            "anything you'd otherwise describe as a sweep/enumeration; those "
+            "always go through `spawn_work` (slice the range across children) "
+            "even when one tool invocation could cover the whole range in a "
+            "single command. Out-of-lane work, unknown roles, "
             "or RoE ambiguity: `list_roles` then spawn another catalog role, or "
             "`ask_operator`. Never invent role or skill ids."
+            "\n\n## Working with the other agents\n"
+            "Every planned agent already exists; ones waiting on dependencies are "
+            "**idle** and wake when a message arrives. `list_team` shows who is "
+            "who. When you finish work another agent needs, or need something "
+            "from one, `send_message` it with the detail in the message (what "
+            "you found, exact paths/targets, what you want back) — it will pick "
+            "the work up. Check `check_inbox` between steps. If you have done "
+            "all you can and need another agent's output, call `go_idle` and end "
+            "your turn with a short summary of what is done and what you wait "
+            "for — never poll or sleep-loop. Use `spawn_work` only when no "
+            "suitable agent exists."
+            "\n\n## Memory\n"
+            "Your brief starts with a memory index (this engagement + platform "
+            "lessons). Read it before acting; `recall_memory` pulls detail — "
+            "query it before trying a method, tool or target class that may "
+            "have been tried. Record what a later agent would otherwise "
+            "rediscover with `save_memory`: durable facts about the target, "
+            "tool behaviours that held or failed (generic ones as scope "
+            "`platform`, with no targets/IPs/emails/URLs), and the reason "
+            "behind decisions. Operator feedback overrides your own "
+            "preference. Retire notes you find wrong with `forget_memory`."
+        ).strip()
+    if role.is_manager:
+        backstory = (
+            f"{backstory}\n\n## Memory — manager duties\n"
+            "You own the engagement's memory. At the start of every run read the "
+            "full-text 'Standing instructions & decisions' in your index and "
+            "plan within them. Before any replan, `recall_memory` the failures "
+            "and dead ends of this engagement and platform lessons for the "
+            "approach you are about to choose. When an objective completes or "
+            "fails, record the decision and its reason (`decision`), any "
+            "operator correction you received (`feedback`), and generic "
+            "lessons for future engagements (`lesson`, scope `platform`). "
+            "Keep the index tidy: update by reusing the name, `forget_memory` "
+            "what turned out wrong."
         ).strip()
 
     cfg = get_config()
@@ -149,7 +202,7 @@ def build_crew_agent(
         "goal": role.goal,
         "backstory": backstory,
         "tools": agent_tools,
-        "allow_delegation": bool(role.allow_delegation or role.is_manager),
+        "allow_delegation": bool(role.allow_delegation or role.is_manager or collaborate),
         "verbose": False,
         "max_iter": min(role_iters, cap),
         "llm": llm_id_for_crew(),

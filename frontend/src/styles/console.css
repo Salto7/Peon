@@ -1,0 +1,450 @@
+/*
+ * War-room console: markup generated at runtime by the legacy scripts
+ * (project-ops.js, agent-graph.js, project-console-chat.js). Class names are
+ * theirs; every value comes from the design tokens.
+ */
+@layer components {
+  /* ── Agent graph (agent-graph.js) ─────────────────────────────── */
+  .agent-tree {
+    @apply relative h-full min-h-64 w-full overflow-hidden bg-canvas;
+    background-image: radial-gradient(var(--canvas-dot) 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+  .org-agent-viewport {
+    @apply absolute inset-0 cursor-grab touch-none overflow-hidden;
+  }
+  .org-agent-viewport.is-panning {
+    @apply cursor-grabbing;
+  }
+  .org-agent-world {
+    @apply absolute top-0 left-0 origin-top-left will-change-transform;
+  }
+  .flow-canvas {
+    @apply relative;
+  }
+  .flow-edges {
+    @apply pointer-events-none absolute inset-0 overflow-visible;
+  }
+  .flow-edge {
+    stroke: var(--input);
+    stroke-width: 1.5;
+    fill: none;
+  }
+  .flow-node {
+    @apply absolute flex cursor-pointer flex-col justify-center gap-1 rounded-lg border bg-card px-3 py-2.5 text-left text-card-foreground shadow-sm transition-[color,background-color,border-color,box-shadow,translate] outline-none;
+  }
+  .flow-edge.is-live {
+    stroke: var(--info);
+    stroke-dasharray: 6 6;
+    animation: flow-march 0.9s linear infinite;
+  }
+  .flow-node.is-new {
+    animation: flow-pop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+  }
+  .flow-node.is-running {
+    animation: flow-glow 2s ease-in-out infinite;
+  }
+  .flow-node:hover {
+    @apply -translate-y-px shadow-md;
+  }
+  @keyframes flow-march {
+    to {
+      stroke-dashoffset: -12;
+    }
+  }
+  @keyframes flow-pop {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.92);
+    }
+  }
+  @keyframes flow-glow {
+    50% {
+      box-shadow: 0 0 0 4px color-mix(in oklab, var(--info) 18%, transparent);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .flow-edge.is-live,
+    .flow-node.is-new,
+    .flow-node.is-running {
+      animation: none;
+    }
+  }
+  .flow-node:hover {
+    @apply border-primary/40;
+  }
+  .flow-node:focus-visible {
+    @apply ring-2 ring-ring;
+  }
+  .flow-node.is-selected {
+    @apply border-primary ring-2 ring-primary/25;
+  }
+  .flow-node.is-running {
+    @apply border-info/50;
+  }
+  .flow-node[data-led="failed"] {
+    @apply border-destructive/50;
+  }
+  .flow-node.is-dragging {
+    @apply z-10 shadow-lg;
+  }
+  .org-agent-node.lane-skill,
+  .org-agent-node.is-spawn {
+    @apply border-dashed;
+  }
+  .org-agent-row {
+    @apply flex min-w-0 items-center gap-2.5;
+  }
+  .org-agent-icon {
+    @apply relative grid size-8 shrink-0 place-items-center rounded-md bg-muted text-sm text-muted-foreground;
+  }
+  .org-agent-led,
+  .flow-node-led {
+    @apply absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-card bg-muted-foreground/60;
+  }
+  .flow-node-led[data-led="active"] {
+    @apply animate-pulse bg-info;
+  }
+  .flow-node-led[data-led="done"] {
+    @apply bg-success;
+  }
+  .flow-node-led[data-led="failed"] {
+    @apply bg-destructive;
+  }
+  .org-agent-text {
+    @apply flex min-w-0 flex-col gap-0.5;
+  }
+  .org-agent-title {
+    @apply truncate text-[13px] font-semibold;
+  }
+  .org-agent-skills,
+  .org-agent-sub,
+  .org-agent-role {
+    @apply flex min-w-0 items-center gap-1.5 truncate text-[11px] text-muted-foreground;
+  }
+  .org-agent-skill-names,
+  .org-agent-role-name {
+    @apply truncate;
+  }
+  .org-agent-tag {
+    @apply shrink-0 rounded border px-1 text-[10px] font-medium text-muted-foreground;
+  }
+  .org-agent-obj,
+  .org-agent-live {
+    @apply truncate text-[11px] text-muted-foreground;
+  }
+  .org-agent-obj-link {
+    @apply text-link hover:underline;
+  }
+  .flow-node .flow-node-head,
+  .flow-node .flow-node-cmd,
+  .flow-node .flow-node-foot,
+  .flow-node .flow-node-live {
+    display: none;
+  }
+  .as-zoom-toolbar {
+    @apply absolute right-3 bottom-3 z-[var(--z-sticky)] flex flex-col overflow-hidden rounded-md border bg-popover shadow-sm;
+  }
+  .as-zoom-btn {
+    @apply grid size-8 cursor-pointer place-items-center text-sm text-foreground hover:bg-accent;
+  }
+  .agents-empty {
+    @apply p-6 text-sm text-muted-foreground;
+  }
+
+  /* Right-click menu */
+  .agent-context-menu {
+    @apply fixed z-[var(--z-dropdown)] min-w-44 rounded-md border bg-popover p-1 text-popover-foreground shadow-md;
+  }
+  .agent-context-menu[hidden] {
+    display: none;
+  }
+  .agent-context-menu-item {
+    @apply flex w-full cursor-pointer items-center rounded-sm px-2 py-1.5 text-left text-sm outline-none hover:bg-accent focus-visible:bg-accent;
+  }
+
+  /* ── Context panel (renderContext) ────────────────────────────── */
+  .context-body {
+    @apply space-y-4 text-sm;
+  }
+  .context-head {
+    @apply flex flex-wrap items-center gap-2;
+  }
+  .context-head strong {
+    @apply text-sm font-semibold;
+  }
+  .context-role {
+    @apply text-xs text-muted-foreground;
+  }
+  .context-body > .meta {
+    @apply text-xs text-muted-foreground;
+  }
+  .chip-row {
+    @apply flex flex-wrap gap-1.5;
+  }
+  .chip {
+    @apply inline-flex items-center rounded-md border bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground;
+  }
+  .context-objective,
+  .context-current {
+    @apply space-y-1 rounded-lg border bg-muted/40 p-3;
+  }
+  .context-objective .meta,
+  .context-current-label {
+    @apply text-xs font-medium text-muted-foreground;
+  }
+  .context-obj-title {
+    @apply font-medium;
+  }
+  .context-action-text {
+    @apply text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground;
+  }
+  .context-current .context-action-text {
+    @apply max-h-40 overflow-auto font-mono text-foreground;
+  }
+  .context-task-list {
+    @apply list-disc space-y-0.5 pl-4 font-mono text-xs text-muted-foreground;
+  }
+  .context-command-edit {
+    @apply space-y-1.5;
+  }
+  .context-command-edit label {
+    @apply block text-xs font-medium text-muted-foreground;
+  }
+  .context-command-edit textarea {
+    @apply w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-[13px] shadow-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40;
+  }
+  .context-editing .context-command-edit textarea {
+    @apply border-primary;
+  }
+  .job-actions {
+    @apply flex flex-wrap gap-2;
+  }
+  .job-actions form {
+    @apply contents;
+  }
+  .job-actions button,
+  .job-actions .btn {
+    @apply inline-flex h-8 cursor-pointer items-center rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-accent;
+  }
+  .job-actions button:not(.secondary) {
+    @apply border-destructive/30 text-destructive hover:bg-destructive/10;
+  }
+
+  /* ── Activity feed (appendMessage) ────────────────────────────── */
+  .stream-log {
+    @apply space-y-1.5 overflow-y-auto;
+  }
+  .stream-log > .empty {
+    @apply p-6 text-center text-sm text-muted-foreground;
+  }
+  .feed-bubble {
+    @apply flex flex-col gap-1 rounded-md border border-transparent px-3 py-2 hover:border-border hover:bg-muted/40;
+  }
+  .feed-bubble[hidden] {
+    display: none;
+  }
+  .feed-bubble-body {
+    @apply font-mono text-xs leading-relaxed break-words whitespace-pre-wrap;
+  }
+  .feed-bubble.is-error .feed-bubble-body {
+    @apply text-destructive;
+  }
+  .stream-user,
+  .stream-instruction {
+    @apply border-primary/20 bg-primary/5;
+  }
+  .feed-bubble-meta {
+    @apply flex items-center gap-2 text-[11px] text-muted-foreground;
+  }
+  .stream-agent {
+    @apply truncate font-medium;
+  }
+  .stream-time {
+    @apply tabular-nums;
+  }
+
+  /* Badges (stream-badge-<kind>) */
+  .stream-badge {
+    @apply ml-auto inline-flex shrink-0 items-center rounded border border-border bg-muted px-1.5 text-[10px] leading-4 font-semibold text-muted-foreground;
+  }
+  .stream-badge-err,
+  .stream-badge-stop {
+    @apply border-destructive/30 bg-destructive/10 text-destructive;
+  }
+  .stream-badge-need,
+  .stream-badge-find,
+  .stream-badge-loot {
+    @apply border-warning/30 bg-warning/10 text-warning;
+  }
+  .stream-badge-result {
+    @apply border-success/30 bg-success/10 text-success;
+  }
+  .stream-badge-tool,
+  .stream-badge-shell,
+  .stream-badge-net {
+    @apply border-info/30 bg-info/10 text-info;
+  }
+  .stream-badge-a2a {
+    @apply border-success/30 bg-success/10 text-success;
+  }
+  .stream-badge-you,
+  .stream-badge-steer,
+  .stream-badge-ask {
+    @apply border-primary/30 bg-primary/10 text-link;
+  }
+
+  /* Feed filter chips */
+  .feed-filter {
+    @apply inline-flex h-7 cursor-pointer items-center rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground;
+  }
+  .feed-filter.is-active {
+    @apply bg-secondary text-foreground;
+  }
+
+  /* ── Chat (project-console-chat.js) ───────────────────────────── */
+  .chat-thread {
+    @apply flex flex-col gap-3 overflow-y-auto;
+  }
+  .chat-thread-empty {
+    @apply m-auto p-6 text-center text-sm text-muted-foreground;
+  }
+  .chat-bubble {
+    @apply flex max-w-[85%] flex-col gap-1;
+  }
+  .chat-bubble-user {
+    @apply self-end;
+  }
+  .chat-bubble-meta {
+    @apply flex items-center gap-2 px-1 text-[11px] text-muted-foreground;
+  }
+  .chat-bubble-user .chat-bubble-meta {
+    @apply justify-end;
+  }
+  .chat-bubble-meta .stream-badge {
+    @apply ml-0;
+  }
+  .chat-bubble-body {
+    @apply rounded-xl border bg-card px-3 py-2 font-sans text-sm leading-relaxed break-words whitespace-pre-wrap shadow-sm;
+  }
+  .chat-bubble-user .chat-bubble-body {
+    @apply border-primary bg-primary text-primary-foreground;
+  }
+  .chat-bubble-system .chat-bubble-body {
+    @apply border-warning/40 bg-warning/5;
+  }
+  .chat-bubble-thinking {
+    @apply self-start;
+  }
+  .chat-thinking-dots {
+    @apply flex gap-1 rounded-xl border bg-card px-3 py-3;
+  }
+  .chat-thinking-dots span {
+    @apply size-1.5 animate-bounce rounded-full bg-muted-foreground;
+  }
+  .chat-thinking-dots span:nth-child(2) {
+    animation-delay: 120ms;
+  }
+  .chat-thinking-dots span:nth-child(3) {
+    animation-delay: 240ms;
+  }
+
+  /* Uploaded files (renderProjectFilesList) */
+  .project-file-row {
+    @apply flex items-center justify-between gap-3 px-5 py-3;
+  }
+  .project-file-meta {
+    @apply flex min-w-0 flex-col gap-0.5;
+  }
+  .project-file-meta .meta {
+    @apply truncate text-xs text-muted-foreground;
+  }
+  .project-file-name {
+    @apply truncate font-mono text-[13px];
+  }
+  .project-file-remove {
+    @apply inline-flex h-8 shrink-0 cursor-pointer items-center rounded-md border border-input bg-background px-3 text-xs font-medium hover:bg-accent;
+  }
+  .project-files-empty {
+    @apply px-5 py-8 text-center text-sm text-muted-foreground;
+  }
+
+  /* Reports table (updateReports) */
+  #reports-body-wrap table {
+    @apply w-full text-[13px];
+  }
+  #reports-body-wrap th {
+    @apply h-9 px-3 text-left text-xs font-medium text-muted-foreground;
+  }
+  #reports-body-wrap td {
+    @apply border-t px-3 py-2.5 align-middle;
+  }
+  #reports-body-wrap td .meta {
+    @apply text-xs text-muted-foreground;
+  }
+  #reports-body-wrap .btn {
+    @apply mr-1 inline-flex h-7 items-center rounded-md border border-input bg-background px-2.5 text-xs font-medium hover:bg-accent;
+  }
+  #reports-body-wrap .report-final td:first-child a {
+    @apply font-semibold;
+  }
+
+  /* Generic legacy helpers used by these scripts */
+  .meta {
+    @apply text-xs text-muted-foreground;
+  }
+}
+
+@layer components {
+  #reports-final-cta .btn {
+    @apply inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm hover:bg-primary/90;
+  }
+}
+
+/* ── Plan editor (plan-graph.js) ──────────────────────────────── */
+@layer components {
+  .plan-graph-canvas-wrap {
+    @apply flex min-w-full justify-center p-4;
+  }
+  .plan-graph-canvas {
+    @apply relative min-h-48 flex-none;
+  }
+  .plan-flow-edges {
+    @apply pointer-events-none absolute inset-0 overflow-visible;
+  }
+  .plan-flow-edge {
+    stroke: var(--input);
+    stroke-width: 1.5;
+    fill: none;
+  }
+  .plan-schedule-list {
+    @apply flex flex-col divide-y;
+  }
+  .plan-schedule-item {
+    @apply flex items-center justify-between gap-3 py-2.5 text-sm;
+  }
+  .plan-schedule-item button,
+  #plan-schedules-host button {
+    @apply inline-flex h-8 cursor-pointer items-center rounded-md border border-input bg-background px-3 text-xs font-medium hover:bg-accent;
+  }
+  #plan-schedules-host input,
+  #plan-schedules-host select {
+    @apply h-8 rounded-md border border-input bg-transparent px-2 text-sm;
+  }
+  #plan-edit-skills {
+    @apply flex flex-wrap gap-2;
+  }
+  #plan-edit-skills .skill-check {
+    @apply inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-xs;
+  }
+}
+
+@layer components {
+  .org-agent-wait {
+    @apply text-muted-foreground;
+  }
+  /* Standby agents read as "not started", not as an error. */
+  .flow-node[data-led="idle"] {
+    @apply opacity-80;
+  }
+}

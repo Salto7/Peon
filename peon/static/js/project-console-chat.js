@@ -191,6 +191,9 @@
     }
   }
 
+  // Set by bindProjectChat; lets project-ops feed the roster / retarget chat.
+  var chatCtl = null;
+
   function bindProjectChat(projectPk) {
     const form = el("project-chat-form");
     const input = el("project-chat-input");
@@ -200,7 +203,14 @@
     const url = form.getAttribute("data-chat-url") || "/projects/" + projectPk + "/chat/";
     let chatMode = "chat";
     let replyPromptId = "";
-    let selectedJobId = "";
+    const toSel = el("project-chat-to");
+    let roster = [];
+
+    function recipient() {
+      const id = toSel ? toSel.value : "";
+      if (!id) return null;
+      return roster.find(function (a) { return a.id === id; }) || { id: id, label: id, terminal: false };
+    }
 
     const modeHints = {
       chat: "Ask about the project…",
@@ -231,10 +241,87 @@
           m === chatMode || (chatMode === "reply" && m === "chat")
         );
       });
-      input.placeholder = modeHints[chatMode] || modeHints.chat;
+      const to = recipient();
+      if (to) {
+        input.placeholder =
+          chatMode === "instruct"
+            ? "Instruct " + to.label + " — it picks this up now…"
+            : "Ask " + to.label + " about its work…";
+      } else {
+        input.placeholder = modeHints[chatMode] || modeHints.chat;
+      }
+      // Replan / Stop act on the whole engagement, not one agent; a finished
+      // agent can be asked but not instructed.
+      form.querySelectorAll("[data-chat-mode]").forEach(function (btn) {
+        const m = btn.getAttribute("data-chat-mode");
+        btn.hidden = !!to && (m === "replan" || m === "stop");
+        if (m === "instruct") btn.disabled = !!(to && to.terminal);
+      });
       if (send) send.textContent = modeLabels[chatMode] || "Send";
       setBusy(false);
     }
+
+    if (toSel) {
+      toSel.addEventListener("change", function () {
+        const to = recipient();
+        if (to && (chatMode === "replan" || chatMode === "stop")) chatMode = "chat";
+        if (to && to.terminal && chatMode === "instruct") chatMode = "chat";
+        setMode(chatMode);
+      });
+    }
+
+    function setAgents(list) {
+      const keep = toSel ? toSel.value : "";
+      roster = (list || []).map(function (a) {
+        return {
+          id: String(a.id),
+          label: String(a.role_label || a.primary_role_id || a.title || a.id),
+          title: String(a.title || ""),
+          status: String(a.status || ""),
+          terminal: !!a.terminal,
+        };
+      });
+      if (!toSel) return;
+      roster.sort(function (x, y) {
+        return Number(x.terminal) - Number(y.terminal) || x.label.localeCompare(y.label);
+      });
+      toSel.replaceChildren();
+      const all = document.createElement("option");
+      all.value = "";
+      all.textContent = "Everyone — project chat";
+      toSel.appendChild(all);
+      roster.forEach(function (a) {
+        const opt = document.createElement("option");
+        opt.value = a.id;
+        opt.textContent = a.label + (a.title ? " · " + a.title.replace(/^OBJ-\d+:\s*/, "") : "") + " (" + a.status + ")";
+        toSel.appendChild(opt);
+      });
+      toSel.value = roster.some(function (a) { return a.id === keep; }) ? keep : "";
+      setMode(chatMode);
+    }
+
+    function target(jobId) {
+      if (!toSel) return;
+      if (roster.some(function (a) { return a.id === String(jobId); })) {
+        toSel.value = String(jobId);
+        setMode(recipient() && recipient().terminal ? "chat" : chatMode);
+      }
+      if (window.PeonProjectOps && window.PeonProjectOps.showWorkspaceTab) {
+        window.PeonProjectOps.showWorkspaceTab("chat");
+      } else {
+        input.focus();
+      }
+    }
+    function select(jobId) {
+      if (!toSel) return;
+      const id = String(jobId || "");
+      toSel.value = roster.some(function (a) { return a.id === id; }) ? id : "";
+      const to = recipient();
+      if (to && (chatMode === "replan" || chatMode === "stop")) chatMode = "chat";
+      if (to && to.terminal && chatMode === "instruct") chatMode = "chat";
+      setMode(chatMode);
+    }
+    chatCtl = { setAgents: setAgents, target: target, select: select };
 
     form.querySelectorAll("[data-chat-mode]").forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -301,8 +388,8 @@
       thread.scrollTop = thread.scrollHeight;
     }
 
-    window.addEventListener("peon:agent-selected", function (ev) {
-      selectedJobId = (ev.detail && ev.detail.jobId) || "";
+    window.addEventListener("peon:chat-target", function (ev) {
+      target((ev.detail && ev.detail.jobId) || "");
     });
 
     async function submit() {
@@ -310,12 +397,21 @@
       if (chatMode !== "stop" && !message) return;
       if (form.dataset.disabled === "1" && chatMode === "instruct") return;
       // Show the operator line immediately, then thinking while Peon works.
+      const to = recipient();
       if (message) {
         appendChatBubble({
           id: "local-u-" + Date.now(),
           content: message,
           created_at: new Date().toISOString(),
-          metadata: { role: "user", tag: "you", event: "console_local" },
+          metadata: to
+            ? {
+                role: "user",
+                tag: "you",
+                event: "console_local",
+                to_job_id: to.id,
+                agent_label: to.label,
+              }
+            : { role: "user", tag: "you", event: "console_local" },
         });
       }
       setBusy(true);
@@ -324,7 +420,7 @@
         mode: chatMode === "reply" ? "reply" : chatMode,
       };
       if (chatMode === "reply" && replyPromptId) body.prompt_id = replyPromptId;
-      if (chatMode === "instruct" && selectedJobId) body.job_id = selectedJobId;
+      if (to && (chatMode === "chat" || chatMode === "instruct")) body.job_id = to.id;
       try {
         const res = await fetch(url, {
           method: "POST",
@@ -376,6 +472,8 @@
               role: "assistant",
               tag: replyTag,
               event: "console_reply",
+              agent_label: (data.agent && data.agent.label) || "",
+              from_job_id: (data.agent && data.agent.id) || "",
             },
           });
         }
@@ -383,6 +481,7 @@
           var toast = "Sent";
           if (resultMode === "stop") toast = "Engagement paused";
           else if (resultMode === "answer") toast = "Answered";
+          else if (resultMode === "agent_answer") toast = "Answered by agent";
           else if (
             resultMode === "replan" ||
             resultMode === "replan_from_prompt" ||
@@ -475,6 +574,15 @@
     bindChat: function (projectPk, deps) {
       useDeps(deps);
       bindProjectChat(projectPk);
+    },
+    setAgents: function (list) {
+      if (chatCtl) chatCtl.setAgents(list);
+    },
+    target: function (jobId) {
+      if (chatCtl) chatCtl.target(jobId);
+    },
+    select: function (jobId) {
+      if (chatCtl) chatCtl.select(jobId);
     },
     updatePendingInputs: function (pending, deps) {
       useDeps(deps);

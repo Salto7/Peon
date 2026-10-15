@@ -10,20 +10,10 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Literal
-
-TranscriptCategory = Literal[
-    "action",
-    "method",
-    "outcome",
-    "error",
-    "replan",
-    "handoff",
-    "gap",
-]
+from typing import Any, Iterable
 
 CATEGORIES: frozenset[str] = frozenset(
-    {"action", "method", "outcome", "error", "replan", "handoff", "gap"}
+    {"action", "method", "outcome", "error", "replan", "handoff", "gap", "checkpoint"}
 )
 
 
@@ -54,18 +44,6 @@ class TranscriptRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-    def memory_text(self) -> str:
-        """Compact text for CrewAI Memory.save / remember."""
-        bits = [
-            f"[{self.category}]",
-            self.summary.strip()[:500],
-        ]
-        if self.role_id:
-            bits.append(f"role={self.role_id}")
-        if self.event:
-            bits.append(f"event={self.event}")
-        return " ".join(bits)
 
 
 def record_from_event(

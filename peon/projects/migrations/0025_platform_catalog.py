@@ -3,13 +3,6 @@ import django.db.models.deletion
 import uuid
 
 
-def seed_catalog(apps, schema_editor):
-    del apps, schema_editor
-    from peon.projects.platform_catalog import PlatformCatalog
-
-    PlatformCatalog.shared().ensure_seeded()
-
-
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -121,5 +114,4 @@ class Migration(migrations.Migration):
                 name="project_mcp_config_unique",
             ),
         ),
-        migrations.RunPython(seed_catalog, migrations.RunPython.noop),
     ]

@@ -1,0 +1,10 @@
+interface:
+  display_name: "Corporate OSINT"
+  short_description: "Subsidiaries, domains, ASN/IPs, urlscan, RDAP/WHOIS, Azure tenants"
+  default_prompt: |
+    Use $corp-osint for company "$COMPANY". Map subsidiaries/brands via EDGAR,
+    expand domains with urlscan + Playwright, verify RDAP/WHOIS, resolve ASN/IPs
+    with ownership checks, and Entra tenant IDs. Prefer `python main.py` (plugin architecture).
+    Emit JSON per docs/report-schema.md.
+policy:
+  allow_implicit_invocation: true

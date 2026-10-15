@@ -50,7 +50,11 @@ def build_engagement_crew(
     # CrewAI hierarchical mode injects delegation tools into a custom manager
     # and rejects manager_agent instances that already carry role tools.
     manager = build_crew_agent(manager_spec, tools=[], **agent_kwargs)
-    specialists = [build_crew_agent(s, **agent_kwargs) for s in specialist_specs]
+    # Specialists collaborate peer-to-peer via CrewAI's native coworker tools
+    # (ask/delegate), so they can consult each other, not only the manager.
+    specialists = [
+        build_crew_agent(s, collaborate=True, **agent_kwargs) for s in specialist_specs
+    ]
     analyzer = build_crew_agent(analyzer_spec, **agent_kwargs)
 
     specialist_lines = ", ".join(s.id for s in specialist_specs) or "(none preselected)"
@@ -89,11 +93,15 @@ def build_engagement_crew(
             "artifacts (list_workspace_artifacts + read_workspace_artifact) and "
             "list_findings. Inventory every concrete observation in those files. "
             "Do not run new probes. Do not report objective/job status. "
-            "Use write_report_note for each section."
+            "Use write_report_note for each of exactly three top-level sections, "
+            "in order: 'Executive summary'; 'Findings and observations' (with "
+            "the sub-sections 'Steps taken and commands executed' and "
+            "'Findings and their technical details'); 'Recommendations'."
         ),
         expected_output=(
-            "Security report notes: executive summary, inventories from raw "
-            "artifacts, findings by severity, and gaps — no process narrative."
+            "A report with exactly those three sections: executive summary; "
+            "findings and observations (steps/commands executed, then findings "
+            "with technical detail); recommendations — no process narrative."
         ),
         agent=analyzer,
         context=[engagement_task],

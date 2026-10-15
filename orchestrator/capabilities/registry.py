@@ -16,7 +16,6 @@ _REGISTERED = False
 class CapabilityGroup(str, Enum):
     SANDBOX = "sandbox"
     ENGAGEMENT = "engagement"
-    CORE = "core"
 
 
 @dataclass(frozen=True)
@@ -52,9 +51,6 @@ class CapabilityRegistry:
 
     def get(self, name: str) -> RegisteredCapability | None:
         return self._by_name.get(name)
-
-    def handlers(self) -> dict[str, Callable[..., Any]]:
-        return {name: e.handler for name, e in self._by_name.items()}
 
     def names(
         self,

@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 
 from agent_runtime.api import Runtime, RuntimeSession, RuntimeSpec, SessionInfo, TerminalHandle
-from agent_runtime.docker.cli import DockerCli
+from agent_runtime.docker.engine import DockerEngine
 from agent_runtime.docker.session import DockerSession
 from agent_runtime.pty import PtyTerminal
 from agent_runtime.util import resource_name as make_resource_name
@@ -30,74 +31,65 @@ class DockerRuntime(Runtime):
     def resource_name(self, project_id: str, *, prefix: str, shared: bool) -> str:
         return make_resource_name(project_id, prefix=prefix, shared=shared)
 
-    def _cli(self) -> DockerCli:
-        return DockerCli.shared()
+    def _engine(self) -> DockerEngine:
+        return DockerEngine.shared()
 
     def _volumes(self, spec: RuntimeSpec) -> list[str]:
-        cli = self._cli()
-        args: list[str] = []
+        """Bind specs (``src:dst[:ro]``) as the Docker SDK ``volumes`` list."""
+        bind = self._engine().host_bind_path
+        out: list[str] = []
         if spec.workspace_host:
-            args.extend(
-                ["-v", f"{cli.host_bind_path(Path(spec.workspace_host))}:/workspace"]
-            )
+            out.append(f"{bind(Path(spec.workspace_host))}:/workspace")
         if spec.skills_host:
-            args.extend(
-                ["-v", f"{cli.host_bind_path(Path(spec.skills_host))}:/skills:ro"]
-            )
+            out.append(f"{bind(Path(spec.skills_host))}:/skills:ro")
         if spec.skills_imported_host:
-            args.extend(
-                [
-                    "-v",
-                    f"{cli.host_bind_path(Path(spec.skills_imported_host))}:/skills-imported:ro",
-                ]
-            )
+            out.append(f"{bind(Path(spec.skills_imported_host))}:/skills-imported:ro")
         for host, container in spec.extra_ro_mounts or []:
             if not host or not container or not container.startswith("/"):
                 continue
-            args.extend(
-                [
-                    "-v",
-                    f"{cli.host_bind_path(Path(host))}:{container}:ro",
-                ]
-            )
-        if spec.helpers_host:
-            args.extend(
-                ["-v", f"{cli.host_bind_path(Path(spec.helpers_host))}:/helpers:ro"]
-            )
+            out.append(f"{bind(Path(host))}:{container}:ro")
         if spec.tools_host:
             tools = Path(spec.tools_host)
             tools_root = tools.parent if tools.name == "catalog" else tools
-            args.extend(["-v", f"{cli.host_bind_path(tools_root)}:/tools:ro"])
+            out.append(f"{bind(tools_root)}:/tools:ro")
         if spec.socket_volume:
-            args.extend(["-v", f"{spec.socket_volume}:/tmp/peon"])
+            out.append(f"{spec.socket_volume}:/tmp/peon")
         elif spec.socket_dir_host:
             parent = Path(spec.socket_dir_host)
-            args.extend(["-v", f"{cli.host_bind_path(parent)}:{parent}"])
-        return args
+            out.append(f"{bind(parent)}:{parent}")
+        return out
+
+    _VOLUME_PATH = re.compile(r"^/var/lib/docker/volumes/([^/:]+)/_data(?=/|:|$)")
+
+    @classmethod
+    def _canonical_volume(cls, volume: str) -> str:
+        """``/var/lib/docker/volumes/<n>/_data/x:/c`` ≡ ``<n>/x:/c`` (named volume).
+
+        The web process and the worker can see the same Docker volume as a host
+        path or as a name; without this they fingerprint a sandbox differently
+        and keep recreating each other's container.
+        """
+        return cls._VOLUME_PATH.sub(r"\1", volume)
 
     def _runtime_fingerprint(self, spec: RuntimeSpec, volumes: list[str]) -> str:
         """Identify the image/configuration a reusable sandbox was created with."""
         image_ref = (spec.image or "").strip()
-        image = self._cli().inspect_format(image_ref, "{{.Id}}").stdout.strip()
+        image = self._engine().image_id(image_ref)
         payload = {
             "image": image or image_ref,
             "workdir": spec.container_workdir or "/workspace",
-            "volumes": volumes,
+            "volumes": sorted(self._canonical_volume(v) for v in volumes),
             "network": (spec.network or "").strip(),
             "env": sorted((str(k), str(v)) for k, v in (spec.env or {}).items()),
-            "extra_args": list(spec.extra_run_args or []),
+            "extra_hosts": sorted((spec.extra_hosts or {}).items()),
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()[:32]
 
     def provision(self, spec: RuntimeSpec) -> RuntimeSession:
-        cli = self._cli()
-        if not cli.available():
-            raise RuntimeError(
-                "docker CLI missing — sandbox runtime required "
-                "(host execution is disabled)"
-            )
+        cli = self._engine()
+        cli.require_daemon()
         name = (spec.name or "").strip()
         if not name:
             raise RuntimeError("sandbox name is required")
@@ -105,17 +97,10 @@ class DockerRuntime(Runtime):
         if not image:
             raise RuntimeError("sandbox image is required")
         volumes = self._volumes(spec)
-        extra_args = list(spec.extra_run_args or [])
-        if "host.docker.internal:host-gateway" not in extra_args:
-            # Services on the Peon machine are reachable from the sandbox.
-            # The sandbox stays off the Compose network.
-            extra_args = [*extra_args, "--add-host", "host.docker.internal:host-gateway"]
-        spec = RuntimeSpec(
-            **{
-                **spec.__dict__,
-                "extra_run_args": extra_args,
-            }
-        )
+        # Services on the Peon machine are reachable from the sandbox.
+        # The sandbox stays off the Compose network.
+        extra_hosts = {"host.docker.internal": "host-gateway", **(spec.extra_hosts or {})}
+        spec = RuntimeSpec(**{**spec.__dict__, "extra_hosts": extra_hosts})
         fingerprint = self._runtime_fingerprint(spec, volumes)
         labels = dict(spec.labels or {})
         labels["peon.runtime_fingerprint"] = fingerprint
@@ -134,11 +119,11 @@ class DockerRuntime(Runtime):
             name,
             image=image,
             workdir=spec.container_workdir or "/workspace",
-            labels=[f"{key}={value}" for key, value in labels.items() if key],
-            volume_args=volumes or None,
+            labels={key: value for key, value in labels.items() if key},
+            volumes=volumes or None,
             network=(spec.network or "").strip(),
             env=dict(spec.env or {}),
-            extra_args=list(spec.extra_run_args or []),
+            extra_hosts=dict(spec.extra_hosts or {}),
             pull_image=spec.pull_image,
         )
         return self._session(spec, action=action)
@@ -155,7 +140,7 @@ class DockerRuntime(Runtime):
             image=spec.image,
             workdir=spec.container_workdir or "/workspace",
         )
-        session = DockerSession(info, docker_bin=self._cli().require_bin())
+        session = DockerSession(info, engine=self._engine())
         try:
             session.load_base_commands()
         except Exception as exc:
@@ -168,7 +153,7 @@ class DockerRuntime(Runtime):
             return {"ok": False, "removed": False, "error": "name required"}
         if spec.role == "shared":
             return {"ok": True, "removed": False, "name": name, "reason": "shared"}
-        cli = self._cli()
+        cli = self._engine()
         if not cli.available():
             return {"ok": False, "removed": False, "name": name, "error": "docker unavailable"}
         proc = cli.rm_force(name)
@@ -182,7 +167,7 @@ class DockerRuntime(Runtime):
     def status(self, spec: RuntimeSpec) -> dict:
         name = spec.name
         image = spec.image
-        cli = self._cli()
+        cli = self._engine()
         ok, err = cli.daemon_ok()
         if not ok:
             return {
@@ -204,18 +189,15 @@ class DockerRuntime(Runtime):
         }
 
     def find(self, label: str) -> list[str]:
-        cli = self._cli()
-        if not cli.available() or not label:
+        cli = self._engine()
+        if not label or not cli.available():
             return []
         return cli.ps_ids(label)
 
     def open_terminal(self, spec: RuntimeSpec, *, cols: int, rows: int) -> TerminalHandle:
-        cli = self._cli()
-        if not cli.available():
-            raise RuntimeError("Docker CLI unavailable — cannot open sandbox terminal")
         workdir = spec.container_workdir or "/workspace"
         argv = [
-            cli.require_bin(),
+            self._engine().docker_bin(),
             "exec",
             "-i",
             "-t",

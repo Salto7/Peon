@@ -1,0 +1,6 @@
+{% comment %}<c-status value="running" label="Running" /> — tone comes from ui.status_tone.{% endcomment %}
+{% load ui %}
+<c-vars value="" label="" />
+{% with tone=value|status_tone %}
+<c-badge :tone="tone" {{ attrs }}><span class="size-1.5 rounded-full bg-current{% if value == 'running' or value == 'in_progress' %} animate-pulse{% endif %}" aria-hidden="true"></span>{% firstof label value|capfirst %}</c-badge>
+{% endwith %}

@@ -5,7 +5,6 @@ Layers:
 - ``bridge_base`` / ``bridges`` / ``job`` — control-plane adapter + per-Job scope
 - ``runtime_base`` — Job runtime ABC; concrete impl via ``orchestrator.crew``
 - ``propose`` — LLM specialist proposals (control plane spawns Jobs)
-- ``messaging_base`` — A2A-ready DTOs (control plane persistence)
 
 Multi-agent / role orchestration lives in ``orchestrator.crew`` (CrewAI).
 """

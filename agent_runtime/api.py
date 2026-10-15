@@ -55,7 +55,6 @@ class RuntimeSpec:
     skills_imported_host: str = ""
     # Additional trusted skill repositories: (host path, container path).
     extra_ro_mounts: list[tuple[str, str]] = field(default_factory=list)
-    helpers_host: str = ""
     tools_host: str = ""
     socket_dir_host: str = ""
     socket_volume: str = ""
@@ -63,7 +62,8 @@ class RuntimeSpec:
     labels: dict[str, str] = field(default_factory=dict)
     network: str = ""
     env: dict[str, str] = field(default_factory=dict)
-    extra_run_args: list[str] = field(default_factory=list)
+    # Extra /etc/hosts entries: hostname → IP (or ``host-gateway``).
+    extra_hosts: dict[str, str] = field(default_factory=dict)
     recreate: bool = False
     pull_image: bool = False
     state_dir: str = ""
@@ -197,6 +197,15 @@ class TerminalHandle(ABC):
 
     @abstractmethod
     def read(self, timeout: float = 0.25) -> bytes: ...
+
+    def cursor(self) -> int:
+        """Oldest replayable output offset (0 when the backend keeps no scrollback)."""
+        return 0
+
+    def read_since(self, cursor: int, timeout: float = 0.25) -> tuple[bytes, int, bool]:
+        """``(bytes, next_cursor, eof)``. Default: no replay, single reader."""
+        data = self.read(timeout)
+        return data, cursor + len(data), not data and not self.alive()
 
     @abstractmethod
     def resize(self, cols: int, rows: int) -> None: ...

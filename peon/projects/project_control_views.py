@@ -21,6 +21,7 @@ from peon.projects.http_helpers import (
     request_value,
     scoped_get_or_404,
     with_project_context,
+    flash_json,
     wants_json as request_wants_json,
 )
 from peon.projects.project_status import ProjectOpsPayload
@@ -30,7 +31,18 @@ from peon.projects.streaming import (
     project_message_dicts,
     stream_meta,
 )
-from peon.projects.lifecycle import ProjectLifecycle, apply_directive
+from peon.projects.lifecycle import (
+    apply_directive,
+    bulk_delete_jobs,
+    bulk_delete_projects,
+    bulk_pause_projects,
+    bulk_resume_projects,
+    bulk_steer_jobs,
+    delete_job,
+    delete_project,
+    project_accepts_work,
+    rerun_job,
+)
 from orchestrator.utils.llm import llm_configured
 from peon.projects.models import (
     Finding,
@@ -43,6 +55,7 @@ from peon.projects.models import (
     ProjectStatus,
 )
 from peon.projects.objectives import ObjectiveScheduler
+from peon.projects.mcp_ops import save_project_mcp_from_post
 from peon.projects.roe_ops import (
     roe_add_path,
     roe_remove_path,
@@ -55,10 +68,15 @@ from peon.projects.target_shapes import (
     format_targets,
     parse_target_lines,
 )
-from peon.projects.workspaces import WorkspaceStore
+from peon.projects.workspaces import delete_project_input, list_project_inputs, save_project_input
 from peon.projects.console import http_handle_console_chat
 from peon.projects.project_pages import PROJECT_JOBS_LIMIT, STREAM_POLL_LIMIT
-from peon.projects.crew_control import CrewControl
+from peon.projects.crew_control import (
+    pause_project,
+    replan_project,
+    reprompt_manager,
+    resume_project,
+)
 
 
 @require_http_methods(["POST"])
@@ -69,15 +87,25 @@ def project_finding_triage(request: HttpRequest, pk, finding_id) -> HttpResponse
     finding = scoped_get_or_404(Finding, project, pk=finding_id)
     status = (request.POST.get("status") or "").strip().lower()
     action = (request.POST.get("action") or "").strip().lower()
-    updated = FindingStore().triage(finding, action, status=status)
+    severity = (request.POST.get("severity") or "").strip().lower()
     wants_json = request_wants_json(request)
+    store = FindingStore()
+    if severity and not (status or action):
+        # Operator re-rates the finding (status unchanged).
+        updated = store.set_severity(finding, severity)
+        what = f"severity {severity}"
+    else:
+        updated = store.triage(finding, action, status=status)
+        if updated is not None and severity:
+            updated = store.set_severity(updated, severity) or updated
+        what = f"status {status or action or '(empty)'}"
     if updated is None:
         if wants_json:
             return JsonResponse(
-                {"ok": False, "error": f"Invalid status: {status or action or '(empty)'}"},
+                {"ok": False, "error": f"Invalid {what}"},
                 status=400,
             )
-        messages.error(request, f"Unknown triage action: {action or status or '(empty)'}")
+        messages.error(request, f"Unknown triage action: {what}")
     else:
         if wants_json:
             counts = FindingStore.board_counts(project)
@@ -87,10 +115,13 @@ def project_finding_triage(request: HttpRequest, pk, finding_id) -> HttpResponse
                     "id": str(updated.id),
                     "seq": updated.seq,
                     "status": updated.status,
+                    "severity": updated.severity,
                     "counts": counts,
                 }
             )
-        messages.success(request, f"FIND-{finding.seq} → {updated.status}")
+        messages.success(
+            request, f"FIND-{finding.seq} → {updated.status} / {updated.severity}"
+        )
     status_q = (request.POST.get("finding_status") or "open").strip()
     severity_q = (request.POST.get("finding_severity") or "all").strip()
     url = reverse("project_detail", kwargs={"pk": project.pk})
@@ -128,7 +159,7 @@ def project_inputs(request: HttpRequest, pk) -> HttpResponse:
     project = get_object_or_404(Project, pk=pk)
     wants_json = request_wants_json(request)
     if request.method == "GET":
-        return JsonResponse({"ok": True, "inputs": WorkspaceStore.list_inputs(str(project.id))})
+        return JsonResponse({"ok": True, "inputs": list_project_inputs(str(project.id))})
 
     if project.status == ProjectStatus.CANCELLED:
         if wants_json:
@@ -152,7 +183,7 @@ def project_inputs(request: HttpRequest, pk) -> HttpResponse:
     errors: list[str] = []
     for f in files:
         try:
-            row = WorkspaceStore.save_input(str(project.id), f)
+            row = save_project_input(str(project.id), f)
             roe_add_path(project, row["sandbox_path"])
             saved_rows.append(row)
             # Surface in live stream on a recent/running job when possible.
@@ -177,7 +208,7 @@ def project_inputs(request: HttpRequest, pk) -> HttpResponse:
         return JsonResponse(
             {
                 "ok": bool(saved_rows),
-                "inputs": WorkspaceStore.list_inputs(str(project.id)),
+                "inputs": list_project_inputs(str(project.id)),
                 "saved": saved_rows,
                 "errors": errors,
             },
@@ -199,14 +230,14 @@ def project_input_delete(request: HttpRequest, pk) -> HttpResponse:
     name = request_value(request, "name")
 
     sandbox_path = f"/workspace/inputs/{Path(name).name}" if name else ""
-    ok = WorkspaceStore.delete_input(str(project.id), name) if name else False
+    ok = delete_project_input(str(project.id), name) if name else False
     if ok:
         roe_remove_path(project, sandbox_path)
     if wants_json:
         return JsonResponse(
             {
                 "ok": ok,
-                "inputs": WorkspaceStore.list_inputs(str(project.id)),
+                "inputs": list_project_inputs(str(project.id)),
                 "error": None if ok else "File not found in this project.",
             },
             status=200 if ok else 404,
@@ -220,6 +251,39 @@ def project_input_delete(request: HttpRequest, pk) -> HttpResponse:
 
 @require_http_methods(["POST"])
 @with_project_context
+def project_mcp(request: HttpRequest, pk) -> HttpResponse:
+    """Save per-project MCP env values (catalog holds names only)."""
+    project = get_object_or_404(Project, pk=pk)
+    wants_json = request_wants_json(request)
+    try:
+        if wants_json and request.content_type and "application/json" in request.content_type:
+            body = parse_json_body(request, strict=True)
+            mcp_id = str(body.get("mcp_id") or "").strip()
+            env = body.get("env") if isinstance(body.get("env"), dict) else {}
+            from peon.projects.mcp_ops import save_project_mcp_env
+
+            saved = save_project_mcp_env(project.pk, mcp_id, env)
+            return JsonResponse({"ok": True, "mcp_id": mcp_id, "env_keys": sorted(saved)})
+        n = save_project_mcp_from_post(project.pk, request.POST)
+    except ValueError as exc:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+        messages.error(request, str(exc))
+        return redirect(
+            reverse("project_detail", kwargs={"pk": project.pk}) + "#settings"
+        )
+    if wants_json:
+        return JsonResponse({"ok": True, "updated": n})
+    if n:
+        messages.success(request, f"Saved MCP configuration for {n} server(s)")
+    else:
+        messages.info(request, "No MCP env fields submitted")
+    return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#settings")
+
+
+@require_http_methods(["POST"])
+@with_project_context
+@flash_json
 def project_roe(request: HttpRequest, pk) -> HttpResponseRedirect:
     project = get_object_or_404(Project, pk=pk)
     # RoE lives on project SQLite — never get_or_create on the platform default DB.
@@ -297,13 +361,13 @@ def projects_bulk(request: HttpRequest) -> HttpResponseRedirect:
     action = (request.POST.get("action") or "").strip().lower()
     ids = request.POST.getlist("project_ids")
     if action == "pause":
-        n = ProjectLifecycle.bulk_pause_projects(ids)
+        n = bulk_pause_projects(ids)
         messages.success(request, f"Paused {n} project(s)")
     elif action == "resume":
-        n = ProjectLifecycle.bulk_resume_projects(ids)
+        n = bulk_resume_projects(ids)
         messages.success(request, f"Resumed {n} project(s)")
     elif action in {"delete", "remove"}:
-        n = ProjectLifecycle.bulk_delete_projects(ids)
+        n = bulk_delete_projects(ids)
         messages.success(
             request,
             f"Deleted {n} project(s) (sandbox cleanup queued on worker)",
@@ -320,16 +384,16 @@ def jobs_bulk(request: HttpRequest, pk) -> HttpResponseRedirect:
     action = (request.POST.get("action") or "").strip().lower()
     ids = request.POST.getlist("job_ids")
     if action in {"pause", "resume", "kill", "queue"}:
-        if action in {"resume", "queue"} and not ProjectLifecycle.project_accepts_work(project):
+        if action in {"resume", "queue"} and not project_accepts_work(project):
             messages.error(
                 request, f"Project is {project.status} — resume the project first"
             )
             return redirect("project_detail", pk=project.pk)
-        n = ProjectLifecycle.bulk_steer_jobs(project, ids, action)
+        n = bulk_steer_jobs(project, ids, action)
         label = {"queue": "Queued"}.get(action, f"{action.title()}d")
         messages.success(request, f"{label} {n} job(s)")
     elif action in {"delete", "remove"}:
-        n = ProjectLifecycle.bulk_delete_jobs(project, ids)
+        n = bulk_delete_jobs(project, ids)
         messages.success(request, f"Removed {n} job(s)")
     else:
         messages.error(request, f"Unknown bulk action: {action or '(empty)'}")
@@ -338,18 +402,19 @@ def jobs_bulk(request: HttpRequest, pk) -> HttpResponseRedirect:
 
 @require_http_methods(["POST"])
 @with_project_context
+@flash_json
 def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
     project = get_object_or_404(Project, pk=pk)
     action = (request.POST.get("action") or "").strip().lower()
     if action == "pause":
 
-        CrewControl.pause(project)
+        pause_project(project)
         messages.success(request, f"Paused project {project.title}")
         return redirect("project_detail", pk=project.pk)
     if action == "resume":
 
         steer = (request.POST.get("description") or request.POST.get("steer") or "").strip()
-        CrewControl.resume(project, steer=steer)
+        resume_project(project, steer=steer)
         messages.success(request, f"Resumed project {project.title}")
         return redirect("project_detail", pk=project.pk)
     if action == "run_next":
@@ -368,7 +433,7 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
             return redirect("project_detail", pk=project.pk)
         brief = (request.POST.get("description") or "").strip()
         try:
-            result = CrewControl.replan(project, brief)
+            result = replan_project(project, brief)
             messages.success(
                 request,
                 f"Replanned ({result.get('mode')}) — "
@@ -380,7 +445,7 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
     if action == "reprompt":
         note = (request.POST.get("description") or request.POST.get("steer") or "").strip()
         try:
-            result = CrewControl.reprompt_manager(project, note)
+            result = reprompt_manager(project, note)
             messages.success(
                 request,
                 f"Reprompted manager job {result.get('primary_job_id') or '(none)'}",
@@ -390,7 +455,7 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
         return redirect("project_detail", pk=project.pk)
     if action in {"delete", "remove"}:
         title = project.title
-        info = ProjectLifecycle.delete_project(project)
+        info = delete_project(project)
         sandbox = info.get("sandbox") or {}
         extra = ""
         if sandbox.get("action") == "removed":
@@ -423,7 +488,7 @@ def job_start(request: HttpRequest, pk, job_id) -> HttpResponse:
     command = request_value(request, "command") or request_value(request, "description")
 
     try:
-        ProjectLifecycle.rerun_job(job, command=command)
+        rerun_job(job, command=command)
     except RuntimeError as exc:
         if wants_json:
             return JsonResponse({"ok": False, "error": str(exc)}, status=409)
@@ -449,18 +514,19 @@ def job_remove(request: HttpRequest, pk, job_id) -> HttpResponseRedirect:
     project = get_object_or_404(Project, pk=pk)
     job = scoped_get_or_404(Job, project, pk=job_id)
     title = job.title
-    ProjectLifecycle.delete_job(job)
+    delete_job(job)
     messages.success(request, f"Removed job {title}")
     return redirect("project_detail", pk=project.pk)
 
 
 @require_http_methods(["POST"])
 @with_project_context
+@flash_json
 def job_steer(request: HttpRequest, pk, job_id) -> HttpResponseRedirect:
     project = get_object_or_404(Project, pk=pk)
     job = scoped_get_or_404(Job, project, pk=job_id)
     action = (request.POST.get("action") or "").strip().lower()
-    if action == "resume" and not ProjectLifecycle.project_accepts_work(project):
+    if action == "resume" and not project_accepts_work(project):
         messages.error(
             request, f"Project is {project.status} — resume the project first"
         )
@@ -612,11 +678,11 @@ def project_plan_api(request: HttpRequest, pk) -> JsonResponse:
 @with_project_context
 def job_role_suggestions(request: HttpRequest, pk, job_id) -> JsonResponse:
     """Suggest specialist roles for an operator 'add child' spawn under this job."""
-    from peon.projects.operator_spawn import OperatorSpawnService
+    from peon.projects.operator_spawn import suggest_roles_for_parent
 
     project = get_object_or_404(Project, pk=pk)
     parent = scoped_get_or_404(Job, project, pk=job_id)
-    roles = OperatorSpawnService.suggest_roles(parent)
+    roles = suggest_roles_for_parent(parent)
     return JsonResponse(
         {
             "ok": True,
@@ -631,7 +697,7 @@ def job_role_suggestions(request: HttpRequest, pk, job_id) -> JsonResponse:
 @with_project_context
 def job_add_child(request: HttpRequest, pk, job_id) -> JsonResponse:
     """Operator add-child: new objective + child Job under parent, analyzer stays last."""
-    from peon.projects.operator_spawn import OperatorSpawnService
+    from peon.projects.operator_spawn import add_child_agent
 
     project = get_object_or_404(Project, pk=pk)
     parent = scoped_get_or_404(Job, project, pk=job_id)
@@ -643,7 +709,7 @@ def job_add_child(request: HttpRequest, pk, job_id) -> JsonResponse:
         skills_raw = body.get("skill_ids") or body.get("skills") or []
         if not isinstance(skills_raw, list):
             skills_raw = []
-        result = OperatorSpawnService.add_child(
+        result = add_child_agent(
             project,
             parent,
             role_id=str(body.get("role_id") or "").strip(),

@@ -12,6 +12,7 @@
   var _pan = null;
   var _viewport = null;
   var _world = null;
+  var _seen = {}; // agent ids already animated in; live re-renders must not replay it
 
   function statusPill(status) {
     return window.PeonUI.statusPill(status);
@@ -267,7 +268,8 @@
           " " +
           y2
       );
-      path.setAttribute("class", "flow-edge");
+      var live = a.agent && b.agent && ledKind(b.agent.status) === "active";
+      path.setAttribute("class", "flow-edge" + (live ? " is-live" : ""));
       path.setAttribute("fill", "none");
       svg.appendChild(path);
     });
@@ -318,7 +320,9 @@
       lane +
       (String(agent.id) === String(selectedId) ? " is-selected" : "") +
       (led === "active" ? " is-running" : "") +
-      (lane === "skill" ? " is-spawn" : "");
+      (lane === "skill" ? " is-spawn" : "") +
+      (_seen[String(agent.id)] ? "" : " is-new");
+    _seen[String(agent.id)] = true;
     node.dataset.agentId = String(agent.id);
     node.dataset.status = String(agent.status || "");
     node.dataset.led = led;
@@ -451,6 +455,26 @@
         shortCmd(agent.last_command) || String(agent.status || "pending");
       objLine.title =
         agent.last_command || agent.objective_title || agent.status || "";
+    }
+    if (String(agent.status || "") === "idle") {
+      var wait = document.createElement("span");
+      wait.className = "org-agent-wait";
+      var waitingOn = Array.isArray(agent.waiting_on) ? agent.waiting_on : [];
+      if (waitingOn.length) {
+        wait.textContent =
+          " · idle, waiting for " +
+          waitingOn
+            .map(function (n) {
+              return "OBJ-" + n;
+            })
+            .join(", ");
+      } else if (agent.idle_note) {
+        wait.textContent = " · idle: " + agent.idle_note;
+      } else {
+        wait.textContent = " · idle, waiting for a message";
+      }
+      wait.title = wait.textContent.replace(/^ · /, "");
+      objLine.appendChild(wait);
     }
     text.appendChild(objLine);
 
@@ -622,11 +646,20 @@
       try {
         viewport.setPointerCapture(ev.pointerId);
       } catch (_) {}
-      _pan = { x: ev.clientX, y: ev.clientY, ox: _zoom.x, oy: _zoom.y };
+      _pan = {
+        x: ev.clientX,
+        y: ev.clientY,
+        ox: _zoom.x,
+        oy: _zoom.y,
+        moved: false,
+      };
       viewport.classList.add("is-panning");
     });
     viewport.addEventListener("pointermove", function (ev) {
       if (!_pan) return;
+      if (Math.abs(ev.clientX - _pan.x) + Math.abs(ev.clientY - _pan.y) > 4) {
+        _pan.moved = true;
+      }
       _zoom.x = _pan.ox + (ev.clientX - _pan.x);
       _zoom.y = _pan.oy + (ev.clientY - _pan.y);
       applyZoom();
@@ -636,8 +669,13 @@
       try {
         viewport.releasePointerCapture(ev.pointerId);
       } catch (_) {}
+      var wasClick = ev.type === "pointerup" && !_pan.moved;
       _pan = null;
       viewport.classList.remove("is-panning");
+      // A plain click on empty canvas clears the agent selection.
+      if (wasClick) {
+        window.dispatchEvent(new CustomEvent("peon:agent-deselected"));
+      }
     }
     viewport.addEventListener("pointerup", endPan);
     viewport.addEventListener("pointercancel", endPan);

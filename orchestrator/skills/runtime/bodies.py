@@ -41,13 +41,36 @@ def load_skill_body(name: str) -> str:
     doc = resolve_skill_document(name)
     if doc is None:
         return f"Error: unknown skill {name!r}."
-    blocked = doc.access_error(role_id=job_role_id(required=False))
+    role_id = job_role_id(required=False)
+    blocked = doc.access_error(role_id=role_id)
     if blocked:
         return blocked
     parts = [doc.instructions.strip() or doc.description.strip() or doc.id]
     if doc.setup is not None:
         parts.append(f"Setup: {doc.setup.kind} ({doc.setup.cwd}).")
+    mcp_note = _mcp_runtime_note(doc.id, role_id=role_id)
+    if mcp_note:
+        parts.insert(0, mcp_note)
     return "\n\n".join(part for part in parts if part)
+
+
+def _mcp_runtime_note(skill_id: str, *, role_id: str) -> str:
+    """When this skill packs an MCP server bound to the role, prefer MCP tools."""
+    mid = str(skill_id or "").strip().lower().rsplit("/", 1)[-1]
+    if not mid or not role_id:
+        return ""
+    try:
+        from orchestrator.mcp.provision import bound_mcp_ids
+    except Exception:
+        return ""
+    if mid not in set(bound_mcp_ids(role_id)):
+        return ""
+    return (
+        f"## Peon MCP runtime\n"
+        f"This skill is MCP server `{mid}` in the project sandbox. "
+        f"Use `list_mcp_tools(\"{mid}\")` then `call_mcp_tool(\"{mid}\", …)` "
+        f"for pipeline work (including dangling-domain evidence)."
+    )
 
 
 def read_skill_resource_body(name: str, path: str) -> str:

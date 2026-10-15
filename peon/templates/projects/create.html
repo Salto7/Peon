@@ -1,89 +1,81 @@
 {% extends "base.html" %}
-{% load static %}
-{% block title %}New project — Peon{% endblock %}
+{% load static ui %}
+{% block title %}New project · Peon{% endblock %}
 {% block content %}
-<header class="page-header">
-  <div>
-    <h1>New project</h1>
-    <p class="lead">Pick timed or durable, then title, brief, scope, and roles.</p>
-  </div>
-  <p class="bar">
-    <a class="btn secondary" href="{% url 'project_list' %}">← Projects</a>
-  </p>
-</header>
+<div class="mx-auto max-w-3xl">
+<c-page-header title="New project" description="Choose how the engagement runs, then describe its goal, scope and crew.">
+  <c-slot name="crumbs"><a class="hover:text-foreground" href="{% url 'project_list' %}">Projects</a>{% icon "chevron-right" "size-3" %}<span>New</span></c-slot>
+</c-page-header>
 
-<section class="panel create-panel">
-  <div class="kind-toggle-row" id="kind-slide" data-kind-slide>
-    <button type="button" class="theme-slide kind-slide-btn" id="kind-toggle" data-kind-toggle
-            role="switch" aria-checked="false" aria-label="Project type">
-      <span class="theme-slide-rail" aria-hidden="true">
-        <span class="theme-slide-knob"></span>
-      </span>
-    </button>
-    <span class="kind-toggle-label" id="kind-label">Timed</span>
-  </div>
+<form method="post" action="{% url 'project_create' %}" enctype="multipart/form-data" id="project-create-form" class="space-y-6">
+  {% csrf_token %}
+  <c-card title="Engagement type">
+    <div role="radiogroup" aria-label="Project type" class="grid gap-3 sm:grid-cols-2">
+      <label class="flex cursor-pointer gap-3 rounded-lg border p-4 transition-colors hover:bg-accent/50 has-[:checked]:border-primary/50 has-[:checked]:bg-primary/5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">
+        <input type="radio" name="kind" value="timed" checked class="mt-0.5 accent-primary focus-visible:outline-none">
+        <span><span class="block text-sm font-medium">Timed</span><span class="mt-0.5 block text-xs text-muted-foreground">Plan objectives and start agents right away; runs to completion.</span></span>
+      </label>
+      <label class="flex cursor-pointer gap-3 rounded-lg border p-4 transition-colors hover:bg-accent/50 has-[:checked]:border-primary/50 has-[:checked]:bg-primary/5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">
+        <input type="radio" name="kind" value="durable" class="mt-0.5 accent-primary focus-visible:outline-none">
+        <span><span class="block text-sm font-medium">Durable</span><span class="mt-0.5 block text-xs text-muted-foreground">Long-running: review and edit the plan graph before agents start.</span></span>
+      </label>
+    </div>
+  </c-card>
 
-  <form method="post" action="{% url 'project_create' %}" enctype="multipart/form-data" id="project-create-form">
-    {% csrf_token %}
-    <input type="hidden" name="kind" id="kind" value="timed">
-    <label for="title">Title</label>
-    <input id="title" name="title" required placeholder="lab" autofocus>
-    <label for="summary">Summary</label>
-    <textarea id="summary" name="summary" placeholder="What success looks like"></textarea>
-    <div class="runtime-field">
-      <label for="sandbox_runtime">Runtime</label>
-      <select id="sandbox_runtime" name="sandbox_runtime">
-        <option value="sandbox" selected>Sandbox</option>
-        <option value="openshell">OpenShell</option>
-      </select>
-      <p class="runtime-warning" role="note">
-        OpenShell is for untrusted software. Jobs run as a normal user: no sudo and no package installs.
-        Network access stays closed unless a host is allowed. Use Sandbox for web pentest and open recon.
-      </p>
+  <c-card title="Details">
+    <div class="space-y-4">
+      <c-field label="Title" for="title"><input id="title" name="title" required placeholder="ACME external perimeter" autofocus class="ui-input"></c-field>
+      <c-field label="Summary" for="summary" help="What does success look like?"><textarea id="summary" name="summary" rows="3" class="ui-textarea"></textarea></c-field>
+      <c-field label="Runtime" for="sandbox_runtime">
+        <select id="sandbox_runtime" name="sandbox_runtime" class="ui-select sm:max-w-xs">
+          <option value="sandbox" selected>Sandbox</option>
+          <option value="openshell">OpenShell</option>
+        </select>
+      </c-field>
+      <p class="ui-help" role="note">OpenShell is for untrusted software: jobs run as a normal user (no sudo, no package installs) and network access stays closed unless a host is allowed. Use Sandbox for web pentests and open recon.</p>
     </div>
-    <label for="in_scope">In-scope targets (optional — values authorize; type:value hints OK)</label>
-    <textarea id="in_scope" name="in_scope" placeholder="domain:app.lab&#10;person:Alice&#10;path:/tmp/sample.bin"></textarea>
-    <label for="uploads">Sample files (optional — stored under this project only)</label>
-    <div class="file-field">
-      <input id="uploads" name="uploads" type="file" multiple>
+  </c-card>
+
+  <c-card title="Scope" description="Values listed here authorize agents to act on them.">
+    <div class="space-y-4">
+      <c-field label="In-scope targets" for="in_scope" help="One per line. type:value hints are OK.">
+        <textarea id="in_scope" name="in_scope" rows="4" class="ui-textarea font-mono" placeholder="domain:app.lab&#10;person:Alice&#10;path:/tmp/sample.bin"></textarea>
+      </c-field>
+      <c-field label="Sample files" for="uploads" help="Stored under this project only. Peon does not validate file types or content.">
+        <input id="uploads" name="uploads" type="file" multiple class="ui-input h-auto py-1.5 file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-xs file:font-medium file:text-secondary-foreground">
+      </c-field>
     </div>
-    <p class="meta upload-disclaimer">
-      Peon does not validate file types or content. Upload files at your own responsibility.
-    </p>
+  </c-card>
+
+  <c-card title="Crew">
     {% include "includes/role_picker.html" with available_roles=available_roles selected_roles=selected_roles %}
-    <div class="bar">
-      <button type="submit" id="project-create-submit">Create</button>
-      <a class="btn secondary" href="{% url 'project_list' %}">Cancel</a>
-    </div>
-  </form>
-</section>
+  </c-card>
 
-<dialog id="project-create-dialog" class="create-status-dialog peon-dialog" aria-labelledby="create-status-title">
-  <div class="create-status-card peon-dialog-card">
-    <div class="create-status-hero">
-      <span class="create-status-orb" aria-hidden="true"></span>
-      <div>
-        <h2 id="create-status-title">Preparing project</h2>
-        <p class="meta create-status-sub" id="create-status-sub">Hang on while Peon sets things up…</p>
-      </div>
-    </div>
-    <ol class="create-status-steps" id="create-status-steps" aria-live="polite">
-      <li data-step="create" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Create project</strong><span class="create-step-detail"></span></span></li>
-      <li data-step="roe" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Configure Rules of Engagement</strong><span class="create-step-detail"></span></span></li>
-      <li data-step="plan" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Plan objectives</strong><span class="create-step-detail"></span></span></li>
-      <li data-step="start" class="is-pending"><span class="create-step-mark" aria-hidden="true"></span><span class="create-step-body"><strong>Start agents</strong><span class="create-step-detail"></span></span></li>
-    </ol>
-    <p class="create-status-error meta" id="create-status-error" hidden></p>
-    <div class="create-status-actions" id="create-status-actions" hidden>
-      <a class="btn" id="create-status-open" href="#">Open project</a>
-      <button type="button" class="secondary" id="create-status-close">Close</button>
-    </div>
+  <div class="flex justify-end gap-2">
+    <c-button variant="ghost" href="{% url 'project_list' %}">Cancel</c-button>
+    <c-button type="submit" id="project-create-submit">Create project</c-button>
+  </div>
+</form>
+</div>
+
+<dialog id="project-create-dialog" aria-labelledby="create-status-title"
+        class="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-xl outline-none border bg-popover p-6 text-popover-foreground shadow-lg backdrop:bg-black/60">
+  <h2 id="create-status-title" class="text-base font-semibold">Preparing project</h2>
+  <p class="mt-1 text-sm text-muted-foreground" id="create-status-sub">Hang on while Peon sets things up…</p>
+  <ol id="create-status-steps" aria-live="polite" class="mt-5 space-y-3">
+    <li data-step="create" data-state="pending" class="group flex gap-3"><span class="create-step-mark mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 border-border group-data-[state=active]:animate-pulse group-data-[state=active]:border-primary group-data-[state=done]:border-success group-data-[state=done]:bg-success group-data-[state=error]:border-destructive group-data-[state=error]:bg-destructive" aria-hidden="true"></span><span class="create-step-body flex flex-col text-sm"><strong class="font-medium group-data-[state=pending]:text-muted-foreground">Create project</strong><span class="create-step-detail text-xs text-muted-foreground"></span></span></li>
+    <li data-step="roe" data-state="pending" class="group flex gap-3"><span class="create-step-mark mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 border-border group-data-[state=active]:animate-pulse group-data-[state=active]:border-primary group-data-[state=done]:border-success group-data-[state=done]:bg-success group-data-[state=error]:border-destructive group-data-[state=error]:bg-destructive" aria-hidden="true"></span><span class="create-step-body flex flex-col text-sm"><strong class="font-medium group-data-[state=pending]:text-muted-foreground">Configure Rules of Engagement</strong><span class="create-step-detail text-xs text-muted-foreground"></span></span></li>
+    <li data-step="plan" data-state="pending" class="group flex gap-3"><span class="create-step-mark mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 border-border group-data-[state=active]:animate-pulse group-data-[state=active]:border-primary group-data-[state=done]:border-success group-data-[state=done]:bg-success group-data-[state=error]:border-destructive group-data-[state=error]:bg-destructive" aria-hidden="true"></span><span class="create-step-body flex flex-col text-sm"><strong class="font-medium group-data-[state=pending]:text-muted-foreground">Plan objectives</strong><span class="create-step-detail text-xs text-muted-foreground"></span></span></li>
+    <li data-step="start" data-state="pending" class="group flex gap-3"><span class="create-step-mark mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 border-border group-data-[state=active]:animate-pulse group-data-[state=active]:border-primary group-data-[state=done]:border-success group-data-[state=done]:bg-success group-data-[state=error]:border-destructive group-data-[state=error]:bg-destructive" aria-hidden="true"></span><span class="create-step-body flex flex-col text-sm"><strong class="font-medium group-data-[state=pending]:text-muted-foreground">Start agents</strong><span class="create-step-detail text-xs text-muted-foreground"></span></span></li>
+  </ol>
+  <p id="create-status-error" hidden class="mt-4 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"></p>
+  <div id="create-status-actions" hidden class="mt-5 flex justify-end gap-2">
+    <c-button variant="ghost" id="create-status-close">Close</c-button>
+    <c-button href="#" id="create-status-open">Open project</c-button>
   </div>
 </dialog>
 {% endblock %}
 {% block scripts %}
-<script src="{% static 'js/project-create.js' %}?v=20261010c"></script>
-<script>
-  PeonProjectCreate.init({ formId: "project-create-form" });
-</script>
+<script src="{% static 'js/project-create.js' %}"></script>
+<script>PeonProjectCreate.init({ formId: "project-create-form" });</script>
 {% endblock %}

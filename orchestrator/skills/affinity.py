@@ -7,6 +7,7 @@ Imported packs receive role bindings dynamically from their manifest content.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 AFFINITY_THRESHOLD = 0.5
 _BODY_LIMIT = 2500
 
-_CLASSIFY_SYSTEM = """You assign Peon engagement roles to a skill pack.
+_CLASSIFY_SYSTEM = """You assign Peon engagement roles to a catalog item (skill or MCP server).
 
 Return ONLY JSON:
 {
@@ -34,13 +35,32 @@ Return ONLY JSON:
 
 Rules:
 - role_id must be one of the provided catalog role ids (never invent ids)
-- score is confidence that this role should own/run the skill (0-1)
+- score is confidence that this role should own/run the item (0-1)
 - include every role that reasonably fits; omit roles that do not
-- at most one binding may have lead=true (the default lead skill for that role)
-- engagement-pm / analyzer roles only bind skills that are clearly for that lane
-- Learn/authoring-only packs (skill-writer, tools-suggestor) may return bindings: []
+- at most one binding may have lead=true (default lead for that role)
+- engagement-pm / analyzer roles only bind items clearly for that lane
+- Learn/authoring-only packs may return bindings: []
+- MCP servers usually bind to technical expert roles that would call their tools
 - No prose outside JSON
 """
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_ROLE_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "for",
+        "of",
+        "or",
+        "the",
+        "to",
+        "with",
+        "role",
+        "expert",
+        "specialist",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -106,7 +126,6 @@ def _parse_bindings(raw: Any) -> tuple[AffinityBinding, ...]:
         lead = bool(item.get("lead"))
         seen.add(role)
         out.append(AffinityBinding(role_id=role, score=score, lead=lead))
-    # At most one lead overall is fine; multiple leads across roles OK.
     return tuple(out)
 
 
@@ -142,17 +161,145 @@ def _role_briefs() -> list[dict[str, str]]:
     return briefs
 
 
+def score_roles(
+    catalog: Iterable[Any], *, name: str, description: str, corpus: str
+) -> tuple[AffinityBinding, ...]:
+    """Lexical role match: a role token in the name > description > body."""
+    name_words = set(_WORD_RE.findall(name.lower()))
+    description_words = set(_WORD_RE.findall(description.lower()))
+    words = set(_WORD_RE.findall(corpus.lower()))
+    bindings: list[AffinityBinding] = []
+    for role in catalog:
+        tokens = {
+            token
+            for label in (role.id, *role.aliases)
+            for token in _WORD_RE.findall(label.lower())
+            if token not in _ROLE_STOPWORDS
+        }
+        if tokens & name_words:
+            score = 0.95
+        elif tokens & description_words:
+            score = 0.75
+        elif tokens & words:
+            score = 0.55
+        else:
+            continue
+        bindings.append(AffinityBinding(role_id=role.id, score=score, lead=score == 0.95))
+    return tuple(bindings)
+
+
+def keyword_role_bindings(
+    *,
+    name: str,
+    description: str = "",
+    body: str = "",
+    tags: Iterable[str] = (),
+) -> SkillAffinity:
+    """Fast lexical role match from free text (no LLM)."""
+    try:
+        from orchestrator.crew.roles.catalog import load_role_catalog
+
+        catalog = tuple(load_role_catalog())
+    except Exception:
+        return SkillAffinity()
+    tag_text = " ".join(str(t) for t in tags)
+    bindings = score_roles(
+        catalog,
+        name=str(name or ""),
+        description=f"{description} {tag_text}",
+        corpus=" ".join((name, description, tag_text, body[:4000])),
+    )
+    return SkillAffinity(bindings=bindings, source="dynamic-keyword")
+
+
+def classify_text_affinity(
+    *,
+    owner_id: str,
+    owner_kind: str,
+    description: str = "",
+    body: str = "",
+    known_roles: Iterable[str] | None = None,
+) -> SkillAffinity:
+    """LLM-classify role bindings from catalog text. Empty on failure."""
+    from orchestrator.utils.llm import chat_json, llm_configured
+
+    if not llm_configured():
+        return SkillAffinity()
+    briefs = _role_briefs()
+    if known_roles is not None:
+        allow = {str(r).strip().lower() for r in known_roles if str(r).strip()}
+        briefs = [b for b in briefs if b["id"] in allow]
+    if not briefs:
+        return SkillAffinity()
+    text = (body or "").strip()
+    if len(text) > _BODY_LIMIT:
+        text = text[:_BODY_LIMIT].rstrip() + "\n…"
+    human = (
+        f"Item kind: {owner_kind}\n"
+        f"Item id: {owner_id}\n"
+        f"Description: {description}\n\n"
+        f"Details:\n{text}\n\n"
+        f"Catalog roles:\n{yaml.safe_dump(briefs, sort_keys=False)}"
+    )
+    try:
+        data = chat_json(_CLASSIFY_SYSTEM, human)
+    except Exception as exc:
+        logger.warning("affinity classify failed for %s: %s", owner_id, exc)
+        return SkillAffinity()
+    if not isinstance(data, dict):
+        return SkillAffinity()
+    allowed = {b["id"] for b in briefs}
+    raw_bindings = _parse_bindings(data.get("bindings"))
+    kept = tuple(b for b in raw_bindings if b.role_id in allowed)
+    return SkillAffinity(bindings=kept, source="llm")
+
+
+def infer_catalog_bindings(
+    *,
+    owner_id: str,
+    owner_kind: str,
+    description: str = "",
+    body: str = "",
+    tags: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """Auto role bindings for catalog save. Keyword first, LLM if empty."""
+    keyed = keyword_role_bindings(
+        name=owner_id,
+        description=description,
+        body=body,
+        tags=tags,
+    )
+    affinity = keyed
+    if not affinity.bindings:
+        affinity = classify_text_affinity(
+            owner_id=owner_id,
+            owner_kind=owner_kind,
+            description=description,
+            body=body or description,
+        )
+    rows = [
+        {"role_id": b.role_id, "score": b.score, "lead": bool(b.lead)}
+        for b in affinity.bindings
+        if float(b.score) >= AFFINITY_THRESHOLD
+    ]
+    # Catalog allows at most one lead across the whole owner.
+    leads = [row for row in rows if row["lead"]]
+    if len(leads) > 1:
+        winner = max(leads, key=lambda row: (float(row["score"]), row["role_id"]))
+        for row in rows:
+            row["lead"] = row is winner
+    return rows
+
+
 def classify_skill_affinity(
     skill_dir: Path,
     *,
     known_roles: Iterable[str] | None = None,
 ) -> SkillAffinity:
     """LLM-classify role bindings for a pack. Returns empty affinity on failure."""
-    from orchestrator.utils.llm import chat_json, llm_configured
-
     root = Path(skill_dir)
     manifest = find_skill_manifest(root)
-    if manifest is None or not llm_configured():
+    if manifest is None:
         return SkillAffinity()
     try:
         spec = parse_skill_md(manifest, profile=ParseProfile.CLAUDE_CODE)
@@ -162,30 +309,11 @@ def classify_skill_affinity(
     except OSError as exc:
         logger.debug("affinity read failed for %s: %s", root, exc)
         return SkillAffinity()
-    briefs = _role_briefs()
-    if known_roles is not None:
-        allow = {str(r).strip().lower() for r in known_roles if str(r).strip()}
-        briefs = [b for b in briefs if b["id"] in allow]
-    if not briefs:
-        return SkillAffinity()
-    body = (spec.instructions or "").strip()
-    if len(body) > _BODY_LIMIT:
-        body = body[:_BODY_LIMIT].rstrip() + "\n…"
-    human = (
-        f"Skill id: {spec.id}\n"
-        f"Description: {spec.description}\n\n"
-        f"Instructions:\n{body}\n\n"
-        f"Catalog roles:\n{yaml.safe_dump(briefs, sort_keys=False)}"
+    return classify_text_affinity(
+        owner_id=spec.id,
+        owner_kind="skill",
+        description=spec.description,
+        body=spec.instructions or "",
+        known_roles=known_roles,
     )
-    try:
-        data = chat_json(_CLASSIFY_SYSTEM, human)
-    except Exception as exc:
-        logger.warning("affinity classify failed for %s: %s", spec.id, exc)
-        return SkillAffinity()
-    if not isinstance(data, dict):
-        return SkillAffinity()
-    allowed = {b["id"] for b in briefs}
-    raw_bindings = _parse_bindings(data.get("bindings"))
-    kept = tuple(b for b in raw_bindings if b.role_id in allowed)
-    return SkillAffinity(bindings=kept, source="llm")
 

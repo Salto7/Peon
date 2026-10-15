@@ -16,12 +16,12 @@ from peon.projects.db import (
 )
 from peon.projects.models import Job, JobStatus, Project, ProjectStatus
 from peon.projects.runtime_settings import PeonSettings
-from peon.projects.streaming import StreamStore
+from peon.projects.streaming import emit_job_stream
 
 
 def emit(job: Job, message_type: str, content: str, **meta) -> None:
     """Stream a job event (swallow errors so workers stay alive)."""
-    StreamStore.emit(job, message_type, content, meta or None, swallow_errors=True)
+    emit_job_stream(job, message_type, content, meta or None, swallow_errors=True)
 
 
 def mark_job_running(job: Job) -> Job | None:
@@ -51,7 +51,7 @@ def reclaim_stuck_jobs(*, older_than_seconds: int | None = None) -> int:
         seconds = PeonSettings.get_int("JOB_STUCK_RUNNING_SECONDS", 7200)
     seconds = max(60, int(seconds))
     cutoff = dj_tz.now() - timedelta(seconds=seconds)
-    from peon.projects.job_run import JobExecutionService
+    from peon.projects.job_run import finish_job
 
     n = 0
     # Platform orphan jobs
@@ -63,7 +63,7 @@ def reclaim_stuck_jobs(*, older_than_seconds: int | None = None) -> int:
     for job in stuck:
         err = (job.error or "").strip()
         note = f"[reclaimed] stuck RUNNING > {seconds}s"
-        JobExecutionService.finish(
+        finish_job(
             job,
             status=JobStatus.FAILED,
             error=(f"{err}\n{note}" if err else note)[:2000],
@@ -80,7 +80,7 @@ def reclaim_stuck_jobs(*, older_than_seconds: int | None = None) -> int:
             for job in stuck:
                 err = (job.error or "").strip()
                 note = f"[reclaimed] stuck RUNNING > {seconds}s"
-                JobExecutionService.finish(
+                finish_job(
                     job,
                     status=JobStatus.FAILED,
                     error=(f"{err}\n{note}" if err else note)[:2000],

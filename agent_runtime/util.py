@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Self, TypeVar
+from typing import Any, ClassVar, TypeVar
 
 T = TypeVar("T", bound="SharedBase")
 
@@ -10,8 +10,6 @@ T = TypeVar("T", bound="SharedBase")
 FORWARD_ENV = (
     "ORCHESTRATOR_JOB_ID",
     "ORCHESTRATOR_STREAM_SOCKET",
-    "ORCHESTRATOR_ROLE_COMMAND",
-    "ORCHESTRATOR_ROLE_NAME",
     "ORCHESTRATOR_IN_SCOPE",
     "ORCHESTRATOR_EXCLUSIONS",
     "ORCHESTRATOR_SEED",

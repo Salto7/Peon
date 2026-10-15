@@ -1,15 +1,20 @@
-"""Platform-agnostic runtime configuration (env / dataclass — no Django)."""
+"""Platform-agnostic runtime configuration (pydantic-settings from env — no Django)."""
 
 from __future__ import annotations
 
+import logging
 import os
-from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Annotated, Any
+
+from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 import orchestrator as _pkg
 
-from orchestrator.utils.strings import as_bool
 from orchestrator.prompts import FINDINGS_GUIDANCE, INSTALL_CASCADE
+
+logger = logging.getLogger(__name__)
 
 # Peon engagement default; host may override via configure(...).
 _DEFAULT_SYSTEM_PREAMBLE = (
@@ -33,37 +38,57 @@ LLM_PROVIDER_KEY_ENV = {
 }
 
 
-def _env(key: str, default: str = "") -> str:
-    return (os.environ.get(key) or default).strip()
+def _env_names(*names: str) -> Any:
+    """Environment variable names for a field (keyword construction still uses the field name)."""
+    return AliasChoices(*names)
 
 
-def _env_path(key: str, default: str | Path) -> Path:
-    raw = _env(key)
-    return Path(raw).expanduser().resolve() if raw else Path(default).expanduser().resolve()
+_PATH_FIELDS = (
+    "tools_catalog_dir",
+    "workspaces_dir",
+    "platform_workspace_dir",
+    "skills_dir",
+    "skills_imported_dir",
+    "mcps_dir",
+)
 
 
-def _env_list(key: str) -> list[str]:
-    raw = _env(key)
-    if not raw:
-        return []
-    return [p.strip() for p in raw.replace(";", ":").split(":") if p.strip()]
+class RuntimeConfig(BaseSettings):
+    """Paths, LLM, agent, and sandbox settings for one process.
 
+    Values come from keyword arguments, then environment variables (empty values
+    are ignored). Relative paths resolve against ``config_root``.
+    """
 
-@dataclass
-class RuntimeConfig:
-    """Paths, LLM, agent, and sandbox settings for one process."""
+    model_config = SettingsConfigDict(
+        env_ignore_empty=True,
+        populate_by_name=True,
+        extra="ignore",
+    )
 
-    tools_catalog_dir: Path = field(default_factory=lambda: Path("tools/catalog").resolve())
-    helpers_dir: Path = field(default_factory=lambda: Path("helpers").resolve())
-    workspaces_dir: Path = field(default_factory=lambda: Path("workspaces").resolve())
-    platform_workspace_dir: Path = field(
-        default_factory=lambda: Path("workspaces/platform").resolve()
+    config_root: Path = Field(
+        default_factory=Path.cwd, validation_alias=_env_names("PEON_CONFIG_ROOT"), exclude=True
+    )
+
+    tools_catalog_dir: Path = Path("tools/catalog")
+    workspaces_dir: Path = Field(
+        Path("workspaces"), validation_alias=_env_names("PROJECT_WORKSPACES_DIR")
+    )
+    # Always ``<workspaces_dir>/platform`` unless passed explicitly.
+    platform_workspace_dir: Path | None = Field(
+        None, validation_alias=_env_names("PEON_PLATFORM_WORKSPACE_DIR")
     )
 
     llm_provider: str = _DEFAULT_LLM_PROVIDER
     llm_module: str = _DEFAULT_LLM_MODULE
-    litellm_model: str = _DEFAULT_LITELLM_MODEL
-    litellm_api_key: str = ""
+    litellm_model: str = Field(
+        _DEFAULT_LITELLM_MODEL, validation_alias=_env_names("LITELLM_MODEL", "LLM_MODEL")
+    )
+    # Provider key first (see ``from_env``), then these in order.
+    litellm_api_key: str = Field(
+        "",
+        validation_alias=_env_names("LITELLM_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"),
+    )
     litellm_api_base: str | None = None
     llm_temperature: float = 0.0
     llm_max_tokens: int | None = None
@@ -81,34 +106,73 @@ class RuntimeConfig:
     crew_reasoning_max_attempts: int = 1
     # Job/crew orchestration module (crewai only on Peon-crewAI).
     agent_module: str = "crewai"
-    skills_dir: Path = field(default_factory=lambda: Path("skills").resolve())
-    skills_imported_dir: Path = field(
-        default_factory=lambda: Path("skills_imported").resolve()
-    )
-    skills_extra_dirs: tuple[Path, ...] = ()
+    skills_dir: Path = Path("skills")
+    # Deprecated: defaults to skills_dir. Kept so old env / mounts still resolve.
+    skills_imported_dir: Path | None = None
+    skills_extra_dirs: Annotated[tuple[Path, ...], NoDecode] = ()
+    mcps_dir: Path = Path("mcps")
 
     sandbox_image: str = "peon-sandbox:local"
-    sandbox_prefix: str = "peon-project"
+    sandbox_prefix: str = Field(
+        "peon-project", validation_alias=_env_names("PROJECT_SANDBOX_PREFIX", "SANDBOX_PREFIX")
+    )
     sandbox_remove_on_exit: bool = False
 
-    system_preamble: str = _DEFAULT_SYSTEM_PREAMBLE
+    system_preamble: str = Field(
+        _DEFAULT_SYSTEM_PREAMBLE, validation_alias=_env_names("ORCHESTRATOR_SYSTEM_PREAMBLE")
+    )
+
+    @field_validator("skills_extra_dirs", mode="before")
+    @classmethod
+    def _split_dirs(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return tuple(p.strip() for p in value.replace(";", ":").split(":") if p.strip())
+        return value
+
+    @field_validator("crew_reasoning_effort", "agent_module", mode="after")
+    @classmethod
+    def _lower(cls, value: str) -> str:
+        return value.strip().lower()
+
+    @model_validator(mode="after")
+    def _resolve_paths(self) -> RuntimeConfig:
+        root = self.config_root.expanduser().resolve()
+
+        def resolve(path: Path) -> Path:
+            path = path.expanduser()
+            return (path if path.is_absolute() else root / path).resolve()
+
+        for name in _PATH_FIELDS:
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, resolve(value))
+        if self.skills_imported_dir is None:
+            object.__setattr__(self, "skills_imported_dir", self.skills_dir)
+        if self.platform_workspace_dir is None:
+            object.__setattr__(self, "platform_workspace_dir", self.workspaces_dir / "platform")
+        object.__setattr__(
+            self, "skills_extra_dirs", tuple(resolve(p) for p in self.skills_extra_dirs)
+        )
+        return self
 
     def ensure_dirs(self) -> None:
         self.skills_dir.mkdir(parents=True, exist_ok=True)
-        self.skills_imported_dir.mkdir(parents=True, exist_ok=True)
+        if self.skills_imported_dir.resolve() != self.skills_dir.resolve():
+            self.skills_imported_dir.mkdir(parents=True, exist_ok=True)
+        self.mcps_dir.mkdir(parents=True, exist_ok=True)
         self.tools_catalog_dir.mkdir(parents=True, exist_ok=True)
-        self.helpers_dir.mkdir(parents=True, exist_ok=True)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
         self.platform_workspace_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_env(self) -> None:
         """Export path hints used by catalog / docker exec helpers."""
         os.environ["SKILLS_DIR"] = str(self.skills_dir)
+        # Alias: imports share skills/. Extra distinct path only if configured.
         os.environ["SKILLS_IMPORTED_DIR"] = str(self.skills_imported_dir)
         os.environ["SKILLS_EXTRA_DIRS"] = ":".join(
             str(path) for path in self.skills_extra_dirs
         )
-        os.environ["HELPERS_DIR"] = str(self.helpers_dir)
+        os.environ["MCPS_DIR"] = str(self.mcps_dir)
         os.environ["TOOLS_CATALOG_DIR"] = str(self.tools_catalog_dir)
         os.environ["PROJECT_WORKSPACES_DIR"] = str(self.workspaces_dir)
         os.environ["PLATFORM_WORKSPACE_DIR"] = str(self.platform_workspace_dir)
@@ -121,67 +185,16 @@ class RuntimeConfig:
 
     @classmethod
     def from_env(cls, *, root: Path | None = None) -> RuntimeConfig:
-        base = (root or Path.cwd()).resolve()
-        provider = _env("LLM_PROVIDER", _DEFAULT_LLM_PROVIDER)
-        key_attr = LLM_PROVIDER_KEY_ENV.get(provider, "LITELLM_API_KEY")
-        api_key = (
-            _env(key_attr)
-            or _env("LITELLM_API_KEY")
-            or _env("OPENROUTER_API_KEY")
-            or _env("OPENAI_API_KEY")
-        )
-        max_tokens_raw = _env("LLM_MAX_TOKENS")
-        max_tokens = int(max_tokens_raw) if max_tokens_raw.isdigit() else None
-        return cls(
-            skills_dir=_env_path("SKILLS_DIR", base / "skills"),
-            skills_imported_dir=_env_path(
-                "SKILLS_IMPORTED_DIR", base / "skills_imported"
-            ),
-            skills_extra_dirs=tuple(
-                Path(value).expanduser().resolve() for value in _env_list("SKILLS_EXTRA_DIRS")
-            ),
-            helpers_dir=_env_path("HELPERS_DIR", base / "helpers"),
-            tools_catalog_dir=_env_path("TOOLS_CATALOG_DIR", base / "tools" / "catalog"),
-            workspaces_dir=_env_path("PROJECT_WORKSPACES_DIR", base / "workspaces"),
-            platform_workspace_dir=(
-                _env_path("PROJECT_WORKSPACES_DIR", base / "workspaces")
-                / "platform"
-            ).resolve(),
-            llm_provider=provider,
-            llm_module=_env("LLM_MODULE", _DEFAULT_LLM_MODULE) or _DEFAULT_LLM_MODULE,
-            litellm_model=_env("LITELLM_MODEL")
-            or _env("LLM_MODEL")
-            or _DEFAULT_LITELLM_MODEL,
-            litellm_api_key=api_key,
-            litellm_api_base=_env("LITELLM_API_BASE") or None,
-            llm_temperature=float(_env("LLM_TEMPERATURE", "0") or 0),
-            llm_max_tokens=max_tokens,
-            llm_proxy_enabled=as_bool(_env("LLM_PROXY_ENABLED", "false"), default=False),
-            llm_proxy_url=_env("LLM_PROXY_URL", _DEFAULT_LLM_PROXY_URL)
-            or _DEFAULT_LLM_PROXY_URL,
-            agent_max_iterations=int(_env("AGENT_MAX_ITERATIONS", "40") or 40),
-            agent_max_failure_replans=int(_env("AGENT_MAX_FAILURE_REPLANS", "2") or 2),
-            agent_max_subagents=int(_env("AGENT_MAX_SUBAGENTS", "8") or 8),
-            agent_max_subagent_depth=int(_env("AGENT_MAX_SUBAGENT_DEPTH", "2") or 2),
-            agent_runtime_enabled=as_bool(_env("AGENT_RUNTIME_ENABLED", "true"), default=True),
-            crew_reasoning_effort=(
-                _env("CREW_REASONING_EFFORT", "low") or "low"
-            ).strip().lower(),
-            crew_reasoning_max_attempts=int(
-                _env("CREW_REASONING_MAX_ATTEMPTS", "1") or 1
-            ),
-            agent_module=_env("AGENT_MODULE", "crewai") or "crewai",
-            sandbox_image=_env("SANDBOX_IMAGE", "peon-sandbox:local"),
-            sandbox_prefix=_env("PROJECT_SANDBOX_PREFIX")
-            or _env("SANDBOX_PREFIX", "peon-project"),
-            sandbox_remove_on_exit=as_bool(
-                _env("SANDBOX_REMOVE_ON_EXIT", "false"), default=False
-            ),
-            system_preamble=_env("ORCHESTRATOR_SYSTEM_PREAMBLE") or _DEFAULT_SYSTEM_PREAMBLE,
-        )
+        """Settings from the environment; relative defaults resolve under ``root``."""
+        kwargs: dict[str, Any] = {"config_root": (root or Path.cwd()).resolve()}
+        provider = (os.environ.get("LLM_PROVIDER") or _DEFAULT_LLM_PROVIDER).strip()
+        provider_key = (os.environ.get(LLM_PROVIDER_KEY_ENV.get(provider, "")) or "").strip()
+        if provider_key:
+            kwargs["litellm_api_key"] = provider_key
+        return cls(**kwargs)
 
     def merge(self, **overrides: object) -> RuntimeConfig:
-        return replace(self, **overrides)  # type: ignore[arg-type]
+        return self.model_copy(update=overrides)
 
 
 def discover_root(start: Path | str | None = None) -> Path:
@@ -232,6 +245,6 @@ def configure(cfg: RuntimeConfig | None = None, **overrides: object) -> RuntimeC
         RoleRegistry.reset_shared()
         ToolCatalog.reset_shared()
         SkillRegistry.reset_shared()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("resetting LLM provider failed: %s", exc, exc_info=True)
     return _config

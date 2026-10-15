@@ -16,26 +16,6 @@ _JSON_OBJ = re.compile(r"\{.*\}", re.S)
 _THINK = frozenset("thinking reasoning thought".split())
 
 
-def is_kebab_slug(value: str | None) -> bool:
-    return bool((value or "").strip() and _KEBAB.match(value.strip()))
-
-
-def require_kebab_slug(value: str | None, *, kind: str = "id") -> str:
-    """Return lowercase kebab-case slug or raise ValueError."""
-    text = (value or "").strip().lower()
-    if not text or not _KEBAB.match(text):
-        raise ValueError(f"invalid {kind} {value!r}")
-    return text
-
-
-def to_kebab_slug(value: str | None) -> str:
-    """Best-effort kebab slug (may be empty if nothing remains)."""
-    text = _NON_ALNUM.sub("-", (value or "").strip().lower()).strip("-")
-    while "--" in text:
-        text = text.replace("--", "-")
-    return text
-
-
 def as_bool(value: Any, *, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value

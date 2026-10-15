@@ -35,12 +35,6 @@ CATALOG_INSTALL_PREFER = (
     "(custom scripts must apt-get their own prerequisites)."
 )
 
-AGENT_RECOVER_NUDGE = (
-    "The last tool call failed. Call provision_cli for a missing CLI, adjust "
-    "arguments, or use bash — then retry. Do not repeat the identical "
-    "failing call."
-)
-
 # Engagement findings vs run/objective status (agent preamble + tools).
 FINDINGS_GUIDANCE = (
     "Findings are engagement discoveries about any in-scope subject "

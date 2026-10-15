@@ -2,32 +2,24 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
-from agent_runtime.docker.cli import DockerCli
+from agent_runtime.docker.engine import DockerEngine
 from peon.projects.models import Project
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.workspaces import WorkspaceStore
+from peon.projects.workspaces import prune_orphan_workspaces, workspace_entry_project_id
 
 
 class ProjectResourcePruner:
     """Remove resources whose owning Project row no longer exists."""
 
-    @staticmethod
-    def _project_id(value: object) -> str:
-        try:
-            return str(uuid.UUID(str(value)))
-        except (ValueError, AttributeError, TypeError):
-            return ""
-
     @classmethod
     def _runtime_project_ids(cls) -> set[str]:
-        cli = DockerCli.shared()
+        cli = DockerEngine.shared()
         project_ids: set[str] = set()
         for container_id in cli.ps_ids("label=peon.project_id"):
-            project_id = cls._project_id(
-                cli.labels(container_id).get("peon.project_id")
+            project_id = workspace_entry_project_id(
+                str(cli.labels(container_id).get("peon.project_id") or "")
             )
             if project_id:
                 project_ids.add(project_id)
@@ -39,14 +31,14 @@ class ProjectResourcePruner:
             str(project_id)
             for project_id in Project.objects.values_list("id", flat=True)
         }
-        workspace_result = WorkspaceStore.prune_orphans(
+        workspace_result = prune_orphan_workspaces(
             active,
             persist=persist,
         )
         orphan_project_ids = {
             project_id
             for value in workspace_result["orphans"]
-            if (project_id := cls._project_id(value))
+            if (project_id := workspace_entry_project_id(str(value)))
         }
         orphan_runtime_ids = cls._runtime_project_ids() - active
         orphan_project_ids.update(orphan_runtime_ids)

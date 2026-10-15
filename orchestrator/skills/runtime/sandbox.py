@@ -7,6 +7,8 @@ scripts) call those. Host execution is refused when no session is bound.
 
 from __future__ import annotations
 
+import logging
+
 import hashlib
 import re
 import shlex
@@ -31,6 +33,8 @@ from orchestrator.utils.stream_events import (
     cli_payload,
     envelope,
 )
+
+logger = logging.getLogger(__name__)
 
 _RUNTIMES = frozenset({"python3", "python", "bash", "sh", "node"})
 
@@ -397,8 +401,8 @@ class SandboxTools:
                 which = Session.current().which
                 for binary in ("python3", "bash", "curl", "apt-get"):
                     lines.append(f"{binary}={'yes' if which(binary) else 'no'}")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("sandbox binary probe failed: %s", exc, exc_info=True)
         return "\n".join(lines)
 
     def provision(
@@ -585,8 +589,6 @@ class SandboxTools:
         }
         skill_env.update(_configured_skill_env(session))
         skill_env.update(setup_env)
-        if role_id:
-            skill_env["ORCHESTRATOR_ROLE_NAME"] = role_id
         emit_event(
             "tool",
             f"run_skill_script: {doc.id} {rel}",

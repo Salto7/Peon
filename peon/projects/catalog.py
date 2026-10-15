@@ -10,10 +10,17 @@ from django.shortcuts import redirect, render
 from django.urls import path, reverse
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
+from orchestrator.crew.roles.catalog import ROLE_KINDS
 from orchestrator.crew.router import RoleRouter
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.tools.catalog import ToolCatalog
-from peon.projects.catalog_cards import CatalogCardsBase, RoleCards, SkillCards, ToolCards
+from peon.projects.catalog_cards import (
+    CatalogCardsBase,
+    McpCards,
+    RoleCards,
+    SkillCards,
+    ToolCards,
+)
 from peon.projects.catalog_edit import (
     load_skill_source,
     load_tool_source,
@@ -71,6 +78,21 @@ def _resolve_args(request: HttpRequest) -> tuple[str, str, bool, list[str], list
     )
 
 
+# Source choices for the install-form island (first entry is the default).
+INSTALL_SOURCES = {
+    "skill": [
+        {"value": "git", "label": "Git repository", "placeholder": "owner/repo or https://github.com/org/repo.git"},
+        {"value": "npx", "label": "openskills", "placeholder": "owner/repo"},
+        {"value": "disk", "label": "Local folder"},
+    ],
+    "mcp": [
+        {"value": "npx", "label": "npx package", "placeholder": "@modelcontextprotocol/server-github"},
+        {"value": "git", "label": "Git repository", "placeholder": "owner/repo or https://github.com/org/repo.git"},
+        {"value": "disk", "label": "Local folder"},
+    ],
+}
+
+
 @require_GET
 def catalog_page(request: HttpRequest) -> HttpResponse:
     show_all = request.GET.get("all", "").lower() in {"1", "true", "yes"}
@@ -79,13 +101,14 @@ def catalog_page(request: HttpRequest) -> HttpResponse:
         btn = cards.reload_button()
         return {**btn, "url": reverse(btn["url_name"])}
 
-    import json as _json
-
     edit_urls = {
         "skill_source": "/catalog/api/skills/{id}/source/",
+        "skill_delete": "/catalog/api/skills/{id}/delete/",
         "tool_source": "/catalog/api/tools/{id}/source/",
         "mcp_source": "/catalog/api/mcp/{id}/",
         "role_source": "/catalog/api/roles/{id}/",
+        "role_write": "/catalog/api/roles/{id}/edit/",
+        "role_create": reverse("catalog_api_role_create"),
     }
     catalog = PlatformCatalog.shared()
     return render(
@@ -99,8 +122,13 @@ def catalog_page(request: HttpRequest) -> HttpResponse:
             "show_all": show_all,
             "roles_reload": _reload_ctx(RoleCards),
             "skills_reload": _reload_ctx(SkillCards),
+            "mcp_reload": _reload_ctx(McpCards),
             "tools_reload": _reload_ctx(ToolCards),
-            "catalog_edit_urls_json": _json.dumps(edit_urls),
+            "catalog_edit_urls": edit_urls,
+            "role_kinds": sorted(ROLE_KINDS),
+            "role_names": sorted(r["name"] for r in RoleCards.catalog(jobable_only=False)),
+            "skill_sources": INSTALL_SOURCES["skill"],
+            "mcp_sources": INSTALL_SOURCES["mcp"],
             "nav": "catalog",
         },
     )
@@ -154,6 +182,12 @@ def api_skills_reload(request: HttpRequest) -> HttpResponse:
     return _catalog_reload(request, SkillCards)
 
 
+@require_POST
+def api_mcp_reload(request: HttpRequest) -> HttpResponse:
+    """Force-rescan ``mcps/`` into the platform catalog."""
+    return _catalog_reload(request, McpCards)
+
+
 @require_GET
 def api_skill_detail(request: HttpRequest, skill_id: str) -> JsonResponse | HttpResponseNotFound:
     skill = SkillRegistry.shared().get(skill_id)
@@ -192,18 +226,21 @@ def api_tool_detail(request: HttpRequest, tool_id: str) -> JsonResponse | HttpRe
     return JsonResponse({"tool": ToolCards.from_tool(tool)})
 
 
+def _source_response(load, item_id: str) -> JsonResponse:
+    try:
+        return JsonResponse({"ok": True, **load(item_id)})
+    except FileNotFoundError:
+        return JsonResponse({"ok": False, "error": "not found"}, status=404)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001 — surfaced to the editor
+        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
+
 
 @require_http_methods(["GET", "POST"])
 def api_skill_source(request: HttpRequest, skill_id: str) -> JsonResponse:
     if request.method == "GET":
-        try:
-            return JsonResponse({"ok": True, **load_skill_source(skill_id)})
-        except FileNotFoundError:
-            return JsonResponse({"ok": False, "error": "not found"}, status=404)
-        except ValueError as exc:
-            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
-        except Exception as exc:  # noqa: BLE001
-            return JsonResponse({"ok": False, "error": str(exc)}, status=500)
+        return _source_response(load_skill_source, skill_id)
     body = parse_json_body(request, strict=False) or {}
     files = body.get("files") or {}
     if not isinstance(files, dict):
@@ -229,14 +266,7 @@ def api_skill_source(request: HttpRequest, skill_id: str) -> JsonResponse:
 @require_http_methods(["GET", "POST"])
 def api_tool_source(request: HttpRequest, tool_id: str) -> JsonResponse:
     if request.method == "GET":
-        try:
-            return JsonResponse({"ok": True, **load_tool_source(tool_id)})
-        except FileNotFoundError:
-            return JsonResponse({"ok": False, "error": "not found"}, status=404)
-        except ValueError as exc:
-            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
-        except Exception as exc:  # noqa: BLE001
-            return JsonResponse({"ok": False, "error": str(exc)}, status=500)
+        return _source_response(load_tool_source, tool_id)
     body = parse_json_body(request, strict=False) or {}
     try:
         return JsonResponse(
@@ -456,6 +486,132 @@ def api_mcp_detail(request: HttpRequest, mcp_id: str) -> JsonResponse:
     )
 
 
+def _install_request(request: HttpRequest) -> tuple[str, str, str]:
+    body = parse_json_body(request, strict=False) or {}
+    kind = str(
+        body.get("kind") or request.POST.get("kind") or ""
+    ).strip().lower()
+    value = str(
+        body.get("source")
+        or body.get("value")
+        or request.POST.get("source")
+        or request.POST.get("value")
+        or ""
+    ).strip()
+    revision = str(
+        body.get("revision") or request.POST.get("revision") or ""
+    ).strip()
+    return kind, value, revision
+
+
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+
+def _wants_json(request: HttpRequest) -> bool:
+    return (
+        "application/json" in (request.headers.get("Accept") or "")
+        or (request.content_type or "").startswith("application/json")
+    )
+
+
+def _upload_pairs(request: HttpRequest) -> list[tuple[str, bytes]]:
+    uploads = request.FILES.getlist("file")
+    paths = [str(item) for item in request.POST.getlist("path")]
+    if not uploads:
+        raise ValueError("Choose a folder (or drop files) first")
+    total = sum(int(item.size or 0) for item in uploads)
+    if total > _MAX_UPLOAD_BYTES:
+        raise ValueError("Upload is larger than 20 MB")
+    if len(paths) != len(uploads):
+        raise ValueError("each uploaded file needs a relative path")
+    return [
+        (rel, upload.read())
+        for rel, upload in zip(paths, uploads, strict=True)
+    ]
+
+
+def _install_response(request: HttpRequest, run, *, label: str, anchor: str) -> HttpResponse:
+    """Run an installer; answer JSON for XHR, else flash a message and redirect."""
+    wants_json = _wants_json(request)
+    try:
+        ids = run()
+    except (RuntimeError, ValueError, OSError) as exc:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+        messages.error(request, str(exc))
+    else:
+        if wants_json:
+            return JsonResponse({"ok": True, "ids": ids})
+        messages.success(request, f"Installed {label}(s): " + ", ".join(ids))
+    return redirect(reverse("catalog") + f"#{anchor}")
+
+
+def _ingest_skills(names: list[str]) -> list[str]:
+    catalog = PlatformCatalog.shared()
+    ids = [catalog.ingest_imported_skill(name) for name in names]
+    SkillRegistry.shared().invalidate()
+    return ids or names
+
+
+@require_POST
+def api_skills_install(request: HttpRequest) -> HttpResponse:
+    """Install a skill pack from disk, git, or openskills/npx."""
+    from orchestrator.skills.install import install_skill_source
+
+    kind, value, revision = _install_request(request)
+    return _install_response(
+        request,
+        lambda: _ingest_skills(install_skill_source(kind, value, revision=revision)),
+        label="skill",
+        anchor="skills",
+    )
+
+
+@require_POST
+def api_skills_upload(request: HttpRequest) -> HttpResponse:
+    """Install a skill pack from a browser folder picker upload or a single .zip."""
+    from orchestrator.skills.install.dragdrop import install_relative_files, install_zip
+
+    def run() -> list[str]:
+        uploads = request.FILES.getlist("file")
+        if len(uploads) == 1 and (uploads[0].name or "").lower().endswith(".zip"):
+            if int(uploads[0].size or 0) > _MAX_UPLOAD_BYTES:
+                raise ValueError("Upload is larger than 20 MB")
+            return _ingest_skills(install_zip(uploads[0].read(), filename=uploads[0].name))
+        return _ingest_skills(
+            install_relative_files(_upload_pairs(request), origin="catalog-upload")
+        )
+
+    return _install_response(request, run, label="skill", anchor="skills")
+
+
+@require_POST
+def api_mcp_install(request: HttpRequest) -> HttpResponse:
+    """Install an MCP server from disk, git, or npx package into the catalog."""
+    from orchestrator.mcp.install import install_mcp_source
+
+    kind, value, revision = _install_request(request)
+    return _install_response(
+        request,
+        lambda: install_mcp_source(kind, value, revision=revision),
+        label="MCP server",
+        anchor="mcp",
+    )
+
+
+@require_POST
+def api_mcp_upload(request: HttpRequest) -> HttpResponse:
+    """Install an MCP pack from a browser folder picker upload."""
+    from orchestrator.mcp.install import install_mcp_relative_files
+
+    return _install_response(
+        request,
+        lambda: install_mcp_relative_files(_upload_pairs(request), origin="catalog-upload"),
+        label="MCP server",
+        anchor="mcp",
+    )
+
+
 urlpatterns = [
     path("", catalog_page, name="catalog"),
     path("api/roles/", api_roles, name="catalog_api_roles"),
@@ -465,6 +621,8 @@ urlpatterns = [
     path("api/roles/<str:name>/", api_role_detail, name="catalog_api_role"),
     path("api/skills/", api_skills, name="catalog_api_skills"),
     path("api/skills/reload/", api_skills_reload, name="catalog_api_skills_reload"),
+    path("api/skills/install/", api_skills_install, name="catalog_api_skills_install"),
+    path("api/skills/upload/", api_skills_upload, name="catalog_api_skills_upload"),
     path(
         "api/skills/<path:skill_id>/source/",
         api_skill_source,
@@ -476,6 +634,9 @@ urlpatterns = [
         name="catalog_api_skill_delete",
     ),
     path("api/skills/<path:skill_id>/", api_skill_detail, name="catalog_api_skill"),
+    path("api/mcp/reload/", api_mcp_reload, name="catalog_api_mcp_reload"),
+    path("api/mcp/install/", api_mcp_install, name="catalog_api_mcp_install"),
+    path("api/mcp/upload/", api_mcp_upload, name="catalog_api_mcp_upload"),
     path("api/mcp/<str:mcp_id>/", api_mcp_detail, name="catalog_api_mcp"),
     path("api/tools/", api_tools, name="catalog_api_tools"),
     path("api/tools/reload/", api_tools_reload, name="catalog_api_tools_reload"),

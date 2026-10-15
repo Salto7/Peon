@@ -6,9 +6,13 @@ Job.role_ids holds role catalog ids; skills are the execution units.
 
 from __future__ import annotations
 
+import logging
+
 import uuid
 
 from django.db import models
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectScopedModel(models.Model):
@@ -16,15 +20,6 @@ class ProjectScopedModel(models.Model):
 
     class Meta:
         abstract = True
-
-    def _project_scope_id(self):
-        pid = getattr(self, "project_id", None)
-        if pid:
-            return pid
-        job = getattr(self, "job", None)
-        if job is not None and getattr(job, "project_id", None):
-            return job.project_id
-        return getattr(self, "job_id", None) and None
 
     def save(self, *args, **kwargs):
         pid = getattr(self, "project_id", None)
@@ -205,24 +200,26 @@ class Project(models.Model):
         return f"{self.title} ({self.status})"
 
     def save(self, *args, **kwargs):
-        # Registry writes always go to platform unless explicitly using=project_*.
-        using = kwargs.get("using")
-        if using is None and not str(getattr(self._state, "db", "") or "").startswith(
-            "project_"
-        ):
+        # Platform registry is authoritative. Instances loaded via a project-DB
+        # FK (``job.project``) still have ``_state.db = project_*``; without an
+        # explicit ``using=``, those saves must not update only the mirror or
+        # the UI keeps a stale ``active`` status after the run finishes.
+        if "using" not in kwargs:
             kwargs["using"] = "default"
         result = super().save(*args, **kwargs)
-        if kwargs.get("using", getattr(self._state, "db", "default")) == "default":
+        if kwargs.get("using") == "default":
             try:
-                from peon.projects.db import mirror_project_row
+                from peon.projects.db import ensure_project_database, mirror_project_row
 
+                # A new project has no project DB yet: create + migrate it first.
+                ensure_project_database(self.pk)
                 mirror_project_row(self.pk)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mirror_project_row failed: %s", exc, exc_info=True)
         return result
 
     def db_alias(self) -> str:
-        from peon.projects.db import alias_for, ensure_project_database
+        from peon.projects.db import ensure_project_database
 
         return ensure_project_database(self.pk)
 
@@ -266,12 +263,6 @@ class Project(models.Model):
         from peon.projects.models import JobCheckpoint
 
         return self._scoped(JobCheckpoint)
-
-    @property
-    def agent_messages(self):
-        from peon.projects.models import AgentMessage
-
-        return self._scoped(AgentMessage)
 
     @property
     def roe(self):
@@ -460,6 +451,9 @@ class JobLifecycle(models.TextChoices):
 class JobStatus(models.TextChoices):
     PENDING = "pending", "Pending"
     RUNNING = "running", "Running"
+    # Standby: the agent exists (role/skills/brief bound) but is not scheduled.
+    # It wakes on an A2A message (dependency handoff, peer, or operator).
+    IDLE = "idle", "Idle"
     PAUSED = "paused", "Paused"
     COMPLETED = "completed", "Completed"
     FAILED = "failed", "Failed"
@@ -552,6 +546,18 @@ class Job(models.Model):
         default=False,
         help_text="Next agent run should resume the CrewAI role/crew with steer context.",
     )
+    idle_reason = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="Why an IDLE job is parked: dependencies | message.",
+    )
+    idle_note = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Agent-supplied note on what it is waiting for (go_idle).",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -606,6 +612,135 @@ class JobDirective(ProjectScopedModel):
     def __str__(self) -> str:
         preview = (self.content or "")[:40]
         return f"{self.kind}:{preview}"
+
+
+class AgentMessage(ProjectScopedModel):
+    """Agent↔agent (and operator→agent) message, stored as an A2A ``Message``.
+
+    The ``message`` column holds ``a2a.types.Message.model_dump(mode="json")``
+    from the official A2A SDK, so it is wire-compatible if agents are ever
+    exposed over A2A HTTP. Delivery is in-process: a message to an IDLE job
+    wakes it (see ``peon.projects.a2a``).
+    """
+
+    class Kind(models.TextChoices):
+        INFORM = "inform", "Inform"
+        REQUEST = "request", "Request"
+        HANDOFF = "handoff", "Handoff"
+        REPLY = "reply", "Reply"
+        OPERATOR = "operator", "Operator"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+    )
+    objective = models.ForeignKey(
+        Objective,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="agent_messages",
+    )
+    from_job = models.ForeignKey(
+        Job,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="messages_sent",
+        help_text="Null for operator/system senders.",
+    )
+    to_job = models.ForeignKey(
+        Job, on_delete=models.CASCADE, related_name="messages_received"
+    )
+    sender = models.CharField(
+        max_length=96,
+        blank=True,
+        help_text="Display name: role id, 'operator' or 'system'.",
+    )
+    kind = models.CharField(
+        max_length=16, choices=Kind.choices, default=Kind.INFORM
+    )
+    message = models.JSONField(default=dict, help_text="A2A Message (JSON).")
+    created_at = models.DateTimeField(auto_now_add=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["to_job", "delivered_at"]),
+            models.Index(fields=["project", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.sender}→{self.to_job_id} [{self.kind}]"
+
+    @property
+    def text(self) -> str:
+        parts = (self.message or {}).get("parts") or []
+        return "\n".join(
+            str(p.get("text") or "") for p in parts if p.get("kind") == "text"
+        ).strip()
+
+
+class MemoryEntry(ProjectScopedModel):
+    """One durable memory (Claude-style): typed, named, with a one-line hook.
+
+    Project-scoped rows live in the project database; platform-wide lessons
+    have ``project=None`` and live in the platform database. Cognee mirrors
+    entries for graph recall; this table is the source of truth (exact
+    get/update/forget and the always-visible index).
+    """
+
+    class Kind(models.TextChoices):
+        LESSON = "lesson", "Lesson"  # method / tool behaviour that held or failed
+        FEEDBACK = "feedback", "Operator feedback"  # corrections & preferences
+        FACT = "fact", "Fact"  # durable fact about the target / environment
+        DECISION = "decision", "Decision"  # plan rationale, trade-offs chosen
+        REFERENCE = "reference", "Reference"  # where something lives
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        ARCHIVED = "archived", "Archived"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+        help_text="Null = platform-wide memory.",
+    )
+    name = models.CharField(max_length=96)
+    kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.FACT)
+    description = models.CharField(max_length=240, help_text="One-line hook shown in the index.")
+    body = models.TextField(blank=True)
+    role_id = models.CharField(max_length=64, blank=True)
+    created_by = models.CharField(max_length=96, blank=True)
+    source_job = models.ForeignKey(
+        Job, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    status = models.CharField(
+        max_length=12, choices=Status.choices, default=Status.ACTIVE
+    )
+    recall_count = models.PositiveIntegerField(default=0)
+    last_recalled_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["project", "name"], name="uniq_memory_scope_name"),
+        ]
+        indexes = [models.Index(fields=["status", "kind"])]
+
+    def __str__(self) -> str:
+        return f"[{self.kind}] {self.name}"
 
 
 class OperatorPromptKind(models.TextChoices):
@@ -949,59 +1084,6 @@ class JobCheckpoint(ProjectScopedModel):
 
     def __str__(self) -> str:
         return f"CKPT-{self.seq} job={self.job_id}"
-
-
-class AgentMessage(ProjectScopedModel):
-    """In-process agent↔agent message (A2A-shaped; protocol adapter later)."""
-
-    class MsgType(models.TextChoices):
-        REQUEST = "request", "Request"
-        INFORM = "inform", "Inform"
-        HANDOFF = "handoff", "Handoff"
-        CHALLENGE = "challenge", "Challenge"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    project = models.ForeignKey(
-        Project,
-        on_delete=models.CASCADE,
-        related_name="+",
-        db_constraint=False,
-    )
-    objective = models.ForeignKey(
-        Objective,
-        null=True,
-        blank=True,
-        on_delete=models.CASCADE,
-        related_name="agent_messages",
-    )
-    from_job = models.ForeignKey(
-        Job, on_delete=models.CASCADE, related_name="messages_sent"
-    )
-    to_job = models.ForeignKey(
-        Job,
-        null=True,
-        blank=True,
-        on_delete=models.CASCADE,
-        related_name="messages_received",
-        help_text="Null = broadcast to other jobs on the same objective.",
-    )
-    msg_type = models.CharField(
-        max_length=16, choices=MsgType.choices, default=MsgType.INFORM
-    )
-    body = models.TextField()
-    artifact_refs = models.JSONField(default=list, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    consumed_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["created_at"]
-        indexes = [
-            models.Index(fields=["to_job", "consumed_at"]),
-            models.Index(fields=["objective", "created_at"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.msg_type}:{str(self.id)[:8]}"
 
 
 class CatalogSkill(models.Model):

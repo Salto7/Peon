@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import json
 from pathlib import Path
 from typing import Any
@@ -28,7 +30,6 @@ from orchestrator.utils.stream_events import (
     payload_command,
     payload_hosts,
 )
-from peon.projects.agent_messaging import DjangoAgentMessaging
 from peon.projects.hitl import create_operator_prompt
 from peon.projects.findings import FindingStore
 from peon.projects.models import (
@@ -50,6 +51,8 @@ from peon.projects.streaming import emit_job_stream
 from peon.projects.target_shapes import coerce_targets
 from peon.projects.tasks import enqueue_job
 from peon.projects.workspaces import resolve_job_workspace
+
+logger = logging.getLogger(__name__)
 
 
 def agent_run_config() -> AgentRunConfig:
@@ -83,6 +86,8 @@ class JobAgentBridge(AgentBridgeBase):
     def __init__(self, job: Job) -> None:
         self._job = job
         self.replan_requested = False
+        self.idle_requested = False
+        self.idle_note = ""
 
     def emit(
         self, message_type: str, content: str, *, metadata: dict[str, Any] | None = None
@@ -350,8 +355,8 @@ class JobAgentBridge(AgentBridgeBase):
             from orchestrator.crew.memory import MemoryService
 
             MemoryService.remember_transcript(self._job, record)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("MemoryService.remember_transcript failed: %s", exc, exc_info=True)
 
     def _transcript_path(self, *, create: bool = False) -> Path | None:
         from peon.projects.workspaces import project_workspace_dir
@@ -536,8 +541,8 @@ class JobAgentBridge(AgentBridgeBase):
                     job=self._job,
                     kind=OperatorPromptKind.BLOCKED_OBJECTIVE,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("create_operator_prompt failed: %s", exc, exc_info=True)
         elif status == ObjectiveStatus.COMPLETED and obj.id != getattr(
             self._job, "objective_id", None
         ):
@@ -550,8 +555,8 @@ class JobAgentBridge(AgentBridgeBase):
                         f"OBJ-{obj.seq} → {obj.status}; "
                         f"queued {len(queued)} ready job(s): {ids}"
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("enqueueing ready objectives failed: %s", exc, exc_info=True)
         return f"OBJ-{obj.seq} → {obj.status}"
 
     def ask_operator(
@@ -591,8 +596,8 @@ class JobAgentBridge(AgentBridgeBase):
                     ObjectiveStatus.BLOCKED,
                     reason=f"Waiting on operator: {text}"[:2000],
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("marking objective blocked failed: %s", exc, exc_info=True)
         return (
             f"Operator prompt {prompt.id} created (kind={prompt.kind}). "
             "Continue other work or wait_for_work / drain guidance after reply."
@@ -662,6 +667,204 @@ class JobAgentBridge(AgentBridgeBase):
                 n += 1
         return f"Recorded {n} finding(s)."
 
+    # --- Memory -------------------------------------------------------
+
+    def _role_id(self) -> str:
+        return ((self._job.role_ids or [""])[0] or "").strip()
+
+    def recall_memory(self, query: str) -> str:
+        from peon.projects import memory_store
+
+        if not (query or "").strip():
+            return "Error: query is required."
+        try:
+            return memory_store.recall_text(
+                self._job.project, query, role_id=self._role_id()
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("recall_memory failed: %s", exc, exc_info=True)
+            return f"Error: memory recall failed ({exc})"
+
+    def save_memory(
+        self,
+        name: str,
+        kind: str,
+        description: str,
+        body: str = "",
+        scope: str = "project",
+    ) -> str:
+        from peon.projects import memory_store
+
+        scope_s = (scope or "project").strip().lower()
+        if scope_s not in {"project", "platform"}:
+            return "Error: scope must be 'project' or 'platform'."
+        if scope_s == "project" and not self._job.project_id:
+            return "Error: no project on this job."
+        try:
+            entry, created = memory_store.save(
+                self._job.project if scope_s == "project" else None,
+                name=name,
+                kind=(kind or "").strip().lower(),
+                description=description,
+                body=body,
+                role_id=self._role_id(),
+                job=self._job,
+                created_by=self._role_id() or "agent",
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("save_memory failed: %s", exc, exc_info=True)
+            return f"Error: could not save memory ({exc})"
+        verb = "Saved" if created else "Updated"
+        return f"{verb} {scope_s} memory [{entry.kind}] {entry.name}."
+
+    def forget_memory(self, name: str, scope: str = "project") -> str:
+        from peon.projects import memory_store
+
+        scope_s = (scope or "project").strip().lower()
+        project = self._job.project if scope_s == "project" else None
+        if scope_s == "project" and project is None:
+            return "Error: no project on this job."
+        ok = memory_store.forget(project, name)
+        return (
+            f"Retired {scope_s} memory {memory_store.slugify(name)}."
+            if ok
+            else f"No active {scope_s} memory named {name!r}."
+        )
+
+    # --- A2A ----------------------------------------------------------
+
+    def other_agents_alive(self) -> bool:
+        """True if some other non-terminal agent could still message this one."""
+        if not self._job.project_id:
+            return False
+        from peon.projects.db import qs_using
+        from peon.projects.models import TERMINAL_JOB_STATUSES
+
+        return (
+            qs_using(Job, self._job.project_id)
+            .filter(project_id=self._job.project_id)
+            .exclude(pk=self._job.pk)
+            .exclude(status__in=TERMINAL_JOB_STATUSES)
+            .exists()
+        )
+
+    def send_message(self, to: str, content: str, *, kind: str = "inform") -> str:
+        if not self._job.project_id:
+            return "Error: no project on this job."
+        from peon.projects import a2a
+
+        target, why = a2a.resolve_recipient(
+            self._job.project, to, sender=self._job
+        )
+        if target is None:
+            return f"Error: {why}. Use list_team to see who you can message."
+        if target.pk == self._job.pk:
+            return "Error: that is you."
+        try:
+            row = a2a.send_message(
+                self._job.project,
+                to_job=target,
+                text=content,
+                from_job=self._job,
+                kind=kind if kind in {"inform", "request", "reply"} else "inform",
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
+        target.refresh_from_db()
+        state = (
+            "woken and queued"
+            if target.status == JobStatus.PENDING
+            else f"delivered ({target.status})"
+        )
+        return (
+            f"Message sent to {target.title} [{state}]. "
+            f"Message id {row.pk}. Replies arrive in your inbox (check_inbox)."
+        )
+
+    def check_inbox(self) -> str:
+        if not self._job.project_id:
+            return "No project on this job."
+        from peon.projects import a2a
+
+        parts: list[str] = []
+        # Operator steering (non-replan) reaches a running agent through here.
+        guidance = self.drain_operator_guidance(kinds={"steer", "followup"})
+        if guidance:
+            parts.append("## Operator guidance\n" + "\n\n".join(guidance))
+        rows = a2a.drain_inbox(self._job)
+        if rows:
+            parts.append(a2a.render_messages(rows))
+        return "\n\n".join(parts) if parts else "Inbox empty."
+
+    def go_idle(self, reason: str = "") -> str:
+        if not self._job.project_id:
+            return "Error: no project on this job."
+        if not self.other_agents_alive():
+            return (
+                "Not idling: no other agent is alive to message you. "
+                "Finish your work and report your result instead."
+            )
+        self.idle_requested = True
+        self.idle_note = (reason or "waiting for another agent")[:255]
+        return (
+            "Understood — you will be parked as IDLE when you finish this turn "
+            "and woken, with your context, when another agent or the operator "
+            "messages you. End your turn now with a one-paragraph summary of "
+            "what you completed and exactly what you are waiting for."
+        )
+
+    def list_team(self) -> str:
+        if not self._job.project_id:
+            return "No project on this job."
+        from peon.projects import a2a
+
+        return a2a.team_listing(self._job.project, viewer=self._job)
+
+    def record_assets(self, assets_json: str, relations_json: str = "") -> str:
+        """Producer API for the asset graph: assets + typed relations, with provenance."""
+        if not self._job.project_id:
+            return "No project on this job."
+
+        def parse(raw: str, label: str):
+            text = (raw or "").strip()
+            if not text:
+                return [], ""
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError as exc:
+                return None, f"Invalid {label} JSON: {exc}"
+            if not isinstance(value, list):
+                return None, f"{label} must be a JSON list."
+            return value, ""
+
+        assets, err = parse(assets_json, "assets_json")
+        if err:
+            return err
+        relations, err = parse(relations_json, "relations_json")
+        if err:
+            return err
+        if not assets and not relations:
+            return "Nothing to record: pass assets_json and/or relations_json."
+        from peon.projects.asset_graph import AssetGraphEngine
+
+        role = ((self._job.role_ids or [""])[0] or "agent").strip()
+        try:
+            report = AssetGraphEngine(self._job.project).record(
+                assets, relations, source=role
+            )
+        except Exception as exc:
+            logger.warning("record_assets failed: %s", exc, exc_info=True)
+            return f"Error: could not update the asset graph ({exc})"
+        msg = (
+            f"Recorded {report['assets']} asset(s), {report['relations']} relation(s); "
+            f"graph now {report['nodes']} nodes / {report['edges']} edges."
+        )
+        if report["skipped"]:
+            msg += " Skipped: " + "; ".join(report["skipped"][:6])
+        return msg
+
     def list_findings(self, kind: str = "") -> str:
         if not self._job.project_id:
             return "No project on this job."
@@ -674,13 +877,14 @@ class JobAgentBridge(AgentBridgeBase):
         )
         if kind.strip():
             qs = qs.filter(kind=kind.strip())
-        rows = list(qs[:40])
+        rows = list(qs[:500])
         if not rows:
             return "No findings."
         return "\n".join(
             f"FIND-{f.seq} [{f.severity}/{f.kind}] {f.title}"
             + (f" host={f.host}" if f.host else "")
             + (f" port={f.port}" if f.port is not None else "")
+            + (f" — {(f.evidence or f.description or '')[:120]}" if (f.evidence or f.description) else "")
             for f in rows
         )
 
@@ -692,8 +896,13 @@ class JobAgentBridge(AgentBridgeBase):
         text = format_workspace_artifact_index(ws)
         return text or "(no workspace artifacts yet)"
 
-    def read_workspace_artifact(self, path: str, max_chars: int = 100_000) -> str:
-        """Read one evidence file under ``workspace/`` or ``findings/`` (host FS)."""
+    def read_workspace_artifact(self, path: str, max_chars: int = 500_000) -> str:
+        """Read one evidence file under ``workspace/`` or ``findings/`` (host FS).
+
+        Default/ceiling are large enough for MCP pipeline JSON (often 200–500KB).
+        Pass a higher ``max_chars`` (up to 5_000_000) for oversized handoffs —
+        truncated JSON silently drops trailing arrays such as ``dangling_domains``.
+        """
         rel = (path or "").strip().lstrip("/")
         if not rel or ".." in Path(rel).parts:
             return "Error: provide a relative path under workspace/ or findings/."
@@ -713,9 +922,17 @@ class JobAgentBridge(AgentBridgeBase):
             text = target.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             return f"Error reading {rel}: {exc}"
-        limit = max(1_000, min(int(max_chars or 100_000), 200_000))
+        try:
+            requested = int(max_chars or 500_000)
+        except (TypeError, ValueError):
+            requested = 500_000
+        limit = max(1_000, min(requested, 5_000_000))
         if len(text) > limit:
-            return text[:limit].rstrip() + f"\n\n…(truncated at {limit} chars; file={rel})"
+            return (
+                text[:limit].rstrip()
+                + f"\n\n…(truncated at {limit} chars of {len(text)}; "
+                f"file={rel} — re-read with max_chars>={len(text)} to load fully)"
+            )
         return text
 
     def write_report_note(self, section: str, body: str) -> str:
@@ -749,10 +966,15 @@ class JobAgentBridge(AgentBridgeBase):
         )
         return f"Appended report section '{heading}' to findings/report.md"
 
-    def drain_operator_guidance(self) -> list[str]:
-        """Consume pending JobDirective rows into agent-facing guidance strings."""
+    def drain_operator_guidance(self, kinds: set[str] | None = None) -> list[str]:
+        """Consume pending JobDirective rows into agent-facing guidance strings.
 
-        self.replan_requested = False
+        ``kinds`` limits which directive kinds are consumed (mid-run inbox
+        checks leave REPLAN for the next start, where it can take effect).
+        """
+
+        if kinds is None:
+            self.replan_requested = False
         from peon.projects.db import ensure_project_database, using_project
 
         alias = (
@@ -762,12 +984,12 @@ class JobAgentBridge(AgentBridgeBase):
         )
         with using_project(self._job.project_id):
             with transaction.atomic(using=alias):
-                pending = list(
-                    JobDirective.objects.using(alias)
-                    .select_for_update()
-                    .filter(job_id=self._job.id, consumed_at__isnull=True)
-                    .order_by("created_at")
+                directives = JobDirective.objects.using(alias).select_for_update().filter(
+                    job_id=self._job.id, consumed_at__isnull=True
                 )
+                if kinds is not None:
+                    directives = directives.filter(kind__in=kinds)
+                pending = list(directives.order_by("created_at"))
                 if not pending:
                     return []
                 now = dj_tz.now()
@@ -801,56 +1023,22 @@ class JobAgentBridge(AgentBridgeBase):
                 )
         return out
 
-    def drain_peer_messages(self) -> list[str]:
-
-        rows = DjangoAgentMessaging().inbox(str(self._job.id), limit=20, consume=True)
-        out: list[str] = []
-        for m in rows:
-            who = m.from_job_id[:8]
-            refs = ", ".join(m.artifact_refs) if m.artifact_refs else ""
-            extra = f"\nArtifact refs: {refs}" if refs else ""
-            out.append(
-                f"PEER MESSAGE ({m.type}) from job {who}:\n{m.body.strip()}{extra}"
-            )
-        return out
-
-    def send_message(
-        self,
-        *,
-        to_job_id: str,
-        type: str,
-        body: str,
-        artifact_refs: list[str] | None = None,
-    ) -> str:
-        if not self._job.objective_id:
-            return "Error: messaging requires a job linked to an objective."
-
-        try:
-            msg = DjangoAgentMessaging().send(
-                objective_id=str(self._job.objective_id),
-                from_job_id=str(self._job.id),
-                to_job_id=to_job_id or "",
-                type=type if type in {"request", "inform", "handoff", "challenge"} else "inform",  # type: ignore[arg-type]
-                body=body or "",
-                artifact_refs=artifact_refs,
-            )
-        except Exception as exc:
-            return f"Error: {exc}"
-        return f"Sent {msg.type} message {msg.id[:8]}"
-
     def list_agents(self) -> str:
-        if not self._job.objective_id:
+        if not self._job.objective_id or not self._job.project_id:
             return "No objective on this job."
+        from peon.projects.db import qs_using
 
-        peers = DjangoAgentMessaging().list_peers(
-            str(self._job.objective_id), exclude_job_id=str(self._job.id)
+        peers = (
+            qs_using(Job, self._job.project_id)
+            .filter(objective_id=self._job.objective_id)
+            .exclude(pk=self._job.id)
+            .order_by("created_at")[:40]
         )
-        if not peers:
-            return "No other jobs on this objective."
-        return "\n".join(
-            f"{p['job_id']} [{p['status']}] {p['title']} roles={','.join(p.get('roles') or []) or '-'}"
-            for p in peers
-        )
+        rows = [
+            f"{j.id} [{j.status}] {j.title} roles={','.join(j.role_ids or []) or '-'}"
+            for j in peers
+        ]
+        return "\n".join(rows) if rows else "No other jobs on this objective."
 
     def propose_agents(self, *, context_notes: str = "", max_agents: int = 4) -> str:
         if not self._job.project_id or not self._job.objective_id:
@@ -878,8 +1066,8 @@ class JobAgentBridge(AgentBridgeBase):
             learned = role_skills_prompt_block()
             if learned:
                 notes = (notes + "\n\n" + learned).strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("role_skills_prompt_block failed: %s", exc, exc_info=True)
         specs = propose_agent_specs(
             objective_title=obj.title or "",
             objective_description=obj.description or "",
@@ -937,7 +1125,11 @@ class JobAgentBridge(AgentBridgeBase):
         roe = self._roe()
         if roe is None:
             return "no RoE on project"
-        from peon.projects.target_shapes import target_authorized_by_scope
+        from peon.projects.target_shapes import (
+            hostname_of,
+            is_passive_reference_host,
+            target_authorized_by_scope,
+        )
 
         exclusions = [
             (t.get("value") or "").strip().lower()
@@ -952,6 +1144,18 @@ class JobAgentBridge(AgentBridgeBase):
             for t in coerce_targets(roe.in_scope)
             if t.get("value")
         ]
+        seed_vals = [
+            (t.get("value") or "").strip().lower()
+            for t in coerce_targets(getattr(roe, "seed", None) or [])
+            if t.get("value")
+        ]
+        host = hostname_of(value)
+        if is_passive_reference_host(host):
+            if host and target_authorized_by_scope(host, exclusions):
+                return f"{value!r} is excluded by RoE"
+            if scope_vals or seed_vals:
+                return ""
+            return "no engagement subject — cannot use passive reference hosts"
         if not scope_vals:
             return self.roe_probe_block_reason() or (
                 "in_scope is empty — promote targets before active probing"

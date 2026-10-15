@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import re
 import shutil
 import uuid
@@ -17,6 +19,8 @@ from orchestrator.utils.paths import (
     safe_join,
     safe_workspace_key,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def workspaces_root() -> Path:
@@ -64,8 +68,8 @@ def resolve_job_workspace(job) -> Path:
             job.workspace_id = wid
             try:
                 job.save(update_fields=["workspace_id", "updated_at"])
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("saving job workspace id failed: %s", exc, exc_info=True)
         return path
     wid = safe_workspace_key(
         (getattr(job, "workspace_id", None) or "").strip() or f"job-{job.id}"
@@ -74,12 +78,62 @@ def resolve_job_workspace(job) -> Path:
         job.workspace_id = wid
         try:
             job.save(update_fields=["workspace_id", "updated_at"])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("saving job workspace id failed: %s", exc, exc_info=True)
     platform = platform_workspace_dir()
     path = (platform / "jobs" / wid).resolve()
     path.relative_to(platform)
     return ensure_workspace_layout(path)
+
+
+_DELETING_PREFIX = ".deleting-"
+_BRIEF_SKIP_ROLES = frozenset({"project-manager", "manager", "watchdog"})
+
+
+def _rmtree_force(path: Path) -> None:
+    """``shutil.rmtree`` with chmod retry for read-only entries."""
+
+    def _onexc(func, p, exc):  # noqa: ANN001
+        target = Path(p)
+        try:
+            if target.is_dir() and not target.is_symlink():
+                target.chmod(0o700)
+            elif target.exists() or target.is_symlink():
+                target.chmod(0o600)
+            func(p)
+        except OSError:
+            raise exc
+
+    shutil.rmtree(path, onexc=_onexc)
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    else:
+        _rmtree_force(path)
+
+
+def workspace_entry_project_id(name: str) -> str:
+    """UUID from a workspace dir name, including ``.deleting-<uuid>`` trash."""
+    raw = name.removeprefix(_DELETING_PREFIX) if name.startswith(_DELETING_PREFIX) else name
+    try:
+        return str(uuid.UUID(raw))
+    except (ValueError, AttributeError, TypeError):
+        return ""
+
+
+def release_project_handles(project_id: str) -> None:
+    """Close project SQLite alias and local PTY sessions before disk delete."""
+    from peon.projects.db import drop_project_database
+
+    drop_project_database(project_id)
+    try:
+        from peon.projects.terminal_session import get_registry
+
+        get_registry().close_project(project_id)
+    except Exception as exc:
+        logger.warning("closing project terminals failed: %s", exc, exc_info=True)
 
 
 def remove_project_workspace(project_id: str) -> dict:
@@ -91,11 +145,30 @@ def remove_project_workspace(project_id: str) -> dict:
     if not path.exists():
         return {"action": "missing", "path": str(path)}
     try:
-        if path.is_symlink():
-            path.unlink()
-        else:
-            shutil.rmtree(path)
+        _remove_path(path)
     except OSError as exc:
+        trash = path.parent / f"{_DELETING_PREFIX}{path.name}"
+        try:
+            if trash.exists():
+                _remove_path(trash)
+            path.rename(trash)
+            try:
+                _remove_path(trash)
+            except OSError:
+                pass
+            if not path.exists():
+                return {
+                    "action": "removed" if not trash.exists() else "deferred",
+                    "path": str(path),
+                    "trash": str(trash) if trash.exists() else "",
+                    "error": str(exc),
+                }
+        except OSError as rename_exc:
+            return {
+                "action": "error",
+                "path": str(path),
+                "error": f"{exc}; rename failed: {rename_exc}",
+            }
         return {"action": "error", "path": str(path), "error": str(exc)}
     return {
         "action": "removed" if not path.exists() else "error",
@@ -109,12 +182,11 @@ def prune_orphan_workspaces(
     persist: bool = False,
 ) -> dict[str, list[str]]:
     """Find or remove workspace entries not owned by a current Project."""
-    active: set[str] = set()
-    for project_id in active_project_ids:
-        try:
-            active.add(str(uuid.UUID(str(project_id))))
-        except (ValueError, AttributeError, TypeError):
-            continue
+    active = {
+        pid
+        for value in active_project_ids
+        if (pid := workspace_entry_project_id(str(value)))
+    }
     root = workspaces_root()
     orphans: list[str] = []
     removed: list[str] = []
@@ -122,35 +194,54 @@ def prune_orphan_workspaces(
     for path in sorted(root.iterdir(), key=lambda item: item.name):
         if path.name == "platform":
             continue
-        try:
-            identity = str(uuid.UUID(path.name))
-        except (ValueError, AttributeError, TypeError):
-            identity = ""
-        if identity and identity in active:
+        name = path.name
+        deferred = name.startswith(_DELETING_PREFIX)
+        identity = workspace_entry_project_id(name)
+        if identity and identity in active and not deferred:
             continue
-        orphans.append(path.name)
+        orphans.append(name)
         if not persist:
             continue
         try:
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-            removed.append(path.name)
+            _remove_path(path)
+            removed.append(name)
         except OSError as exc:
-            errors.append(f"{path.name}: {exc}")
+            errors.append(f"{name}: {exc}")
     return {"orphans": orphans, "removed": removed, "errors": errors}
 
 
 # --- Report discovery ---
 
 _MD_SUFFIXES = {".md", ".markdown"}
-# Prefer curated findings, then plan, then other markdown under findings/.
 _SCAN_GLOBS = (
     ("findings/report.md", "final"),
     ("findings/*.md", "curated"),
     ("plans/latest.md", "plan"),
 )
+
+
+def is_markdown_path(path: Path | str) -> bool:
+    return Path(path).suffix.lower() in _MD_SUFFIXES
+
+
+def render_markdown_html(text: str) -> str:
+    """Render Markdown to sanitized HTML; empty string if the markdown package is missing.
+
+    Reports are agent-written and may echo target content, so raw HTML is
+    stripped down to a safe allowlist before the template marks it ``|safe``.
+    """
+    try:
+        import markdown as md
+    except ImportError:
+        return ""
+    import nh3
+
+    html = md.markdown(
+        text,
+        extensions=["fenced_code", "tables", "nl2br", "sane_lists"],
+        output_format="html",
+    )
+    return nh3.clean(html, link_rel="noopener noreferrer nofollow")
 
 
 @dataclass(frozen=True)
@@ -225,7 +316,6 @@ def list_reports(project_id: str) -> list[ReportEntry]:
     for pattern, kind in _SCAN_GLOBS:
         if "*" in pattern:
             for path in sorted(root.glob(pattern)):
-                # report.md already claimed as final when present.
                 if path.name.lower() == "report.md" and kind != "final":
                     continue
                 _add(path, kind)
@@ -397,7 +487,6 @@ def iter_workspace_artifacts(
             if path.name.endswith(_ARTIFACT_SKIP_SUFFIXES):
                 continue
             if path.name.lower() == "report.md" and sub == "findings":
-                # Final report is an output, not an input artifact.
                 continue
             try:
                 rel = path.resolve().relative_to(root).as_posix()
@@ -422,30 +511,26 @@ def format_workspace_artifact_index(workspace: Path, *, limit: int = 80) -> str:
     return "\n".join(lines)
 
 
+def brief_artifact_section(project_id: str, *, role_id: str = "", limit: int = 80) -> str:
+    """Artifact index block for objective briefs (skipped for manager roles)."""
+    if (role_id or "").strip() in _BRIEF_SKIP_ROLES:
+        return ""
+    try:
+        ws = project_workspace_dir(str(project_id), create=False)
+        index = format_workspace_artifact_index(ws, limit=limit)
+    except Exception:
+        return ""
+    if not index:
+        return ""
+    return (
+        "## Workspace artifacts from prior agents\n"
+        "Read these with list_workspace_artifacts / "
+        "read_workspace_artifact (do not re-scan to rediscover them):\n"
+        f"{index}"
+    )
+
+
 def project_db_path(project_id: str):
     from peon.projects.db import project_db_path as _path
 
     return _path(project_id)
-
-
-class WorkspaceStore:
-    """Project workspace paths, reports, uploads, and artifact discovery."""
-
-    root = staticmethod(workspaces_root)
-    platform = staticmethod(platform_workspace_dir)
-    project_dir = staticmethod(project_workspace_dir)
-    project_db = staticmethod(project_db_path)
-    for_job = staticmethod(resolve_job_workspace)
-    remove_project = staticmethod(remove_project_workspace)
-    prune_orphans = staticmethod(prune_orphan_workspaces)
-    resolve_report = staticmethod(resolve_report_path)
-    list_reports = staticmethod(list_reports)
-    reports_payload = staticmethod(reports_payload)
-    inputs_dir = staticmethod(inputs_dir)
-    resolve_input = staticmethod(resolve_input_path)
-    list_inputs = staticmethod(list_project_inputs)
-    save_input = staticmethod(save_project_input)
-    delete_input = staticmethod(delete_project_input)
-    artifacts = staticmethod(iter_workspace_artifacts)
-    artifact_index = staticmethod(format_workspace_artifact_index)
-

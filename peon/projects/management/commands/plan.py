@@ -7,7 +7,7 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from orchestrator.utils.strings import as_str_list
-from peon.projects.planning import PlanningService
+from peon.projects.planning import run_llm_plan
 from peon.projects.target_shapes import parse_target_lines
 
 
@@ -42,7 +42,7 @@ class Command(BaseCommand):
 
         roles = as_str_list(options["roles"])
         try:
-            result = PlanningService.run_llm_plan(
+            result = run_llm_plan(
                 description=description,
                 mode=options["mode"],
                 title=options["title"],

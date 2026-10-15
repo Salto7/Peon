@@ -1,0 +1,17 @@
+{% comment %}
+<c-card title="…" description="…" flush>body</c-card>
+flush: no body padding (tables, lists). <c-slot name="actions"> sits in the header.
+{% endcomment %}
+<c-vars title="" description="" flush="" class="" />
+<section class="rounded-xl border bg-card text-card-foreground shadow-sm {{ class }}" {{ attrs }}>
+  {% if title or actions %}
+  <div class="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3.5">
+    <div class="min-w-0">
+      {% if title %}<h2 class="text-sm font-semibold">{{ title }}</h2>{% endif %}
+      {% if description %}<p class="mt-0.5 text-xs text-muted-foreground">{{ description }}</p>{% endif %}
+    </div>
+    {% if actions %}<div class="flex items-center gap-2">{{ actions }}</div>{% endif %}
+  </div>
+  {% endif %}
+  <div class="{% if not flush %}p-5{% endif %}">{{ slot }}</div>
+</section>

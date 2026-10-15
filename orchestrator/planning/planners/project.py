@@ -214,16 +214,27 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
             "Build findings/report.md covering security discoveries only "
             "(open ports, services, vulnerabilities, assets). Cite evidence; "
             "do not collect new evidence or invent discoveries. Do not report "
-            "objective/job status."
+            "objective/job status. Use exactly three top-level sections, in "
+            "order: Executive summary; Findings and observations (with "
+            "sub-sections Steps taken and commands executed, and Findings and "
+            "their technical details); Recommendations."
         ),
         "acceptance_criteria": (
-            "findings/report.md summarizes security findings with evidence citations"
+            "findings/report.md has Executive summary, Findings and "
+            "observations (Steps taken and commands executed; Findings and "
+            "their technical details), and Recommendations, with evidence "
+            "citations"
         ),
         "mitre": [],
         "depends_on": analyzer_deps,
         "role_id": end,
         "skill_ids": registry.objective_skill_ids(end),
-        "commands": ["list_findings()", "write_report_note(\"summary\", \"…\")"],
+        "commands": [
+            "list_findings()",
+            "write_report_note(\"Executive summary\", \"…\")",
+            "write_report_note(\"Findings and observations\", \"### Steps taken and commands executed\\n…\\n\\n### Findings and their technical details\\n…\")",
+            "write_report_note(\"Recommendations\", \"…\")",
+        ],
     }
     return [manager, *middle, analyzer]
 

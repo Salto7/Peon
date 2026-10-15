@@ -93,6 +93,59 @@ class AgentBridgeBase(ABC):
         del kind
         return "list_findings bridge not configured."
 
+    # --- Agent-to-agent (A2A) messaging --------------------------------
+
+    #: Set by ``go_idle``; the control plane parks the job after its turn ends.
+    idle_requested: bool = False
+    idle_note: str = ""
+
+    def send_message(self, to: str, content: str, *, kind: str = "inform") -> str:
+        """Send an A2A message to another live agent (wakes it if idle)."""
+        del to, content, kind
+        return "send_message bridge not configured."
+
+    def check_inbox(self) -> str:
+        """Read (and consume) messages other agents or the operator sent."""
+        return "check_inbox bridge not configured."
+
+    def go_idle(self, reason: str = "") -> str:
+        """Park this agent until another agent/operator messages it."""
+        del reason
+        return "go_idle bridge not configured."
+
+    def list_team(self) -> str:
+        """Every agent on the project with id, objective, role and state."""
+        return "list_team bridge not configured."
+
+    # --- Memory --------------------------------------------------------
+
+    def recall_memory(self, query: str) -> str:
+        """Search persistent memory (this engagement + platform lessons)."""
+        del query
+        return "recall_memory bridge not configured."
+
+    def save_memory(
+        self,
+        name: str,
+        kind: str,
+        description: str,
+        body: str = "",
+        scope: str = "project",
+    ) -> str:
+        """Create/update a durable memory entry."""
+        del name, kind, description, body, scope
+        return "save_memory bridge not configured."
+
+    def forget_memory(self, name: str, scope: str = "project") -> str:
+        """Retire a stale memory entry."""
+        del name, scope
+        return "forget_memory bridge not configured."
+
+    def record_assets(self, assets_json: str, relations_json: str = "") -> str:
+        """Add assets/relations to the engagement asset graph (Open Asset Model)."""
+        del assets_json, relations_json
+        return "record_assets bridge not configured."
+
     def write_report_note(self, section: str, body: str) -> str:
         """Append a markdown section into findings/report.md (not a Finding row)."""
         del section, body
@@ -109,20 +162,6 @@ class AgentBridgeBase(ABC):
 
     def drain_operator_guidance(self) -> list[str]:
         return []
-
-    def drain_peer_messages(self) -> list[str]:
-        return []
-
-    def send_message(
-        self,
-        *,
-        to_job_id: str,
-        type: str,
-        body: str,
-        artifact_refs: list[str] | None = None,
-    ) -> str:
-        del to_job_id, type, body, artifact_refs
-        return "send_message bridge not configured."
 
     # --- RoE (CrewAI roles; peon implements against RulesOfEngagement) ---
 

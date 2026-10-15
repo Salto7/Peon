@@ -280,7 +280,7 @@ def save_claude_skill(
         "ok": True,
         "id": f"claude/{placed}",
         "name": placed,
-        "path": str(Path(get_config().skills_imported_dir) / placed),
+        "path": str(Path(get_config().skills_dir) / placed),
         "files": shaped_files,
         "written": written,
         "lint": lint,

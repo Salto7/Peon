@@ -55,11 +55,14 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django_vite",
+    "django_cotton",
     "peon.projects.apps.ProjectsConfig",
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -118,18 +121,41 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "peon" / "static"]
 STATIC_ROOT = PLATFORM_WORKSPACE_DIR / "staticfiles"
+# Vite already content-hashes dist/; legacy assets keep their ?v= busters.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+}
+# Serve straight from STATICFILES_DIRS so a host-side ``vite build --watch``
+# into the bind-mounted peon/static/dist is picked up without collectstatic.
+WHITENOISE_USE_FINDERS = True
+WHITENOISE_AUTOREFRESH = DEBUG
+
+# Frontend bundles (frontend/ -> peon/static/dist, see frontend/vite.config.ts).
+DJANGO_VITE = {
+    "default": {
+        "dev_mode": False,
+        "manifest_path": BASE_DIR / "peon" / "static" / "dist" / "manifest.json",
+        "static_url_prefix": "dist",
+    }
+}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 _skills = Path(_env("SKILLS_DIR") or (BASE_DIR / "skills"))
 SKILLS_DIR = _skills if _skills.is_absolute() else (BASE_DIR / _skills).resolve()
 os.environ.setdefault("SKILLS_DIR", str(SKILLS_DIR))
-_skills_imported = Path(_env("SKILLS_IMPORTED_DIR") or (BASE_DIR / "skills_imported"))
+# Imports share skills/ unless SKILLS_IMPORTED_DIR is explicitly set (legacy).
+_imported_env = (_env("SKILLS_IMPORTED_DIR") or "").strip()
+_skills_imported = Path(_imported_env) if _imported_env else SKILLS_DIR
 SKILLS_IMPORTED_DIR = (
     _skills_imported
     if _skills_imported.is_absolute()
     else (BASE_DIR / _skills_imported).resolve()
 )
 os.environ.setdefault("SKILLS_IMPORTED_DIR", str(SKILLS_IMPORTED_DIR))
+_mcps = Path(_env("MCPS_DIR") or (BASE_DIR / "mcps"))
+MCPS_DIR = _mcps if _mcps.is_absolute() else (BASE_DIR / _mcps).resolve()
+os.environ.setdefault("MCPS_DIR", str(MCPS_DIR))
 
 
 def _env_paths(name: str) -> tuple[Path, ...]:
@@ -148,9 +174,6 @@ def _env_paths(name: str) -> tuple[Path, ...]:
 # They are discovered by the catalog and mounted read-only into project Docker
 # sandboxes. Keep the setting empty unless the root is trusted.
 SKILLS_EXTRA_DIRS = _env_paths("SKILLS_EXTRA_DIRS")
-_helpers = Path(_env("HELPERS_DIR") or (BASE_DIR / "helpers"))
-HELPERS_DIR = _helpers if _helpers.is_absolute() else (BASE_DIR / _helpers).resolve()
-os.environ.setdefault("HELPERS_DIR", str(HELPERS_DIR))
 
 _tools_catalog = Path(_env("TOOLS_CATALOG_DIR") or (BASE_DIR / "tools" / "catalog"))
 TOOLS_CATALOG_DIR = (

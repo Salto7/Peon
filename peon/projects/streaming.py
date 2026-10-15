@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 _VALID_TYPES = frozenset(StreamMessageType.values)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_LIVE = frozenset({JobStatus.RUNNING, JobStatus.PENDING, JobStatus.PAUSED})
+_LIVE = frozenset(
+    {JobStatus.RUNNING, JobStatus.PENDING, JobStatus.PAUSED, JobStatus.IDLE}
+)
 
 
 def anchor_job(project: Project, *, prefer_live: bool = True) -> Job | None:
@@ -103,6 +105,9 @@ def record_stream_message(
             content=cleaned,
             metadata=meta,
         )
+    from peon.projects.live_events import notify_project
+
+    notify_project(project_uuid)
 
     if parent_id and not meta.get("mirrored"):
         try:
@@ -118,7 +123,7 @@ def record_stream_message(
                 },
             )
         except Exception:
-            logger.debug("subagent mirror failed for %s", jid, exc_info=True)
+            logger.warning("subagent mirror failed for %s", jid, exc_info=True)
 
     # Attach runtime status for poll clients (not stored on the row).
     msg._payload_status = status  # type: ignore[attr-defined]
@@ -188,6 +193,7 @@ def with_stream_reply(
     job: Job | None = None,
     tag: str = "ask",
     event: str = "console_reply",
+    meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attach a chat-visible assistant reply and mirror it into the stream."""
     text = (reply or "").strip()
@@ -203,6 +209,7 @@ def with_stream_reply(
             event=event,
             role="assistant",
             message_type="status" if tag in {"need", "stop"} else "log",
+            meta=meta,
         )
         out.setdefault("job_ids", [])
         jid = str(anchor.id)
@@ -223,8 +230,13 @@ def audit_project_stream(
     job: Job | None = None,
     prefer_live: bool = True,
     swallow_errors: bool = True,
+    meta: dict[str, Any] | None = None,
 ) -> Job | None:
-    """Anchor a project job (if needed) and emit one audited stream line."""
+    """Anchor a project job (if needed) and emit one audited stream line.
+
+    ``meta`` is merged into the line's routing metadata (e.g. who a console
+    message is addressed to).
+    """
     if not (text or "").strip():
         return job
     if job is None:
@@ -235,7 +247,7 @@ def audit_project_stream(
         job,
         message_type,
         text,
-        stream_meta(project, role=role, tag=tag, event=event),
+        stream_meta(project, role=role, tag=tag, event=event, **(meta or {})),
         swallow_errors=swallow_errors,
     )
     return job
@@ -253,9 +265,12 @@ def project_message_dicts(
 
     alias = ensure_project_database(project.pk)
     with using_project(project.pk):
+        # Sub-agent lines are mirrored onto the parent job for the per-job
+        # transcript; in the project-wide feed that shows each line twice.
         qs = (
             StreamMessage.objects.using(alias)
             .filter(job__project_id=project.pk)
+            .exclude(metadata__has_key="mirrored")
             .select_related("job")
         )
         if after_id > 0:
@@ -479,21 +494,3 @@ def run_until_signal(*, on_stop: Callable[[], None] | None = None) -> None:
     finally:
         if on_stop is not None:
             on_stop()
-
-
-class StreamStore:
-    """Persistence, serialization, and project-level stream querying."""
-
-    anchor_job = staticmethod(anchor_job)
-    has_live_agents = staticmethod(has_live_agents)
-    scrub = staticmethod(scrub_stream_noise)
-    record = staticmethod(record_stream_message)
-    emit = staticmethod(emit_job_stream)
-    metadata = staticmethod(stream_meta)
-    reply = staticmethod(with_stream_reply)
-    audit_project = staticmethod(audit_project_stream)
-    project_messages = staticmethod(project_message_dicts)
-    attach_job_context = staticmethod(attach_job_context)
-    serialize = staticmethod(message_to_dict)
-    ingest = staticmethod(handle_incoming_message)
-

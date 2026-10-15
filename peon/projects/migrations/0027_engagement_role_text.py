@@ -19,6 +19,13 @@ def fill_role_text(apps, schema_editor):
             row.save(update_fields=changed)
 
 
+def seed_catalog(apps, schema_editor):
+    del apps, schema_editor
+    from peon.projects.platform_catalog import PlatformCatalog
+
+    PlatformCatalog.shared().ensure_seeded()
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -37,4 +44,5 @@ class Migration(migrations.Migration):
             field=models.TextField(blank=True, default=""),
         ),
         migrations.RunPython(fill_role_text, migrations.RunPython.noop),
+        migrations.RunPython(seed_catalog, migrations.RunPython.noop),
     ]

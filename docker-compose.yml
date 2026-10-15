@@ -8,14 +8,16 @@
 name: peon
 
 services:
-  # Build-only profile: Kali-based image for Docker sandbox + OpenShell (not long-running).
-  #   docker compose --profile build build sandbox
+  # Kali-based image for Docker sandbox + OpenShell. Built with the stack so
+  # `docker compose up --build` picks up Dockerfile changes (uv/uvx, MCP client).
+  # Not a long-running service — exits immediately after create.
   sandbox:
     build:
       context: .
       dockerfile: Docker/sandbox/Dockerfile
     image: peon-sandbox:local
-    profiles: ["build"]
+    entrypoint: ["/bin/true"]
+    restart: "no"
 
   # Message broker for Dramatiq — queues long-running job actors for the worker.
   redis:
@@ -45,6 +47,9 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost:8000}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://localhost:8000,https://127.0.0.1:8000}
       STREAM_SOCKET_PATH: /tmp/peon/stream.sock
+      # Must match the worker: both processes derive the sandbox fingerprint
+      # from it, and a mismatch makes each recreate the other's container.
+      SANDBOX_SOCKETS_VOLUME: ${SANDBOX_SOCKETS_VOLUME:-peon_sockets}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-peon-sandbox:local}
       OPENSHELL_IMAGE: ${OPENSHELL_IMAGE:-peon-sandbox:local}
       PROJECT_SANDBOX_PREFIX: ${PROJECT_SANDBOX_PREFIX:-peon-project}
@@ -59,16 +64,32 @@ services:
       - peon_sockets:/tmp/peon
       # Learn install-lab create/test/delete (AJAX). Project sandbox cleanup stays on worker.
       - /var/run/docker.sock:/var/run/docker.sock
-      # Live-edit UI / control plane without rebuild (DEBUG runserver).
+      # Live-edit UI / control plane without rebuild (uvicorn --reload).
       - ./peon:/app/peon
       - ./orchestrator:/app/orchestrator
       - ./agent_runtime:/app/agent_runtime
       - ./manage.py:/app/manage.py
-      - ./helpers:/app/helpers:ro
-      - ./skills:/app/skills:ro
+      - ./skills:/app/skills
+      - ./mcps:/app/mcps
       - ./skills_imported:/app/skills_imported
       - ${SKILLS_EXTRA_HOST_ROOT:-./skills_imported}:/external-skills:ro
       - ./tools:/app/tools:ro
+    # Dev: auto-reload on code edits and on `npm run dev` rebuilds (manifest.json).
+    command:
+      - uvicorn
+      - peon.config.asgi:application
+      - --host=0.0.0.0
+      - --port=8000
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+      - --reload
+      - --reload-dir=/app/peon
+      - --reload-dir=/app/orchestrator
+      - --reload-dir=/app/agent_runtime
+      - --reload-include=manifest.json
+      - --lifespan=off
+      # Open SSE streams would otherwise stall a reload/stop indefinitely.
+      - --timeout-graceful-shutdown=3
     expose:
       - "8000"
     depends_on:
@@ -119,8 +140,8 @@ services:
       - ./orchestrator:/app/orchestrator
       - ./agent_runtime:/app/agent_runtime
       - ./manage.py:/app/manage.py
-      - ./helpers:/app/helpers:ro
-      - ./skills:/app/skills:ro
+      - ./skills:/app/skills
+      - ./mcps:/app/mcps
       - ./skills_imported:/app/skills_imported
       - ${SKILLS_EXTRA_HOST_ROOT:-./skills_imported}:/external-skills:ro
       - ./tools:/app/tools:ro

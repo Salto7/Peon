@@ -28,6 +28,10 @@ EVENT_RUN_PERIODIC = "run_periodic"
 EVENT_PROVISION_CLI = "provision_cli"
 EVENT_SPAWN_WORK = "spawn_work"
 EVENT_WORK_FINISHED = "work_finished"
+EVENT_LIST_MCP_TOOLS = "list_mcp_tools"
+EVENT_CALL_MCP_TOOL = "call_mcp_tool"
+EVENT_LIST_MCP_RESOURCES = "list_mcp_resources"
+EVENT_READ_MCP_RESOURCE = "read_mcp_resource"
 
 _HOST_TOKEN_RE = re.compile(
     r"(?:https?://[^\s\"']+|"

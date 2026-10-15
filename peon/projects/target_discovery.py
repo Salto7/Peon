@@ -10,6 +10,7 @@ from peon.projects.target_shapes import (
     accept_asset,
     canonical_asset_key,
     coerce_target,
+    coerce_targets,
     detect_shape,
     format_service,
     parse_service,
@@ -32,7 +33,8 @@ _LLM_ASSET_SYSTEM = """You extract engagement subjects for Peon (authorized anal
 Return JSON only: {"assets":[{"type":"<slug>","value":"<string>"}]}
 type is a free-form lowercase slug from the operator's wording (examples: ip, fqdn,
 url, netblock, file, malware, sample, source, repo, package, hash, email,
-organization, person). Only include subjects clearly named. No speculation.
+asset, person). Prefer type \"asset\" for a bare organization or brand name.
+Only include subjects clearly named. No speculation.
 If none, return {"assets":[]}."""
 
 

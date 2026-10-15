@@ -1,6 +1,6 @@
 """CrewAI-aware operator controls (pause / resume / replan / reprompt).
 
-Builds on ProjectLifecycle; keeps crew_status / crew_flow_id in sync.
+Builds on ``lifecycle``; keeps crew_status / crew_flow_id in sync.
 """
 
 from __future__ import annotations
@@ -10,7 +10,13 @@ from typing import Any
 from django.conf import settings
 
 from orchestrator.crew.roles.registry import RoleRegistry
-from peon.projects.lifecycle import ProjectLifecycle
+from peon.projects import lifecycle
+from peon.projects.lifecycle import (
+    enqueue_job_directive,
+    project_allows_operator,
+    replan_from_prompt,
+    route_operator_instruction,
+)
 from peon.projects.models import (
     Job,
     JobDirectiveKind,
@@ -36,13 +42,13 @@ def set_crew_status(project: Project, status: str, *, flow_id: str = "") -> None
 
 
 def pause_project(project: Project) -> Project:
-    project = ProjectLifecycle.pause_project(project)
+    project = lifecycle.pause_project(project)
     set_crew_status(project, "paused")
     return project
 
 
 def resume_project(project: Project, *, steer: str = "") -> Project:
-    project = ProjectLifecycle.resume_project(project, resume_jobs=True)
+    project = lifecycle.resume_project(project, resume_jobs=True)
     if agent_module() == "crewai":
         set_crew_status(project, "running")
         note = (steer or "").strip()
@@ -67,7 +73,7 @@ def replan_project(project: Project, message: str) -> dict[str, Any]:
         project.save(update_fields=["status", "updated_at"])
 
     if agent_module() != "crewai":
-        return ProjectLifecycle.replan_from_prompt(project, text)
+        return replan_from_prompt(project, text)
 
     job = _ensure_manager_job(project, resume=True, replan=True, steer=text)
     set_crew_status(project, "running")
@@ -87,9 +93,9 @@ def reprompt_manager(
     text = (message or "").strip()
     if not text:
         raise ValueError("Reprompt message is required")
-    ProjectLifecycle.project_allows_operator(project)
+    project_allows_operator(project)
     job = _ensure_manager_job(project, resume=True, steer=text)
-    ProjectLifecycle.enqueue_job_directive(job, text, kind=kind)
+    enqueue_job_directive(job, text, kind=kind)
     set_crew_status(project, "running")
     return {
         "mode": "crew_reprompt",
@@ -105,7 +111,7 @@ def instruct_project(
     text = (message or "").strip()
     if not text:
         raise ValueError("Instruction message is required")
-    result = ProjectLifecycle.route_operator_instruction(
+    result = route_operator_instruction(
         project, text, job_id=job_id, record_stream=False
     )
     if agent_module() == "crewai" and project.status == ProjectStatus.ACTIVE:
@@ -174,20 +180,8 @@ def _ensure_manager_job(
             ]
         )
     if replan and steer:
-        ProjectLifecycle.enqueue_job_directive(
+        enqueue_job_directive(
             job, steer, kind=JobDirectiveKind.REPLAN
         )
     enqueue_job(str(job.id))
     return job
-
-
-class CrewControl:
-    """Crew-aware project lifecycle and manager-job orchestration."""
-
-    agent_module = staticmethod(agent_module)
-    set_status = staticmethod(set_crew_status)
-    pause = staticmethod(pause_project)
-    resume = staticmethod(resume_project)
-    replan = staticmethod(replan_project)
-    reprompt_manager = staticmethod(reprompt_manager)
-    instruct = staticmethod(instruct_project)

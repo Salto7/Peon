@@ -16,7 +16,19 @@ from typing import Any
 import yaml
 from django.conf import settings
 
-from orchestrator.learn.draft import DraftPipeline
+from orchestrator.learn.draft import (
+    authoring_prompt,
+    catalog_summaries,
+    filter_catalog,
+    finalize_skill_payload,
+    propose_missing_tool,
+    skill_prompt,
+    skill_result_dict,
+    tool_replan_human,
+    tool_suggest_human,
+    tool_suggestion_from_payload,
+    valid_skill_name,
+)
 from orchestrator.utils.service import SharedServiceBase
 from peon.projects.learn_lab import LearnLab
 from peon.projects.llm_proxy import LlmProxy
@@ -68,14 +80,14 @@ class OpenCodeAuthoring(SharedServiceBase):
         self.require_proxy()
         payload = self._run_json_task(
             kind="tool",
-            system=DraftPipeline.skill_prompt(_TOOLS_SUGGESTOR),
-            human=DraftPipeline.tool_suggest_human(text),
+            system=skill_prompt(_TOOLS_SUGGESTOR),
+            human=tool_suggest_human(text),
             result_hint=(
                 "Write result.json with keys: id, yaml, install_script, notes. "
                 "yaml must be a full catalog tool YAML string."
             ),
         )
-        return DraftPipeline.tool_suggestion_from_payload(
+        return tool_suggestion_from_payload(
             payload,
             author="opencode",
         )
@@ -87,19 +99,19 @@ class OpenCodeAuthoring(SharedServiceBase):
         if not text:
             raise ValueError("prompt is required")
         self.require_proxy()
-        catalog = DraftPipeline.filter_catalog(
-            DraftPipeline.catalog_summaries(),
+        catalog = filter_catalog(
+            catalog_summaries(),
             tools,
         )
 
-        tool_suggestion, proposed, install_recipes = DraftPipeline.propose_missing_tool(
+        tool_suggestion, proposed, install_recipes = propose_missing_tool(
             text, self.suggest_tool
         )
 
         payload = self._run_json_task(
             kind="skill",
-            system=DraftPipeline.skill_prompt(_SKILL_WRITER),
-            human=DraftPipeline.authoring_prompt(
+            system=skill_prompt(_SKILL_WRITER),
+            human=authoring_prompt(
                 text,
                 catalog,
                 proposed=proposed,
@@ -117,13 +129,13 @@ class OpenCodeAuthoring(SharedServiceBase):
         if not isinstance(payload, dict):
             raise RuntimeError("OpenCode returned non-object JSON for skill")
 
-        name, skill_md, files, suggested, mode, lint = DraftPipeline.finalize_skill_payload(
+        name, skill_md, files, suggested, mode, lint = finalize_skill_payload(
             payload,
             prompt=text,
             proposed=proposed,
             install_recipes=install_recipes,
         )
-        return DraftPipeline.skill_result_dict(
+        return skill_result_dict(
             name=name,
             skill_md=skill_md,
             files=files,
@@ -147,8 +159,8 @@ class OpenCodeAuthoring(SharedServiceBase):
         self.require_proxy()
         payload = self._run_json_task(
             kind="tool-replan",
-            system=DraftPipeline.skill_prompt(_TOOLS_SUGGESTOR),
-            human=DraftPipeline.tool_replan_human(
+            system=skill_prompt(_TOOLS_SUGGESTOR),
+            human=tool_replan_human(
                 prompt=prompt,
                 yaml_text=yaml_text,
                 install_script=install_script,
@@ -159,7 +171,7 @@ class OpenCodeAuthoring(SharedServiceBase):
                 "Write result.json with keys: id, yaml, install_script, notes."
             ),
         )
-        return DraftPipeline.tool_suggestion_from_payload(
+        return tool_suggestion_from_payload(
             payload,
             author="opencode",
         )
@@ -250,7 +262,7 @@ class OpenCodeAuthoring(SharedServiceBase):
                 }
                 if not payload.get("name"):
                     for child in (draft / "out").iterdir():
-                        if child.is_dir() and DraftPipeline.valid_skill_name(child.name):
+                        if child.is_dir() and valid_skill_name(child.name):
                             payload["name"] = child.name
                             break
             logger.info(

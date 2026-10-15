@@ -10,7 +10,6 @@ from orchestrator.prompts import INSTALL_CASCADE, PLANNER_INSTALL_SYSTEM
 from orchestrator.tools.catalog import CatalogProvisioner, ToolCatalog
 from orchestrator.tools.install_step_base import InstallStepBase
 from orchestrator.tools.install_steps import AptInstallStep
-from orchestrator.tools.install_steps.util import install_steps_from_fences
 from orchestrator.utils.llm import chat_json, llm_config
 from orchestrator.utils.service import SharedServiceBase
 
@@ -124,6 +123,3 @@ class InstallResolver(SharedServiceBase):
             return True, f"{binary} installed via apt"
         return False, msg or f"apt failed for {binary}"
 
-    @staticmethod
-    def _parse_install_docs(text: str) -> list[dict[str, Any]]:
-        return install_steps_from_fences(text)

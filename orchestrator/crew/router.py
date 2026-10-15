@@ -96,28 +96,6 @@ class RoleRouter(SharedServiceBase):
             out.append(ana_id)
         return out
 
-    def roles_index(self) -> list[dict]:
-        known = set(catalog_role_ids())
-        rows = []
-        for r in RoleRegistry.shared().list_roles():
-            rows.append(
-                {
-                    "id": r.id,
-                    "label": r.label,
-                    "goal": r.goal,
-                    "kind": r.kind,
-                    "skills": list(r.skills),
-                    "capabilities": list(r.capabilities),
-                    "allow_binaries": list(r.allow_binaries),
-                    "reports_to": r.reports_to,
-                    "tools": list(r.tools),
-                    "is_manager": r.is_manager,
-                    "is_analyzer": r.is_analyzer,
-                    "in_catalog": r.id in known,
-                }
-            )
-        return rows
-
     def roles_index_text(self, *, compact: bool = False) -> str:
         lines: list[str] = []
         if not compact:

@@ -7,15 +7,13 @@ or stops the ``peon-litellm`` container on the Compose network.
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 
-from agent_runtime.docker.cli import DockerCli
+from agent_runtime.docker.engine import DockerEngine
 from orchestrator.config import configure, get_config
 from orchestrator.utils.service import SharedServiceBase
 
@@ -102,13 +100,7 @@ class LlmProxy(SharedServiceBase):
         on = self.intent_enabled() if enabled is None else bool(enabled)
         try:
             cfg = get_config()
-            configure(
-                replace(
-                    cfg,
-                    llm_proxy_enabled=on,
-                    llm_proxy_url=self.proxy_url(),
-                )
-            )
+            configure(cfg.merge(llm_proxy_enabled=on, llm_proxy_url=self.proxy_url()))
         except Exception as exc:
             logger.warning("failed to sync llm proxy flag to orchestrator: %s", exc)
 
@@ -120,7 +112,7 @@ class LlmProxy(SharedServiceBase):
         return self.stop()
 
     def status(self) -> dict[str, Any]:
-        cli = DockerCli.shared()
+        cli = DockerEngine.shared()
         name = self.container_name()
         ok, err = cli.daemon_ok()
         if not ok:
@@ -163,7 +155,7 @@ class LlmProxy(SharedServiceBase):
         }
 
     def ensure(self) -> dict[str, Any]:
-        cli = DockerCli.shared()
+        cli = DockerEngine.shared()
         cli.require_daemon()
         name = self.container_name()
         exists, running = cli.inspect_running(name)
@@ -198,25 +190,17 @@ class LlmProxy(SharedServiceBase):
             "LITELLM_API_KEY": str(getattr(settings, "LITELLM_API_KEY", None) or ""),
             "LITELLM_MASTER_KEY": self.master_key(),
         }
-        extra = [
-            "--network-alias",
-            "litellm",
-            "-p",
-            f"{port}:4000",
-            "-v",
-            f"{host_config}:/app/config.yaml:ro",
-            "--label",
-            "peon.llm_proxy=1",
-            "--restart",
-            "unless-stopped",
-        ]
         create = cli.run_detached(
             name=name,
             image=self.image(),
             workdir="/app",
             network=network,
+            network_aliases=["litellm"],
             env=env,
-            extra_args=extra,
+            ports={"4000/tcp": port},
+            volumes=[f"{host_config}:/app/config.yaml:ro"],
+            labels={"peon.llm_proxy": "1"},
+            restart_policy="unless-stopped",
             command=[
                 "--config",
                 "/app/config.yaml",
@@ -225,7 +209,6 @@ class LlmProxy(SharedServiceBase):
                 "--port",
                 "4000",
             ],
-            timeout=180,
         )
         if not create.ok:
             err = (create.stderr or create.stdout or "").strip()
@@ -244,7 +227,7 @@ class LlmProxy(SharedServiceBase):
         return {"ok": True, "action": "created", "proxy": self.status()}
 
     def stop(self) -> dict[str, Any]:
-        cli = DockerCli.shared()
+        cli = DockerEngine.shared()
         name = self.container_name()
         if not cli.available():
             return {
@@ -260,7 +243,7 @@ class LlmProxy(SharedServiceBase):
                 removed = True
         return {"ok": True, "removed": removed, "proxy": self.status()}
 
-    def _compose_network(self, cli: DockerCli) -> str:
+    def _compose_network(self, cli: DockerEngine) -> str:
         """Prefer the network this web/worker container is on."""
         preferred = str(
             getattr(settings, "LLM_PROXY_NETWORK", None) or "peon_default"
@@ -268,15 +251,11 @@ class LlmProxy(SharedServiceBase):
         try:
             cid = cli.self_container_id()
             if cid:
-                res = cli.inspect_format(
-                    cid, "{{json .NetworkSettings.Networks}}", timeout=20
-                )
-                if res.ok and (res.stdout or "").strip():
-                    nets = json.loads(res.stdout.strip())
-                    if isinstance(nets, dict) and nets:
-                        if preferred in nets:
-                            return preferred
-                        return next(iter(nets.keys()))
+                nets = cli.networks(cid)
+                if nets:
+                    if preferred in nets:
+                        return preferred
+                    return next(iter(nets.keys()))
         except Exception as exc:
             logger.info("compose network probe failed: %s", exc)
         return preferred

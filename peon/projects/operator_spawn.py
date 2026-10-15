@@ -12,7 +12,7 @@ from orchestrator.crew.roles.registry import (
 )
 from orchestrator.skills.bind import resolve_skill_ids
 from orchestrator.skills.role_memory import upsert_role_skills
-from peon.projects.lifecycle import ProjectLifecycle
+from peon.projects.lifecycle import project_allows_operator, queue_job
 from peon.projects.models import (
     Job,
     JobLifecycle,
@@ -135,7 +135,7 @@ def reopen_analyzer(project: Project) -> Job | None:
         .first()
     )
     if job is not None:
-        ProjectLifecycle.queue_job(job)
+        queue_job(job)
         return job
 
     queued = ObjectiveScheduler().enqueue_ready(project)
@@ -172,7 +172,7 @@ def add_child_agent(
     """Insert a specialist objective + child Job under ``parent``, keep analyzer last."""
     from peon.projects.db import ensure_project_database, using_project
 
-    ProjectLifecycle.project_allows_operator(project)
+    project_allows_operator(project)
     if parent.project_id != project.id:
         raise ValueError("parent job is not on this project")
 
@@ -321,12 +321,3 @@ def _add_child_agent_locked(
         "title": child.title,
         "created_at": dj_tz.now().isoformat(),
     }
-
-
-class OperatorSpawnService:
-    """Role selection and operator-driven child-agent lifecycle."""
-
-    suggest_roles = staticmethod(suggest_roles_for_parent)
-    reopen_analyzer = staticmethod(reopen_analyzer)
-    reopen_analyzer_after_child = staticmethod(maybe_reopen_analyzer_after_child)
-    add_child = staticmethod(add_child_agent)
