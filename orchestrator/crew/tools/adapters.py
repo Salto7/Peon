@@ -11,7 +11,6 @@ from orchestrator.agent.delegation import (
     list_roles_body,
     list_work_body,
     propose_work_body,
-    send_agent_message_body,
     spawn_work_body,
     wait_for_work_body,
 )
@@ -143,6 +142,106 @@ def record_finding(
 )
 def record_findings(findings_json: str) -> str:
     return EngagementTools.record_findings(findings_json or "[]")
+
+
+@crew_tool(
+    "recall_memory",
+    "Search persistent memory: notes from this engagement (operator feedback, "
+    "facts, decisions) and generic platform lessons. Use a natural-language "
+    "query about what you are about to do (a tool, a target type, a failure). "
+    "Check it before repeating work that may already have been tried.",
+)
+def recall_memory(query: str) -> str:
+    return EngagementTools.recall_memory(query)
+
+
+@crew_tool(
+    "save_memory",
+    "Save something durable you learned so later agents (and later runs) do not "
+    "rediscover it. kind: lesson (method/tool behaviour that worked or failed) | "
+    "feedback (operator preference/correction) | fact (durable fact about the "
+    "target or environment) | decision (plan rationale) | reference (where "
+    "something lives). description is a one-line hook shown in everyone's index; "
+    "body should include **Why:** and **How to apply:**. Same name updates the "
+    "entry. scope: project (default) or platform — platform is for generic "
+    "lessons only and must not contain targets, IPs, emails, URLs or customer "
+    "data. Do not save what is already in findings/RoE or is trivially re-derivable.",
+)
+def save_memory(
+    name: str,
+    kind: str,
+    description: str,
+    body: str = "",
+    scope: str = "project",
+) -> str:
+    return EngagementTools.save_memory(name, kind, description, body, scope or "project")
+
+
+@crew_tool(
+    "forget_memory",
+    "Retire a memory that turned out wrong or stale (by name; scope project|platform).",
+)
+def forget_memory(name: str, scope: str = "project") -> str:
+    return EngagementTools.forget_memory(name, scope or "project")
+
+
+@crew_tool(
+    "list_team",
+    "List every agent on this project (id, objective OBJ-n, role, A2A state, what "
+    "idle agents wait for). Use before send_message to address the right agent.",
+)
+def list_team() -> str:
+    return EngagementTools.list_team()
+
+
+@crew_tool(
+    "send_message",
+    "Send an A2A message to another agent on this project. `to` is a job id from "
+    "list_team, an objective like OBJ-3, or a role id (if unambiguous). Put the "
+    "work detail in `content`: what you found, what you need, relevant paths. "
+    "If the recipient is idle it wakes and picks the work up. kind: inform | "
+    "request | reply. Prefer this over spawn_work when a suitable agent already exists.",
+)
+def send_message(to: str, content: str, kind: str = "inform") -> str:
+    return EngagementTools.send_message(to, content, kind=kind or "inform")
+
+
+@crew_tool(
+    "check_inbox",
+    "Read and consume messages other agents or the operator sent you. Call this "
+    "between steps of long work and after waking.",
+)
+def check_inbox() -> str:
+    return EngagementTools.check_inbox()
+
+
+@crew_tool(
+    "go_idle",
+    "Park yourself until another agent or the operator messages you. Use when "
+    "you finished what you can do and need another agent's output to continue — "
+    "do not poll. Then end your turn with a short summary of what is done and "
+    "what you are waiting for; you resume from your context when woken.",
+)
+def go_idle(reason: str = "") -> str:
+    return EngagementTools.go_idle(reason or "")
+
+
+@crew_tool(
+    "record_assets",
+    "Add discovered assets and typed relations to the engagement asset graph "
+    "(attack surface). assets_json: [{\"type\":\"fqdn\",\"value\":\"a.example.com\"}, ...] "
+    "or \"type:value\" strings. relations_json: [{\"from\":\"fqdn:a.example.com\","
+    "\"rel\":\"a_record\",\"to\":\"ip:203.0.113.5\"}]. Types follow the Open Asset "
+    "Model: fqdn, ip, netblock, asn, service, url, certificate, organization, person, "
+    "email, phone, account, file, product, location. Relation labels: a_record, "
+    "aaaa_record, cname_record, ns_record, mx_record, ptr_record, srv_record, node "
+    "(subdomain), port, contains, announces, registration, managed_by, owns, "
+    "associated_with — or any custom slug. Recording an asset does NOT authorize it "
+    "(Rules of Engagement still decide scope). Use for infrastructure and "
+    "relationships; use record_finding for security findings.",
+)
+def record_assets(assets_json: str = "[]", relations_json: str = "[]") -> str:
+    return EngagementTools.record_assets(assets_json or "[]", relations_json or "[]")
 
 
 @crew_tool(
@@ -278,25 +377,6 @@ def propose_work(context_notes: str = "", max_agents: int = 4) -> str:
 
 
 @crew_tool(
-    "send_agent_message",
-    "Send a message to another Job on this objective "
-    "(broadcast if to_job_id empty).",
-)
-def send_agent_message(
-    body: str,
-    to_job_id: str = "",
-    type: str = "inform",
-    artifact_refs: str = "",
-) -> str:
-    return send_agent_message_body(
-        body,
-        to_job_id=to_job_id,
-        type=type,
-        artifact_refs=artifact_refs,
-    )
-
-
-@crew_tool(
     "ask_operator",
     "Ask the human operator a question (HITL popup). Use when RoE is ambiguous, "
     "replans are stuck, or a decision is required. options = comma-separated "
@@ -359,10 +439,33 @@ def list_mcp_tools(name: str) -> str:
 @crew_tool(
     "call_mcp_tool",
     "Call a tool on an MCP server inside the project sandbox. "
-    "arguments_json is a JSON object. Endpoint values come from the project, "
-    "not from this call.",
+    "arguments_json is a JSON object. Large results spill to "
+    "workspace/mcp/artifacts/ with a preview + artifact path. "
+    "Endpoint values come from the project, not from this call.",
 )
 def call_mcp_tool(name: str, tool: str, arguments_json: str = "{}") -> str:
     from orchestrator.mcp.provision import call_mcp_tool as _call
 
     return _call(name, tool, arguments_json)
+
+
+@crew_tool(
+    "list_mcp_resources",
+    "List MCP Resources exposed by a bound server (official MCP resources/list). "
+    "name is the catalog id.",
+)
+def list_mcp_resources(name: str) -> str:
+    from orchestrator.mcp.provision import list_mcp_resources as _list
+
+    return _list(name)
+
+
+@crew_tool(
+    "read_mcp_resource",
+    "Read one MCP Resource by URI (resources/read). Large bodies spill to "
+    "workspace/mcp/artifacts/ like call_mcp_tool.",
+)
+def read_mcp_resource(name: str, uri: str) -> str:
+    from orchestrator.mcp.provision import read_mcp_resource as _read
+
+    return _read(name, uri)

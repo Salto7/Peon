@@ -13,7 +13,6 @@ class CatalogCardsBase(ABC):
     PICKER_DESC_LIMIT = 200
     TAG_LIMIT = 12
     PICKER_TAG_LIMIT = 8
-    ALIAS_LIMIT = 8
 
     # Section toolbar / reload — subclasses set these and override ``reload``.
     SECTION = ""
@@ -87,6 +86,6 @@ class CatalogCardsBase(ABC):
         return {
             "url_name": cls.RELOAD_URL_NAME,
             "title": cls.RELOAD_TITLE,
-            "label": f"Update {cls.SECTION}",
+            "label": f"Refresh {cls.SECTION}",
             "section": cls.SECTION,
         }

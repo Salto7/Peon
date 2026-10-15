@@ -47,9 +47,6 @@ def bash_body(command: str) -> str:
     return SandboxTools().bash(command)
 
 
-# Historical alias used by a few tests / imports.
-run_cli_body = bash_body
-
 
 def run_periodic_body(
     command: str,

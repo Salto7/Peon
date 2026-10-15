@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from functools import wraps
+from collections.abc import AsyncIterator, Iterator
 from typing import Any, Callable, TypeVar
 
 from django.contrib import messages
 from django.db import models
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect
 
 from orchestrator.utils.strings import as_str_list
@@ -55,6 +56,37 @@ def wants_json(request: HttpRequest) -> bool:
         "application/json" in (request.headers.get("Accept") or "")
         or request.headers.get("X-Requested-With") == "XMLHttpRequest"
     )
+
+
+def flash_json(view: _V) -> _V:
+    """Let a flash-and-redirect view answer XHR callers with JSON.
+
+    Form posts are untouched. For ``wants_json`` requests whose view returns a
+    redirect, the messages it queued become ``{"ok", "error", "messages",
+    "redirect"}``; ``ok`` is false when any message is an error.
+    """
+
+    @wraps(view)
+    def _wrapped(request: HttpRequest, *args: Any, **kwargs: Any):
+        response = view(request, *args, **kwargs)
+        if not wants_json(request) or response.status_code not in (301, 302, 303):
+            return response
+        flashed = [
+            {"level": m.level_tag or "info", "text": str(m)}
+            for m in messages.get_messages(request)
+        ]
+        errors = [m["text"] for m in flashed if m["level"] == "error"]
+        return JsonResponse(
+            {
+                "ok": not errors,
+                "error": errors[0] if errors else "",
+                "messages": flashed,
+                "redirect": response.get("Location", ""),
+            },
+            status=400 if errors else 200,
+        )
+
+    return _wrapped  # type: ignore[return-value]
 
 
 def parse_json_body(
@@ -135,3 +167,41 @@ def json_or_redirect(
     elif error and not ok:
         messages.error(request, error)
     return redirect(redirect_to)
+
+
+async def _pump(events: Iterator[str]) -> AsyncIterator[str]:
+    """Drive a blocking generator from worker threads, one chunk at a time."""
+    from asgiref.sync import sync_to_async
+
+    done = object()
+    step = sync_to_async(lambda: next(events, done), thread_sensitive=False)
+    try:
+        while True:
+            chunk = await step()
+            if chunk is done:
+                return
+            yield chunk  # type: ignore[misc]
+    finally:
+        try:
+            await sync_to_async(events.close, thread_sensitive=False)()  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            # ValueError: a cancelled step is still running in its thread; the
+            # generator finishes that tick and is collected afterwards.
+            pass
+
+
+def sse_response(request: HttpRequest, events: Iterator[str]) -> StreamingHttpResponse:
+    """``text/event-stream`` from a blocking generator under WSGI or ASGI.
+
+    Django buffers synchronous iterators completely when serving ASGI, which
+    would hold an endless stream forever; there the generator is pumped from
+    worker threads instead.
+    """
+    from django.core.handlers.asgi import ASGIRequest
+
+    body = _pump(events) if isinstance(request, ASGIRequest) else events
+    resp = StreamingHttpResponse(body, content_type="text/event-stream")
+    resp["Cache-Control"] = "no-cache"
+    resp["X-Accel-Buffering"] = "no"
+    return resp
+

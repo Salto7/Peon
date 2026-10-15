@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from orchestrator.crew.roles.catalog import (
     RoleDef,
     catalog_role_ids,
@@ -17,6 +19,8 @@ from orchestrator.skills.providers.tool_bridge import (
 )
 from orchestrator.skills.registry import SkillRegistry
 from orchestrator.utils.service import SharedServiceBase
+
+logger = logging.getLogger(__name__)
 
 
 def _label(role_id: str) -> str:
@@ -147,8 +151,8 @@ class RoleRegistry(SharedServiceBase):
             from orchestrator.utils.commands import clear_command_caches
 
             clear_command_caches()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("clearing command caches failed: %s", exc, exc_info=True)
 
     def _disk_stamp(self) -> str:
         skills = SkillRegistry.shared()

@@ -74,10 +74,14 @@ class BinaryRunner(SkillRunnerBase):
             except ValueError as exc:
                 print(f"bad command: {exc}", file=sys.stderr)
                 return 2
-            if not tokens or Path(tokens[0]).name != self.binary:
-                print(f"command must start with {self.binary}", file=sys.stderr)
+            if not tokens:
+                print(f"empty {self.binary} command", file=sys.stderr)
                 return 2
-            argv = [resolved, *tokens[1:]]
+            # SKILL.md documents ``args`` as the binary's own arguments; a full
+            # command line that starts with the binary name is accepted too.
+            # Only the resolved binary is ever executed either way.
+            rest = tokens[1:] if Path(tokens[0]).name == self.binary else tokens
+            argv = [resolved, *rest]
             argv_log.append(" ".join(argv))
             stream("log", f"running: {' '.join(argv)}")
             try:
@@ -88,19 +92,19 @@ class BinaryRunner(SkillRunnerBase):
                 stream("error", f"{self.binary} timed out")
                 print(f"{self.binary} timed out", file=sys.stderr)
                 return 124
+            code = proc.returncode or 0
             if proc.stdout:
-                stream("stdout", proc.stdout.rstrip("\n"))
+                stream("stdout", proc.stdout.rstrip("\n"), exit_code=code)
                 print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
                 out_chunks.append(proc.stdout.rstrip("\n"))
             if proc.stderr:
-                stream("stderr", proc.stderr.rstrip("\n"))
+                stream("stderr", proc.stderr.rstrip("\n"), exit_code=code)
                 print(
                     proc.stderr,
                     end="" if proc.stderr.endswith("\n") else "\n",
                     file=sys.stderr,
                 )
                 err_chunks.append(proc.stderr.rstrip("\n"))
-            code = proc.returncode or 0
             if code and (worst == 0 or code > worst):
                 worst = code
 

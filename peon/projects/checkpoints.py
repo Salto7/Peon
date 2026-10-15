@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from typing import Any
 
 from peon.projects.db import project_alias_or_default
 from peon.projects.models import Job, JobCheckpoint, JobStatus
+
+logger = logging.getLogger(__name__)
 
 
 def _ckpt_qs(job: Job):
@@ -67,28 +71,31 @@ def write_job_checkpoint(
         transcript_digest=(digest or "")[:16000],
     )
     try:
+        from orchestrator.agent.transcript import TranscriptRecord
         from orchestrator.crew.memory import MemoryService
 
-        class _CheckpointRecord:
-            category = "checkpoint"
-            event = reason or "job_finished"
-            role_id = (list(job.role_ids or []) or [""])[0]
-            job_id = str(job.id)
-
-            def memory_text(self) -> str:
-                bits = [
-                    f"checkpoint seq={ckpt.seq} reason={ckpt.reason}",
-                    f"job={job.title} status={job.status}",
-                ]
-                if digest:
-                    bits.append(digest[:2000])
-                elif context.get("result_preview"):
-                    bits.append(str(context["result_preview"])[:2000])
-                return "\n".join(bits)
-
-        MemoryService.remember_transcript(job, _CheckpointRecord())
+        detail = digest or str(context.get("result_preview") or "")
+        summary = "\n".join(
+            bit
+            for bit in (
+                f"checkpoint seq={ckpt.seq} reason={ckpt.reason}",
+                f"job={job.title} status={job.status}",
+                detail[:2000],
+            )
+            if bit
+        )
+        MemoryService.remember_transcript(
+            job,
+            TranscriptRecord(
+                category="checkpoint",
+                summary=summary,
+                event=reason or "job_finished",
+                role_id=(list(job.role_ids or []) or [""])[0],
+                job_id=str(job.id),
+            ),
+        )
     except Exception:
-        pass
+        logger.warning("checkpoint memory write failed for job %s", job.id, exc_info=True)
     return ckpt
 
 

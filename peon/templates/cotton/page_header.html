@@ -1,0 +1,13 @@
+{% comment %}
+<c-page-header title="…" description="…">…actions…</c-page-header>
+Optional <c-slot name="crumbs"> renders above the title.
+{% endcomment %}
+<c-vars title="" description="" />
+<header class="mb-6 flex flex-wrap items-end justify-between gap-4">
+  <div class="min-w-0 space-y-1">
+    {% if crumbs %}<nav aria-label="Breadcrumb" class="mb-2 flex items-center gap-1 text-xs text-muted-foreground">{{ crumbs }}</nav>{% endif %}
+    <h1 class="truncate text-xl font-semibold tracking-tight">{{ title }}</h1>
+    {% if description %}<p class="text-sm text-muted-foreground">{{ description }}</p>{% endif %}
+  </div>
+  {% if slot %}<div class="flex flex-wrap items-center gap-2">{{ slot }}</div>{% endif %}
+</header>

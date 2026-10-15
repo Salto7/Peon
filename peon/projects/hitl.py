@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from typing import Any
 
 from django.urls import reverse
@@ -15,6 +17,8 @@ from peon.projects.models import (
     OperatorPromptKind,
     Project,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def create_operator_prompt(
@@ -252,7 +256,7 @@ def failure_exhausted_prompt(job: Job, error: str, *, fails: int, max_r: int) ->
 
 def resolve_operator_prompt(prompt: OperatorPrompt, reply: str) -> dict[str, Any]:
     """Apply operator approve/edit/deny text and steer the waiting job(s)."""
-    from peon.projects.lifecycle import ProjectLifecycle
+    from peon.projects.lifecycle import enqueue_job_directive, queue_job
     from peon.projects.models import JobDirectiveKind, TERMINAL_JOB_STATUSES
     from peon.projects.streaming import (
         anchor_job,
@@ -268,6 +272,20 @@ def resolve_operator_prompt(prompt: OperatorPrompt, reply: str) -> dict[str, Any
     prompt.resolved_at = dj_tz.now()
     prompt.save(update_fields=["reply", "resolved_at"])
 
+    # A typed answer is durable knowledge (scope, credentials policy, "yes the
+    # staging subnet is in scope"). Bare approve/deny stubs are not.
+    if not text.upper().startswith(("APPROVED BY OPERATOR", "DENIED BY OPERATOR")):
+        try:
+            from peon.projects import memory_store
+
+            memory_store.record_feedback(
+                prompt.project,
+                f"Question from an agent: {prompt.question}\nOperator answer: {text}",
+                source="reply to an agent question",
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("hitl feedback capture failed", exc_info=True)
+
     note = (
         "OPERATOR REPLY (human-in-the-loop):\n"
         f"Kind: {prompt.kind}\n"
@@ -276,22 +294,31 @@ def resolve_operator_prompt(prompt: OperatorPrompt, reply: str) -> dict[str, Any
         "Honor this under Rules of Engagement and continue the objective."
     )
     job = prompt.job
+    if job is not None and job.objective_id and job.objective is not None:
+        try:
+            from peon.projects.objectives import ObjectiveScheduler
+
+            ObjectiveScheduler().resume_blocked(
+                job.objective, reason="Operator replied"
+            )
+        except Exception as exc:
+            logger.warning("resuming blocked objective failed: %s", exc, exc_info=True)
     steered: list[str] = []
     if job is not None and job.status not in TERMINAL_JOB_STATUSES:
-        ProjectLifecycle.enqueue_job_directive(
+        enqueue_job_directive(
             job, note, kind=JobDirectiveKind.STEER
         )
         steered.append(str(job.id))
     elif job is not None and job.status in TERMINAL_JOB_STATUSES:
-        ProjectLifecycle.enqueue_job_directive(
+        enqueue_job_directive(
             job, note, kind=JobDirectiveKind.FOLLOWUP
         )
-        ProjectLifecycle.queue_job(job)
+        queue_job(job)
         steered.append(str(job.id))
     else:
         job = anchor_job(prompt.project)
         if job is not None and job.status not in TERMINAL_JOB_STATUSES:
-            ProjectLifecycle.enqueue_job_directive(
+            enqueue_job_directive(
                 job, note, kind=JobDirectiveKind.STEER
             )
             steered.append(str(job.id))
@@ -339,8 +366,8 @@ def resolve_operator_prompt(prompt: OperatorPrompt, reply: str) -> dict[str, Any
                 },
             )
             JobAgentBridge(job).append_transcript(rec)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("operator reply transcript failed: %s", exc, exc_info=True)
         try:
             from orchestrator.crew.memory import MemoryService
 
@@ -354,8 +381,8 @@ def resolve_operator_prompt(prompt: OperatorPrompt, reply: str) -> dict[str, Any
                 event="operator_guidance",
                 project_id=str(prompt.project_id or ""),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("MemoryService.remember_peon failed: %s", exc, exc_info=True)
     reply_msg = (
         f"Reply delivered to {len(steered)} job(s). "
         "They will continue under Rules of Engagement."

@@ -1,25 +1,28 @@
 ---
 name: corp-osint
-description: >
-  Maps a company to subsidiaries, brands, websites, urlscan/Playwright/DNSLytics
+description: 'Maps a company to subsidiaries, brands, websites, urlscan/Playwright/DNSLytics
   GTM discoveries, IdefixTools Entra tenant→domains, RDAP/WHOIS, ASN/IP ownership,
-  Azure tenant IDs, and dangling parked domains still verified in Entra. Use for
-  corporate OSINT, GTM/tenant reverse domains, or dangling DNS/Entra findings.
+  Azure tenant IDs, and dangling parked domains still verified in Entra. Use for corporate
+  OSINT, GTM/tenant reverse domains, or dangling DNS/Entra findings.
+
+  '
 license: Apache-2.0
-compatibility: >
-  Python 3.10+, network, aiohttp, tenacity, Playwright chromium; optional whois,
-  URLSCAN_API_KEY, DNSLYTICS_API_KEY. Cursor / Claude Code / Codex compatible.
+compatibility: 'Python 3.10+, network, aiohttp, tenacity, Playwright chromium; optional
+  whois, URLSCAN_API_KEY, DNSLYTICS_API_KEY. Cursor / Claude Code / Codex compatible.
+
+  '
 metadata:
   author: corp-OSINT
-  version: "3.0.0"
+  version: 3.0.0
   category: osint
+  provider: claude
 ---
 
 # Corporate OSINT — Entity Expansion (v3)
 
 Passive public-source recon only. **Plugin architecture:**
 
-- One entrypoint: `scripts/main.py` (or `python -m corp_osint`)
+- One entrypoint: `main.py` (or `python -m corp_osint`)
 - One abstract base: `corp_osint.plugin.Plugin`
 - All stages live in `corp_osint/plugins/` and inherit `Plugin`
 - Orchestrator: `CorpOsintPipeline(Plugin)` runs registered plugins
@@ -39,7 +42,7 @@ playwright install chromium
 
 # optional (RDAP fallback / richer rate limits)
 sudo apt install whois             # or: brew install whois
-export SEC_USER_AGENT='CorpOSINT/3.0 (research; you@acme.com)'
+export SEC_USER_AGENT='CorpOSINT/3.0 (research; you@example.com)'
 export URLSCAN_API_KEY=...         # optional — higher urlscan limits
 export DNSLYTICS_API_KEY=...       # optional — paid GTM reverse API
 # optional proxy (HTTP or SOCKS) for aiohttp + Playwright:
@@ -57,8 +60,8 @@ source .venv/bin/activate
 **Verify install:**
 
 ```bash
-python skills/corp-osint/scripts/main.py --list-plugins
-python skills/corp-osint/scripts/main.py --plugin azure_tenant --domain acme.com
+python main.py --list-plugins
+python main.py --plugin azure_tenant --domain microsoft.com
 ```
 
 Agents: run the Install block if `.venv` is missing or `main.py` fails with import / Playwright errors before running the pipeline.
@@ -79,22 +82,22 @@ Agents: run the Install block if `.venv` is missing or `main.py` fails with impo
 
 ```bash
 source .venv/bin/activate
-cd skills/corp-osint/scripts
-python main.py "Acme Corp" --domain acme.com --out report.json
-python main.py -v "Acme Corp" --domain acme.com --summary-only
+python main.py "Example Corp" --domain example.com --out report.json
+python main.py -v "Example Corp" --domain example.com --summary-only
 python main.py --list-plugins
-python main.py --plugin dnslytics_gtm --domain acme.com
+python main.py --plugin dnslytics_gtm --domain example.com
 ```
 
-Logging (stderr): default INFO stage progress; `-v` / `-vv` DEBUG; `-q` warnings only.
-JSON stays on stdout. Reports are **compact by default** (no WHOIS dumps); `summary`
-+ `summary_text` are always first keys. Use `--no-compact` for verbose blobs;
-`--summary-only` for summary JSON alone.
+Logging (stderr via logger only — no ``print``): default INFO stage progress;
+`-v` / `-vv` DEBUG; `-q` warnings for progress (result JSON still emitted).
+Reports are **compact by default** (no WHOIS dumps); `summary` + `summary_text`
+are always first keys. Use `--summary-only` for summary JSON alone.
 
-Flags: `--skip-edgar`, `--skip-urlscan`, `--skip-playwright`, `--skip-dnslytics`,
-`--skip-tenant-domains`, `--skip-dangling-check`, `--skip-asn`, `--asn-deep`,
-`--max-enrich-domains N`, `--tenant-domains-max N`, `--summary-only`, `--no-compact`,
-`--proxy URL`, `--direct`, `--no-proxy HOSTS`, `--plugin NAME`, `-v`/`-vv`, `-q`.
+Flags: `--skip STAGES`, `--only STAGES` (comma-separated:
+`edgar,urlscan,playwright,asn,dnslytics,tenant_domains,entra_verify,dangling,resolve_sites`),
+`--summary-only`, `--proxy URL`, `--direct`, `--no-proxy HOSTS`, `--plugin NAME`,
+`--tenant-id`, `-v`/`-vv`, `-q`. Tuning caps live in `PipelineConfig.limits`
+(defaults); not exposed on the CLI.
 
 ## Proxy (HTTP + SOCKS)
 
@@ -102,14 +105,14 @@ All aiohttp traffic and Playwright Chromium share one proxy setting:
 
 ```bash
 # SOCKS5
-python main.py "Acme Corp" --domain acme.com --proxy socks5://127.0.0.1:1080
+python main.py "Example Corp" --domain example.com --proxy socks5://127.0.0.1:1080
 
 # HTTP proxy + bypass list
-python main.py --plugin azure_tenant --domain acme.com \
+python main.py --plugin azure_tenant --domain microsoft.com \
   --proxy http://127.0.0.1:8080 --no-proxy localhost,127.0.0.1
 
 # Force direct (ignore env proxies)
-python main.py --plugin azure_tenant --domain acme.com --direct
+python main.py --plugin azure_tenant --domain microsoft.com --direct
 ```
 
 Also: `CORP_OSINT_PROXY`, `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`, and
@@ -119,7 +122,7 @@ Also: `CORP_OSINT_PROXY`, `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`, and
 
 | Piece | Role |
 |-------|------|
-| `scripts/main.py` | **Single entrypoint** |
+| `main.py` | **Single entrypoint** |
 | `corp_osint.plugin.Plugin` | **Abstract base** — every module inherits this |
 | `corp_osint.plugins.*` | Concrete plugins (`edgar`, `urlscan`, …) |
 | `corp_osint.pipeline.CorpOsintPipeline` | Orchestrator plugin (`name="pipeline"`) |
@@ -148,8 +151,8 @@ To add a stage: subclass `Plugin`, implement `async def run(**kwargs)`, register
 Same public flow as https://idefixtools.com/tenant-lookup.html:
 
 ```bash
-python scripts/main.py --plugin tenant_domains --domain acme.com
-python scripts/main.py --plugin tenant_domains --tenant-id <guid>
+python main.py --plugin tenant_domains --domain example.com
+python main.py --plugin tenant_domains --tenant-id <guid>
 ```
 
 Uses `func-idefix-tenantlookup.azurewebsites.net/api/lookup|domains` plus
@@ -164,13 +167,13 @@ Once a company Entra tenant ID is known, every found domain is checked via share
 
 Matches (issuer tenant == company tenant) are marked `matches_company_tenant` /
 `relationship_verified`. Reuses the same helper as `azure_tenant` and
-`tenant_domains` (no duplicated OIDC parsing). Cap: `--entra-verify-max N`
-(default 200). Skip with `--skip-entra-verify`.
+`tenant_domains` (no duplicated OIDC parsing). Cap: `LimitsConfig.entra_verify_max`
+(default 200). Skip with `--skip entra_verify`.
 
 ## Dangling / parked / unregistered (Entra)
 
 After tenant→domains + OIDC verify, `dangling_check` probes Entra-verified **apex**
-domains only (skips subdomains like `app.acme.com` — RDAP/DNS risk is on the
+domains only (skips subdomains like `app.essity.com` — RDAP/DNS risk is on the
 registrable name). Flagged as dangling when Entra-verified **and** any of:
 
 | kind | Meaning |
@@ -181,34 +184,53 @@ registrable name). Flagged as dangling when Entra-verified **and** any of:
 | `unreachable` | DNS may work but HTTP dead |
 
 Results: `dangling_domains[]` with `kind`, plus `dangling_check.counts`.
-Cap with `--dangling-max-domains N` (default 200).
+Cap: `LimitsConfig.dangling_max_domains` (default 200). Skip with `--skip dangling`.
 
 ## DNSLytics / GTM
 
 ```bash
-python scripts/main.py --plugin dnslytics_gtm --domain acme.com
+python main.py --plugin dnslytics_gtm --domain example.com
 # optional paid API:
 export DNSLYTICS_API_KEY=...
 ```
 
 Flow: Playwright homepage GTM extract → DNSLytics UI via Playwright → reverse
 `html.tag:GTM-XXXX`. On HTTP 429: honor Retry-After / exponential backoff, recycle
-browser page (up to 5 attempts), HTML scrape fallback. Spacing ~3.5s. Official
-reverse API used when `DNSLYTICS_API_KEY` set.
+browser page (up to 5 attempts), HTML scrape fallback. Spacing capped at 3s
+(+200ms incremental backoff on 429). Official reverse API used when
+`DNSLYTICS_API_KEY` set.
 
-## Retries / 429
+## Retries / 429 (incremental sleeps)
 
 - `AsyncHttpClient`: up to 6 attempts; parses `Retry-After`; per-host cooldown
-- urlscan queries run **sequentially** (parallel free-tier calls 429 easily)
+- On 429 / 5xx / transient errors: **incremental sleep** in +200ms chunks
+  (200ms → 400ms → 600ms …), hard-capped at **3s** total
+  (`rate-limit … chunk=N sleep=… remaining=…` on stderr)
+- Host pacing uses the same 200ms / 3s policy when a cooldown is active
+- urlscan queries run **sequentially**; inter-query gap grows by +200ms (max 3s)
+- DNSLytics / Playwright: same incremental backoff on 429 / empty / bot signals
 - Playwright: Bing retries + DuckDuckGo fallback; homepage link discovery;
-  default `--playwright-max-queries 6`
+  default `LimitsConfig.playwright_max_queries` = 6
+
+## Progress logging
+
+Every plugin emits stderr progress around `run()`:
+
+```text
+INFO progress [edgar] starting
+INFO progress [edgar] resolve company=…
+INFO progress [edgar] done (12.3s)
+```
+
+Looping modules also log step progress (`query 2/6`, `probing example.com`, …).
+Use `-v` for DEBUG detail; `-q` for quieter progress (result still logged).
 
 ## Speed notes
 
 - Domain enrichments (RDAP/Azure/ASN) run concurrently
-- Playwright preferred for discovery; urlscan still parallel where safe
-- ASN defaults to **observed IPs only** (`--asn-deep` for prefixes)
-- Caps: `--max-entities`, `--max-enrich-domains` (default 6)
+- Playwright preferred for discovery; urlscan still sequential where safe
+- ASN defaults to **observed IPs only** (`PipelineConfig.asn_deep` for prefixes)
+- Caps: `LimitsConfig.max_entities` / `max_enrich_domains` (defaults 12 / 6)
 - Host throttles in `corp_osint.config.ThrottleConfig`
 
 ## Compact summary shape
@@ -217,11 +239,11 @@ Report includes `summary` and `summary_text`:
 
 ```json
 {
-  "company": "Acme Corporation",
-  "primary_domain": "acme.com",
+  "company": "Example Corporation",
+  "primary_domain": "example.com",
   "domains": [
     {
-      "domain": "acme.com",
+      "domain": "example.com",
       "sources": ["https://…"],
       "evidence": "Primary / query domain",
       "confidence": "high",
@@ -250,8 +272,8 @@ separate confirmed vs candidate; no port scans.
 
 | Runner | Path |
 |--------|------|
-| Cursor | `.cursor/skills/corp-osint/` / `$corp-osint` |
-| Claude Code | `.claude/skills/corp-osint/` / `/corp-osint` |
+| Cursor | `.cursor/skills/corp-osint/` → `docs/` / `$corp-osint` |
+| Claude Code | `.claude/skills/corp-osint/` → `docs/` / `/corp-osint` |
 | Subagent | `.cursor/agents/corp-osint.md` |
 
-See [references/sources.md](references/sources.md) and [references/report-schema.md](references/report-schema.md).
+See [sources.md](sources.md) and [report-schema.md](report-schema.md).

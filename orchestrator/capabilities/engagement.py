@@ -40,5 +40,39 @@ class EngagementTools:
         return get_job().bridge.record_findings(findings_json)
 
     @staticmethod
+    def recall_memory(query: str) -> str:
+        return get_job().bridge.recall_memory(query)
+
+    @staticmethod
+    def save_memory(
+        name: str, kind: str, description: str, body: str = "", scope: str = "project"
+    ) -> str:
+        return get_job().bridge.save_memory(name, kind, description, body, scope)
+
+    @staticmethod
+    def forget_memory(name: str, scope: str = "project") -> str:
+        return get_job().bridge.forget_memory(name, scope)
+
+    @staticmethod
+    def send_message(to: str, content: str, kind: str = "inform") -> str:
+        return get_job().bridge.send_message(to, content, kind=kind)
+
+    @staticmethod
+    def check_inbox() -> str:
+        return get_job().bridge.check_inbox()
+
+    @staticmethod
+    def go_idle(reason: str = "") -> str:
+        return get_job().bridge.go_idle(reason)
+
+    @staticmethod
+    def list_team() -> str:
+        return get_job().bridge.list_team()
+
+    @staticmethod
+    def record_assets(assets_json: str, relations_json: str = "") -> str:
+        return get_job().bridge.record_assets(assets_json, relations_json)
+
+    @staticmethod
     def list_findings(kind: str = "") -> str:
         return get_job().bridge.list_findings(kind=kind)

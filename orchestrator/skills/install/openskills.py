@@ -9,6 +9,7 @@ from pathlib import Path
 
 from orchestrator.skills.install.place import place_pack
 from orchestrator.skills.manifest import find_skill_manifest
+from orchestrator.utils.install_skip import skip_dir_name
 
 
 def _reject_source(source: str) -> str:
@@ -28,8 +29,13 @@ def pack_dirs(root: Path) -> list[Path]:
             return
         if depth >= 4 or not path.is_dir():
             return
-        for child in sorted(path.iterdir()):
-            if child.name in {"node_modules", ".git"} or not child.is_dir():
+        try:
+            children = sorted(path.iterdir())
+        except OSError:
+            return
+        for child in children:
+            # Skills may live under ``.claude/skills`` — only skip junk dirs here.
+            if not child.is_dir() or skip_dir_name(child.name, skip_hidden=False):
                 continue
             walk(child, depth + 1)
 

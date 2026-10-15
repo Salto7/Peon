@@ -11,6 +11,9 @@
   var _cfg = null;
   var _sending = false;
   var _queue = [];
+  var _retryTimer = null;
+  var _retries = 0;
+  var _userClosed = false;
 
   function csrfToken() {
     return window.PeonUI.csrfToken();
@@ -35,22 +38,43 @@
     return btoa(s);
   }
 
+  var _probe = null;
+
+  // Tokens are oklch(); xterm only parses hex/rgb, so rasterise one pixel.
+  function toRgb(color, fallback) {
+    try {
+      if (!_probe) {
+        var c = document.createElement("canvas");
+        c.width = c.height = 1;
+        _probe = c.getContext("2d", { willReadFrequently: true });
+      }
+      _probe.clearRect(0, 0, 1, 1);
+      _probe.fillStyle = fallback;
+      _probe.fillStyle = color;
+      _probe.fillRect(0, 0, 1, 1);
+      var d = _probe.getImageData(0, 0, 1, 1).data;
+      return "rgb(" + d[0] + ", " + d[1] + ", " + d[2] + ")";
+    } catch (_) {
+      return fallback;
+    }
+  }
+
   function cssVar(name, fallback) {
     try {
       var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-      return v || fallback;
+      return v ? toRgb(v, fallback) : fallback;
     } catch (_) {
       return fallback;
     }
   }
 
   function terminalTheme() {
-    var rgb = cssVar("--accent-rgb", "62, 200, 240");
+    // Design tokens (frontend/src/styles/tokens.css).
     return {
-      background: cssVar("--surface", "#0a1018"),
-      foreground: cssVar("--fg", "#eef6fb"),
-      cursor: cssVar("--accent", "#3ec8f0"),
-      selectionBackground: "rgba(" + rgb + ",0.35)",
+      background: cssVar("--canvas", "#0a1018"),
+      foreground: cssVar("--foreground", "#eef6fb"),
+      cursor: cssVar("--primary", "#5b6cf0"),
+      selectionBackground: "rgba(120, 130, 240, 0.35)",
     };
   }
 
@@ -101,8 +125,14 @@
       .catch(function () {
         return null;
       })
-      .then(function () {
+      .then(function (res) {
         _sending = false;
+        if (res && (res.status === 404 || res.status === 410)) {
+          // PTY gone (server restart / shell exited): reattach, keep keystrokes.
+          _queue.unshift(chunk);
+          scheduleReconnect("Session lost — reconnecting…");
+          return;
+        }
         if (_queue.length) flushInput();
       });
   }
@@ -303,18 +333,42 @@
     el.dataset.kind = kind || "";
   }
 
+  function scheduleReconnect(msg) {
+    disposeStream();
+    _session = null;
+    if (_userClosed || _retryTimer) return;
+    if (_retries >= 5) {
+      setStatus("Disconnected — click Open shell to reconnect", "err");
+      return;
+    }
+    var delay = Math.min(8000, 500 * Math.pow(2, _retries));
+    _retries += 1;
+    setStatus(msg || "Reconnecting…", "warn");
+    _retryTimer = setTimeout(function () {
+      _retryTimer = null;
+      openSession();
+    }, delay);
+  }
+
   function connectStream(sessionId) {
     disposeStream();
     var url = _cfg.streamUrl(sessionId);
-    _es = new EventSource(url);
-    _es.addEventListener("out", function (ev) {
+    var es = new EventSource(url);
+    _es = es;
+    es.addEventListener("ready", function () {
+      // Server replays scrollback after "ready"; start from a clean screen
+      // so a reconnect does not print everything twice.
+      _retries = 0;
+      if (_term) _term.reset();
+      setTimeout(fit, 20);
+    });
+    es.addEventListener("out", function (ev) {
       if (!_term || !ev.data) return;
       try {
-        var bytes = b64ToUint8(ev.data);
-        _term.write(bytes);
+        _term.write(b64ToUint8(ev.data));
       } catch (_) {}
     });
-    _es.addEventListener("exit", function () {
+    es.addEventListener("exit", function () {
       setStatus("Session ended", "warn");
       if (_term) _term.writeln("\r\n\x1b[33m[session closed]\x1b[0m");
       _session = null;
@@ -322,13 +376,25 @@
       document.body.classList.remove("terminal-focused");
       disposeStream();
     });
-    _es.addEventListener("error", function () {
-      setStatus("Stream error — reconnect or reopen", "err");
+    es.addEventListener("fail", function (ev) {
+      scheduleReconnect("Stream failed: " + (ev.data || "") + " — reconnecting…");
+    });
+    es.addEventListener("error", function () {
+      if (es !== _es) return;
+      // CONNECTING: the browser retries on its own (network blip, proxy idle).
+      if (es.readyState === 0) {
+        setStatus("Connection interrupted — retrying…", "warn");
+        return;
+      }
+      // CLOSED: non-200 (e.g. 404 after a dev-server reload dropped the
+      // in-memory PTY). Reopen; the server reuses or starts a shell.
+      scheduleReconnect("Session lost — reconnecting…");
     });
   }
 
   function openSession() {
     if (!_cfg || !_term) return Promise.resolve();
+    _userClosed = false;
     revealShellCard();
     setStatus("Starting sandbox shell…", "");
     return new Promise(function (resolve) {
@@ -344,6 +410,7 @@
               if (!res.ok || !res.data || !res.data.ok) {
                 var err =
                   (res.data && res.data.error) || "Failed to open terminal";
+                _session = null;
                 setStatus(err, "err");
                 if (_term) _term.writeln("\r\n\x1b[31m" + err + "\x1b[0m");
                 if (window.PeonUI) window.PeonUI.toast(err, "error");
@@ -354,18 +421,13 @@
                 container: res.data.container,
               };
               var label = res.data.container || "sandbox";
-              if (res.data.reused) {
-                setStatus("Reconnected · " + label, "ok");
-                if (_term) {
-                  _term.writeln(
-                    "\r\n\x1b[90mReconnected to existing sandbox shell.\x1b[0m"
-                  );
-                }
-              } else {
-                setStatus("Connected · " + label, "ok");
-              }
+              setStatus(
+                (res.data.reused ? "Reconnected · " : "Connected · ") + label,
+                "ok"
+              );
               connectStream(_session.id);
               setTimeout(fit, 40);
+              flushInput();
               _term.focus();
               _focused = true;
               document.body.classList.add("terminal-focused");
@@ -373,6 +435,7 @@
             .catch(function (err) {
               var msg =
                 (err && err.message) || "Network error opening terminal";
+              _session = null;
               setStatus(msg, "err");
               if (_term) _term.writeln("\r\n\x1b[31m" + msg + "\x1b[0m");
               if (window.PeonUI) window.PeonUI.toast(msg, "error");
@@ -383,6 +446,12 @@
   }
 
   function closeSession() {
+    _userClosed = true;
+    _queue = [];
+    if (_retryTimer) {
+      clearTimeout(_retryTimer);
+      _retryTimer = null;
+    }
     disposeStream();
     var sid = _session && _session.id;
     _session = null;
@@ -445,12 +514,8 @@
     var closeBtn = document.getElementById("terminal-close");
     if (openBtn) {
       openBtn.addEventListener("click", function () {
-        if (_session) {
+        if (_session && _es && _es.readyState === 1) {
           revealShellCard();
-          // Stream can die while _session stays set — reconnect on Open shell.
-          if (!_es || _es.readyState === 2) {
-            connectStream(_session.id);
-          }
           setTimeout(function () {
             fit();
             if (_term) _term.focus();
@@ -459,6 +524,14 @@
           }, 40);
           return;
         }
+        // Stale session id (dead SSE / server reload) → reopen (reuses if alive).
+        _session = null;
+        _retries = 0;
+        if (_retryTimer) {
+          clearTimeout(_retryTimer);
+          _retryTimer = null;
+        }
+        disposeStream();
         openSession();
       });
     }
@@ -477,10 +550,13 @@
       "\x1b[90mSandbox terminal — Ctrl+C interrupt · Ctrl+Shift+C/V copy/paste · Ctrl+R history\x1b[0m"
     );
     setTimeout(fit, 80);
-    // Auto-connect when the project console loads.
+    // Auto-connect only once the terminal host has a real layout (collapsed
+    // card / hidden tab yields 0×0 and flaky docker exec PTYs).
     setTimeout(function () {
-      if (!_session) openSession();
-    }, 200);
+      if (_session) return;
+      if (!_host || _host.clientWidth < 40 || _host.clientHeight < 40) return;
+      openSession();
+    }, 400);
   }
 
   global.PeonTerminal = {

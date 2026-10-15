@@ -19,18 +19,8 @@ CORE_SKILLS = frozenset({"project-manager", "analyzer"})
 # agentskills.io skill name / category slug shape.
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
-SKILL_LIFECYCLES = frozenset({"short", "long", "continuous"})
 # Lint also accepts planner "auto" before coerce to a concrete lifecycle.
 LINT_LIFECYCLES = frozenset({"short", "long", "continuous", "auto"})
-LIFECYCLE_ALIASES = {
-    "stable": "short",
-    "production": "short",
-    "prod": "short",
-    "persistent": "long",
-    "project": "long",
-    "daemon": "continuous",
-    "watchdog": "continuous",
-}
 
 # Peon skill categories (Agent Skills metadata).
 SKILL_CATEGORIES = frozenset({"builtin", "custom"})
@@ -38,24 +28,12 @@ CATEGORY_ALIASES = {
     "platform": "builtin",
     "core": "builtin",
 }
-# Builtin skills that may be scheduled as Jobs (authoring skills are Learn-only).
-JOBABLE_BUILTIN = frozenset(
-    {
-        "analyzer",
-        "watchdog",
-        "project-manager",
-    }
-)
 
 # --- path / manifest ---------------------------------------------------------
 
 RESOURCE_ROOTS = ("scripts", "assets", "references")
 SKILL_MANIFEST = "SKILL.md"
-SKILL_SUFFIX = ".md"
 MANIFEST_NAMES = (SKILL_MANIFEST, "skill.md")
-SPEC_FIELDS = frozenset(
-    {"name", "description", "license", "compatibility", "allowed-tools", "metadata"}
-)
 MAX_NAME_LEN, MAX_DESCRIPTION_LEN, MAX_COMPATIBILITY_LEN = 64, 1024, 500
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)", re.DOTALL)
@@ -65,36 +43,10 @@ REF_RE = re.compile(
     r"|(?:^|\s)((?:scripts|assets|references)/[\w./-]+)",
     re.MULTILINE,
 )
-KEY_LINE_RE = re.compile(r"^([A-Za-z_][\w-]*)\s*:(.*)$")
 
 
 def valid_skill_name(name: str) -> bool:
     return bool((name or "").strip() and SKILL_NAME_RE.match(name.strip()))
-
-
-def coerce_lifecycle(
-    value: object,
-    *,
-    default: str = "short",
-    allow_auto: bool = False,
-) -> str:
-    """Normalize lifecycle; map common aliases; optionally keep planner ``auto``."""
-    allowed = LINT_LIFECYCLES if allow_auto else SKILL_LIFECYCLES
-    fallback = default if default in SKILL_LIFECYCLES else "short"
-    if value is None:
-        return fallback
-    text = LIFECYCLE_ALIASES.get(str(value).strip().lower(), str(value).strip().lower())
-    return text if text in allowed else fallback
-
-
-def resolve_alias(name: str, *, aliases: dict[str, str] | None = None) -> str:
-    """Return canonical skill id using the registry alias map (from SKILL.md)."""
-    key = (name or "").strip()
-    if not key:
-        return ""
-    if aliases and key in aliases:
-        return aliases[key]
-    return key
 
 
 def normalize_category(value: object) -> str:
@@ -110,22 +62,6 @@ def normalize_category(value: object) -> str:
     # Legacy domain categories (recon, web, …) collapse to custom.
     return "custom"
 
-
-def coerce_jobable(
-    *,
-    name: str,
-    category: str,
-    raw: object = None,
-) -> bool:
-    """Job scheduling flag: explicit metadata wins; else category/allowlist."""
-    if raw is not None and str(raw).strip() != "":
-        from orchestrator.utils.strings import as_bool
-
-        return as_bool(raw, default=True)
-    cat = (category or "").strip().lower()
-    if cat == "custom":
-        return True
-    return (name or "").strip() in JOBABLE_BUILTIN
 
 def is_protected(*, name: str = "", protected: bool = False) -> bool:
     """True when the skill sets protected or is a known core id."""

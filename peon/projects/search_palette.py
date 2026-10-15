@@ -66,13 +66,6 @@ def search_json(request: HttpRequest) -> JsonResponse:
             "keywords": "author skill tool yaml suggest writer forge",
         },
         {
-            "id": "nav-lab-skills",
-            "label": "Lab · Imported skills",
-            "group": "Navigate",
-            "href": reverse("lab_skills"),
-            "keywords": "claude skills import openskills marketplace",
-        },
-        {
             "id": "nav-lab-dream",
             "label": "Lab · Dream",
             "group": "Navigate",

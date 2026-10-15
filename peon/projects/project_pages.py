@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 
 from django.contrib import messages
 from django.http import (
@@ -39,7 +37,7 @@ from peon.projects.models import (
 from peon.projects.plan_graph import plan_graph_payload
 from peon.projects.objectives import ObjectiveScheduler
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.planning import PlanningService
+from peon.projects.planning import create_project_shell, run_llm_plan
 from peon.projects.streaming import project_message_dicts
 from peon.projects.roe_ops import roe_add_path
 from peon.projects.target_shapes import (
@@ -56,7 +54,7 @@ from peon.projects.project_status import ProjectOpsPayload
 from peon.projects.catalog_cards.role import RoleCards
 from peon.projects.runtime_settings import PeonSettings
 from peon.projects.llm_proxy import LlmProxy
-from peon.projects.crew_control import CrewControl
+from peon.projects.crew_control import set_crew_status
 from peon.projects.role_job_tree import RoleJobTree
 
 PROJECT_LIST_LIMIT = 50
@@ -255,7 +253,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
     flashes: list[tuple[str, str]] = []
 
     # Uploads need a project id — create shell first without paths, then attach.
-    project, scope, roe = PlanningService.create_project_shell(
+    project, scope, roe = create_project_shell(
         title=title,
         summary=summary,
         in_scope=in_scope,
@@ -328,7 +326,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
     if llm_configured() and brief:
         stage("plan", "Planning objectives…", "active")
         try:
-            result = PlanningService.run_llm_plan(
+            result = run_llm_plan(
                 description=brief,
                 mode="project",
                 title=project.title,
@@ -402,7 +400,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
             stage("start", "Open war room to retry", "done", "plan can be retried from chat")
             msg = f"Created {project.title} but plan failed: {exc}"
 
-            CrewControl.set_status(project, "awaiting_feedback")
+            set_crew_status(project, "awaiting_feedback")
             flashes.append(("error", msg))
             # Project exists — keep ok=True so the UI redirects; plan can retry from chat.
             out.update(
@@ -494,10 +492,36 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
         org_chart = RoleJobTree.org_nodes_for_project(project)
     except Exception:
         org_chart = {"roots": [], "roles": [], "crew_status": "", "crew_flow_id": ""}
+    try:
+        from peon.projects.mcp_ops import list_project_mcp_configs
+
+        mcp_configs = list_project_mcp_configs(project.pk)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "project mcp configs failed for %s", project.pk, exc_info=True
+        )
+        mcp_configs = []
+    console_ctx = {
+        "pk": str(project.pk),
+        "title": project.title,
+        "kind": project.kind,
+        "summary": project.summary or "",
+        "runtime": project.get_sandbox_runtime_display(),
+        "planUrl": (
+            reverse("project_plan", kwargs={"pk": project.pk})
+            if project.kind == ProjectKind.DURABLE
+            else ""
+        ),
+        "findingStatuses": FindingStatus.choices,
+        "findingSeverities": FindingSeverity.choices,
+    }
     return render(
         request,
         "projects/detail.html",
         {
+            "console_ctx": console_ctx,
             "project": project,
             "roe": roe,
             "objectives": objectives,
@@ -513,8 +537,9 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
             "project_inputs": project_inputs,
             "attack_surface": attack_surface,
             "org_chart": org_chart,
+            "mcp_configs": mcp_configs,
             "nav": "projects",
-            "stream_bootstrap": json.dumps(bootstrap),
+            "stream_bootstrap": bootstrap,
         },
     )
 
@@ -534,13 +559,15 @@ def job_live(request: HttpRequest, pk, job_id) -> HttpResponse:
 @require_GET
 @with_project_context
 def project_report_view(request: HttpRequest, pk, file_path: str) -> HttpResponse:
-    """In-browser report viewer (Markdown rendered client-side; other text as pre)."""
+    """In-browser report viewer (Markdown rendered server-side; other text as pre)."""
     project = get_object_or_404(Project, pk=pk)
     path = resolve_report_path(str(project.id), file_path)
     if path is None:
         raise Http404("Report not found")
+    from peon.projects.workspaces import is_markdown_path, render_markdown_html
+
     text = path.read_text(encoding="utf-8", errors="replace")
-    is_md = path.suffix.lower() in {".md", ".markdown"}
+    report_html = render_markdown_html(text) if is_markdown_path(path) else ""
     return render(
         request,
         "projects/report_view.html",
@@ -549,7 +576,8 @@ def project_report_view(request: HttpRequest, pk, file_path: str) -> HttpRespons
             "report_name": path.name,
             "report_path": file_path,
             "report_text": text,
-            "is_markdown": is_md,
+            "report_html": report_html,
+            "is_markdown": bool(report_html),
             "download_url": reverse(
                 "project_report_file", kwargs={"pk": project.id, "file_path": file_path}
             ),

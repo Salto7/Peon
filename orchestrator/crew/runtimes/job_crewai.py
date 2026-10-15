@@ -87,8 +87,13 @@ class CrewAIJobRuntime(AgentRuntimeBase):
                 iterations=1,
             )
 
-        brief = (request.steer or scope.brief or role.goal).strip()
-        if request.resume and not request.steer:
+        # The objective brief always stays; steer (operator guidance, A2A
+        # inbox, memory, checkpoint context) is added to it — never a
+        # replacement, or a woken agent would lose its own task.
+        base = (scope.brief or "").strip()
+        steer = (request.steer or "").strip()
+        brief = "\n\n".join(b for b in (base, steer) if b) or role.goal.strip()
+        if request.resume and not steer:
             brief = (
                 "Continue from your last work under Rules of Engagement. "
                 "Do not repeat completed work.\n\n" + brief

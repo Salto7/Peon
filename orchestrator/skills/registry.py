@@ -122,32 +122,28 @@ class SkillRegistry(SharedServiceBase):
         self._by_key: dict[str, SkillDocument] | None = None
         self._stamp: str = ""
 
-    @classmethod
-    def register_provider(
-        cls, factory: Callable[["SkillRegistry"], SkillProvider]
-    ) -> None:
-        """Add a skill style. Bind and the sandbox stay provider-agnostic."""
-        if factory not in cls._provider_factories:
-            cls._provider_factories.append(factory)
-
     def skills_dir(self) -> Path:
         return Path(get_config().skills_dir)
-
-    def imported_dir(self) -> Path:
-        return Path(get_config().skills_imported_dir)
 
     def providers(self) -> list[SkillProvider]:
         config = get_config()
         native_root = self.skills_dir().resolve()
-        imported_root = self.imported_dir().resolve()
-        found = [
-            PeonNativeProvider(native_root),
-            ClaudeAgentSkillsProvider(imported_root),
-        ]
+        # One scan of ``skills/``; provider is inferred per pack.
+        found: list[SkillProvider] = [PeonNativeProvider(native_root)]
+        legacy_imported = Path(config.skills_imported_dir).resolve()
+        if legacy_imported != native_root and legacy_imported.is_dir():
+            found.append(
+                ClaudeAgentSkillsProvider(
+                    legacy_imported,
+                    container_base="/skills-imported",
+                )
+            )
+        seen = {native_root, legacy_imported}
         for index, root in enumerate(config.skills_extra_dirs):
             resolved = Path(root).resolve()
-            if resolved in {native_root, imported_root}:
+            if resolved in seen:
                 continue
+            seen.add(resolved)
             found.append(
                 ClaudeAgentSkillsProvider(
                     resolved,
@@ -174,12 +170,8 @@ class SkillRegistry(SharedServiceBase):
             from orchestrator.utils.commands import clear_command_caches
 
             clear_command_caches()
-        except Exception:
-            pass
-
-    def reload_skills(self) -> None:
-        """Alias used by Learn save — force a rescan."""
-        self.invalidate()
+        except Exception as exc:
+            logger.warning("clearing command caches failed: %s", exc, exc_info=True)
 
     def _disk_mtime(self) -> float:
         """Legacy stamp helper. The catalog revision replaces directory mtimes."""
@@ -260,19 +252,6 @@ class SkillRegistry(SharedServiceBase):
         if path is None or not path.is_file():
             raise FileNotFoundError(f"skill {skill_id!r} missing {relative}")
         return path.read_text(encoding="utf-8")
-
-    def load_path(self, skill: SkillDocument, relative: str) -> Path:
-        """Resolve a resource against the document, not provider name.
-
-        Catalog-backed skills have no host root; callers should use
-        ``load_text``. This remains for packs that still carry a filesystem root.
-        """
-        if skill.root is None:
-            raise FileNotFoundError(f"skill {skill.id!r} has no root")
-        path = safe_join(skill.root, relative)
-        if path is None or not path.is_file():
-            raise FileNotFoundError(f"skill {skill.id!r} missing {relative}")
-        return path
 
     def usable(self, skill_id: str, *, role_id: str = "") -> SkillDocument | None:
         """Return a skill when its dynamically inferred roles permit binding."""

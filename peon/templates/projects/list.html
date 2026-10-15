@@ -1,82 +1,79 @@
 {% extends "base.html" %}
-{% load static %}
-{% block title %}Projects — Peon{% endblock %}
+{% load ui %}
+{% block title %}Projects · Peon{% endblock %}
 {% block content %}
-<header class="page-header">
-  <div>
-    <h1>Projects</h1>
-    <p class="lead">Open an engagement or start a new one.</p>
-  </div>
-  <p class="bar">
-    <a class="btn" href="{% url 'project_create' %}">New project</a>
-  </p>
-</header>
+<c-page-header title="Projects" description="Open an engagement or start a new one.">
+  <c-button href="{% url 'project_create' %}">{% icon "plus" %} New project</c-button>
+</c-page-header>
 
-<section class="panel">
-  <div class="page-header tight">
-    <h2>Recent</h2>
-    <form id="projects-bulk" method="post" action="{% url 'projects_bulk' %}" class="bulk-bar">
-      {% csrf_token %}
-      <span class="bulk-count meta" data-bulk-count>0 selected</span>
-      <button type="submit" name="action" value="pause" class="secondary" data-bulk-btn disabled>Pause</button>
-      <button type="submit" name="action" value="resume" class="secondary" data-bulk-btn disabled>Resume</button>
-      <button type="submit" name="action" value="delete" data-bulk-btn disabled
-              data-confirm="Delete selected projects and their sandboxes?">Delete</button>
-    </form>
-  </div>
+<c-card flush>
   {% if projects %}
-  <table class="select-table">
-    <thead>
-      <tr>
-        <th class="col-check"><input type="checkbox" data-select-all aria-label="Select all projects"></th>
-        <th>Title</th>
-        <th>Kind</th>
-        <th>Status</th>
-        <th>Created</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-    {% for p in projects %}
-      <tr>
-        <td class="col-check">
-          <input type="checkbox" name="project_ids" value="{{ p.pk }}" form="projects-bulk" data-bulk-row>
-        </td>
-        <td><a href="{% url 'project_detail' p.pk %}">{{ p.title }}</a></td>
-        <td><span class="kind-pill" data-kind="{{ p.kind }}">{{ p.get_kind_display }}</span></td>
-        <td class="meta status">{{ p.status }}</td>
-        <td class="meta">{{ p.created_at }}</td>
-        <td class="job-actions">
-          {% if p.status == "paused" %}
-          <form method="post" action="{% url 'project_control' p.pk %}">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="resume">
-            <button type="submit" class="secondary">Resume</button>
-          </form>
-          {% elif p.status == "active" %}
-          <form method="post" action="{% url 'project_control' p.pk %}">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="pause">
-            <button type="submit" class="secondary">Pause</button>
-          </form>
-          {% endif %}
-          <form method="post" action="{% url 'project_control' p.pk %}"
-                onsubmit="return confirm('Delete project {{ p.title|escapejs }} and its sandbox?');">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="delete">
-            <button type="submit">Delete</button>
-          </form>
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  <form id="projects-bulk" data-bulk method="post" action="{% url 'projects_bulk' %}"
+        class="flex min-h-12 flex-wrap items-center gap-2 border-b px-4 py-2">
+    {% csrf_token %}
+    <span class="mr-auto text-xs text-muted-foreground" data-bulk-count>0 selected</span>
+    <c-button variant="outline" size="sm" type="submit" name="action" value="pause" data-bulk-btn disabled>{% icon "pause" %} Pause</c-button>
+    <c-button variant="outline" size="sm" type="submit" name="action" value="resume" data-bulk-btn disabled>{% icon "play" %} Resume</c-button>
+    <c-button variant="outline" size="sm" type="submit" name="action" value="delete" data-bulk-btn disabled
+              class="text-destructive hover:text-destructive"
+              data-confirm="The selected projects and their Docker sandboxes will be permanently removed."
+              data-confirm-title="Delete selected projects?">{% icon "trash-2" %} Delete</c-button>
+  </form>
+  <div class="ui-table-wrap">
+    <table class="ui-table">
+      <thead>
+        <tr>
+          <th class="w-10"><input type="checkbox" class="ui-checkbox" data-bulk-all="projects-bulk" aria-label="Select all projects"></th>
+          <th>Project</th>
+          <th>Kind</th>
+          <th>Status</th>
+          <th>Created</th>
+          <th class="w-12"><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for p in projects %}
+        <tr>
+          <td><input type="checkbox" class="ui-checkbox" name="project_ids" value="{{ p.pk }}" form="projects-bulk" data-bulk-row aria-label="Select {{ p.title }}"></td>
+          <td class="w-full max-w-0"><a class="ui-link block truncate" href="{% url 'project_detail' p.pk %}">{{ p.title }}</a></td>
+          <td><c-badge>{{ p.get_kind_display }}</c-badge></td>
+          <td><c-status value="{{ p.status }}" label="{{ p.get_status_display }}" /></td>
+          <td class="whitespace-nowrap text-muted-foreground" title="{{ p.created_at|date:'c' }}">{{ p.created_at|timesince }} ago</td>
+          <td class="text-right">
+            <c-menu label="Actions for {{ p.title }}">
+              <a class="ui-menu-item" href="{% url 'project_detail' p.pk %}">{% icon "external-link" %} Open</a>
+              {% if p.status == "paused" or p.status == "active" %}
+              <form method="post" action="{% url 'project_control' p.pk %}">
+                {% csrf_token %}
+                {% if p.status == "paused" %}
+                <input type="hidden" name="action" value="resume">
+                <button type="submit" class="ui-menu-item">{% icon "play" %} Resume</button>
+                {% else %}
+                <input type="hidden" name="action" value="pause">
+                <button type="submit" class="ui-menu-item">{% icon "pause" %} Pause</button>
+                {% endif %}
+              </form>
+              {% endif %}
+              <div class="ui-menu-sep"></div>
+              <form method="post" action="{% url 'project_control' p.pk %}"
+                    data-confirm="“{{ p.title }}” and its Docker sandbox will be permanently removed."
+                    data-confirm-title="Delete project?">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="delete">
+                <button type="submit" class="ui-menu-item" data-variant="destructive">{% icon "trash-2" %} Delete</button>
+              </form>
+            </c-menu>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
-  <p class="meta">No projects yet. <a href="{% url 'project_create' %}">Start one</a>.</p>
+  <c-empty icon="folder-kanban" title="No projects yet">
+    Start an engagement to plan objectives and dispatch agents.
+    <c-slot name="action"><c-button href="{% url 'project_create' %}" size="sm">{% icon "plus" %} New project</c-button></c-slot>
+  </c-empty>
   {% endif %}
-</section>
-{% endblock %}
-{% block scripts %}
-<script src="{% static 'js/bulk-select.js' %}"></script>
-<script>PeonBulk.init(document.getElementById("projects-bulk"));</script>
+</c-card>
 {% endblock %}

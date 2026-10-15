@@ -21,10 +21,6 @@ _SEVERITY_RANK = frozenset({"critical", "high", "medium", "low", "info"})
 _SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 
 # Excluded from client-facing report sections.
-REPORT_HIDDEN_STATUSES = frozenset(
-    {FindingStatus.FALSE_POSITIVE, FindingStatus.ACCEPTED}
-)
-
 
 class FindingNormalizer:
     """Coerce agent/queue dicts into Finding field values."""
@@ -173,23 +169,36 @@ class FindingStore:
         finding.save(update_fields=["status", "updated_at"])
         return finding
 
-    def list_payload(
-        self,
-        project: Project | None,
-        *,
-        limit: int = 200,
-        for_report: bool = False,
-    ) -> list[dict]:
-        if project is None:
-            return []
-        out: list[dict] = []
-        qs = project.findings.order_by("seq", "created_at")
-        if for_report:
-            qs = qs.exclude(status__in=REPORT_HIDDEN_STATUSES)
-        qs = qs[: max(1, min(limit, 500))]
-        for f in qs:
-            out.append(self._row_dict(f))
-        return out
+    def set_severity(
+        self, finding: Finding, severity: str, *, actor: str = "operator"
+    ) -> Finding | None:
+        """Operator re-rates a finding. ``None`` when ``severity`` is not on the scale.
+
+        The agent's original rating is kept in ``metadata`` so reports and the
+        audit trail can show both. Re-recording the same finding dedupes onto
+        this row without touching it, so the override sticks.
+        """
+        raw = (severity or "").strip().lower()
+        if raw not in _SEVERITY_RANK:
+            return None
+        if finding.severity == raw:
+            return finding
+        meta = dict(finding.metadata or {})
+        meta.setdefault("severity_original", finding.severity)
+        meta["severity_set_by"] = actor
+        history = list(meta.get("severity_history") or [])
+        history.append({"from": finding.severity, "to": raw, "by": actor})
+        meta["severity_history"] = history[-20:]
+        finding.severity = raw
+        finding.metadata = meta
+        finding.save(update_fields=["severity", "metadata", "updated_at"])
+        try:
+            from peon.projects.asset_graph import AssetGraphEngine
+
+            AssetGraphEngine(finding.project).sync(findings=[finding])
+        except Exception:  # noqa: BLE001 — graph refresh must not fail the edit
+            logger.warning("graph sync after severity change failed", exc_info=True)
+        return finding
 
     @staticmethod
     def board_counts(project: Project) -> dict:
@@ -272,6 +281,7 @@ class FindingStore:
             "evidence": f.evidence,
             "evidence_path": f.evidence_path,
             "remediation": f.remediation,
+            "severity_original": str((f.metadata or {}).get("severity_original") or ""),
         }
 
     @staticmethod
@@ -287,6 +297,44 @@ class FindingStore:
             .first()
         )
         return int(last or 0) + 1
+
+
+_FINDING_QUEUE_SCHEMA_PATH = (
+    Path(__file__).resolve().parent / "schemas" / "finding_queue.schema.json"
+)
+_FINDING_QUEUE_SCHEMA: dict[str, Any] | None = None
+
+
+def _finding_queue_schema() -> dict[str, Any] | None:
+    global _FINDING_QUEUE_SCHEMA
+    if _FINDING_QUEUE_SCHEMA is not None:
+        return _FINDING_QUEUE_SCHEMA
+    try:
+        _FINDING_QUEUE_SCHEMA = json.loads(
+            _FINDING_QUEUE_SCHEMA_PATH.read_text(encoding="utf-8")
+        )
+    except OSError:
+        _FINDING_QUEUE_SCHEMA = {}
+    return _FINDING_QUEUE_SCHEMA or None
+
+
+def _queue_row_valid(raw: dict[str, Any]) -> bool:
+    """Validate Finding NDJSON against the shared JSON Schema (when available)."""
+    if not str(raw.get("title") or "").strip():
+        return False
+    try:
+        import jsonschema
+    except ImportError:
+        return True
+    schema = _finding_queue_schema()
+    if not schema:
+        return True
+    try:
+        jsonschema.validate(raw, schema)
+        return True
+    except Exception as exc:
+        logger.debug("findings_queue row rejected: %s", exc)
+        return False
 
 
 class FindingQueueIngestor:
@@ -322,9 +370,9 @@ class FindingQueueIngestor:
                 raw = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(raw, dict) and self._store.record(
-                project, raw, job=job, objective=objective
-            ):
+            if not isinstance(raw, dict) or not _queue_row_valid(raw):
+                continue
+            if self._store.record(project, raw, job=job, objective=objective):
                 n += 1
 
         archive = path.with_suffix(path.suffix + self.archive_suffix)

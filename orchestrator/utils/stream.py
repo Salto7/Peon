@@ -39,11 +39,12 @@ class StreamEmitter(SharedServiceBase):
         except OSError:
             pass
 
-    def emit_stdout(self, text: str) -> None:
-        self._emit("stdout", text)
+    def emit_stdout(self, text: str, **metadata) -> None:
+        self._emit("stdout", text, **metadata)
 
-    def emit_stderr(self, text: str) -> None:
-        self._emit("stderr", text, file=sys.stderr)
+    def emit_stderr(self, text: str, **metadata) -> None:
+        """``exit_code=0`` marks tool chatter (banners, traces), not a failure."""
+        self._emit("stderr", text, file=sys.stderr, **metadata)
 
     def emit_log(self, text: str) -> None:
         if not text:
@@ -51,10 +52,10 @@ class StreamEmitter(SharedServiceBase):
         self.stream("log", text)
         print(text, flush=True)
 
-    def _emit(self, kind: str, text: str, *, file=None) -> None:
+    def _emit(self, kind: str, text: str, *, file=None, **metadata) -> None:
         if not text:
             return
-        self.stream(kind, text.rstrip("\n"))
+        self.stream(kind, text.rstrip("\n"), **metadata)
         print(
             text,
             end="" if text.endswith("\n") else "\n",

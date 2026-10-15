@@ -49,6 +49,40 @@ _STOP = frozenset(
         "openrouter.ai",
     }
 )
+# Planner / objective metadata — never engagement subjects (``Phase: recon`` etc.).
+_NON_SUBJECT_TYPES = frozenset(
+    {
+        "phase",
+        "description",
+        "project",
+        "title",
+        "acceptance",
+        "acceptance_criteria",
+        "role",
+        "role_id",
+        "skill",
+        "skill_ids",
+        "objective",
+        "approach",
+        "goal",
+        "depends_on",
+        "mitre",
+        "commands",
+        "status",
+        "seq",
+    }
+)
+# Typed aliases that normalize to a bare asset name (``asset:Brand``).
+_ASSET_NAME_TYPES = frozenset(
+    {"asset", "organization", "organisation", "company", "org", "vendor", "name"}
+)
+# One name token: letter start, then letters/digits/simple punct (no spaces).
+_ASSET_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.&'-]{0,63}$")
+# Quoted subject inside prose: company 'Brand' / "Org Name".
+_QUOTED_ASSET_RE = re.compile(
+    r"""['\"“”‘’`]\s*([A-Za-z][A-Za-z0-9 .&'-]{1,60})\s*['\"“”‘’`]"""
+)
+_SENTENCE_PUNCT_RE = re.compile(r"[.?!:;]")
 
 def sanitize_label(raw: str | None, *, default: str = "", max_len: int = 32) -> str:
     """Lowercase slug: ``[a-z][a-z0-9_]{0,max_len-1}``. Empty → default."""
@@ -144,6 +178,46 @@ def url_host(raw: str) -> str:
         return (urlparse(raw).hostname or "").strip()
     except Exception:
         return ""
+
+
+# Public OSINT / identity lookup hosts — research APIs, not engagement targets.
+_PASSIVE_REFERENCE_HOSTS = frozenset(
+    {
+        "login.microsoftonline.com",
+        "rdap.org",
+        "www.rdap.org",
+        "sec.gov",
+        "www.sec.gov",
+        "data.sec.gov",
+        "efts.sec.gov",
+        "urlscan.io",
+        "www.urlscan.io",
+        "search.dnslytics.com",
+        "api.dnslytics.net",
+        "idefixtools.com",
+        "www.idefixtools.com",
+        "func-idefix-tenantlookup.azurewebsites.net",
+    }
+)
+
+
+def hostname_of(value: str) -> str:
+    """Hostname from a URL or bare host string."""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    host = url_host(raw if "://" in raw else f"https://{raw}")
+    return (host or "").lower().rstrip(".")
+
+
+def is_passive_reference_host(host: str) -> bool:
+    """True for well-known passive OSINT / Entra / RDAP reference hosts."""
+    h = (host or "").strip().lower().rstrip(".")
+    if not h:
+        return False
+    if h in _PASSIVE_REFERENCE_HOSTS:
+        return True
+    return any(h.endswith("." + ref) for ref in _PASSIVE_REFERENCE_HOSTS)
 
 
 @dataclass(frozen=True)
@@ -286,6 +360,70 @@ def canonical_asset_key(typ: str, value: str) -> str:
     return f"{family}:{clean}"[:400]
 
 
+def is_subject_type(typ: str) -> bool:
+    """False for planner/objective metadata labels that must not authorize scope."""
+    return sanitize_label(typ) not in _NON_SUBJECT_TYPES
+
+
+def _asset_tokens(value: str) -> list[str] | None:
+    """Split a candidate asset name into 1–3 structural tokens, or None."""
+    cleaned = _clean_value(value)
+    if not cleaned:
+        return None
+    if detect_shape(cleaned):
+        return None
+    if "@" in cleaned or "/" in cleaned or "://" in cleaned or "," in cleaned:
+        return None
+    if _SENTENCE_PUNCT_RE.search(cleaned):
+        return None
+    words = [w for w in cleaned.split() if w]
+    if not words or len(words) > 3:
+        return None
+    if not all(_ASSET_TOKEN_RE.fullmatch(w) for w in words):
+        return None
+    return words
+
+
+def _is_proper_name_tokens(words: list[str]) -> bool:
+    """True when tokens look like a proper name (Title Case or ALL CAPS).
+
+    Structural only — no word lists. Rejects lowercase prose crumbs
+    (``find all brands``, ``qwqkodqwdk``) without an allow/deny vocabulary.
+    """
+    if not words:
+        return False
+    if len(words) == 1:
+        token = words[0]
+        # Single token: Title Case (Brand) or ALL CAPS (ORG), not all-lower.
+        if token.isupper() and token.isalpha() and len(token) >= 2:
+            return True
+        return token[0].isupper() and not token.islower()
+    # Multi-word: every token starts uppercase (Org Name, Multi-Word Brand).
+    return all(w[0].isupper() for w in words)
+
+
+def as_asset_name(value: str, *, explicit: bool = False) -> dict[str, str] | None:
+    """Accept a bare asset name as an authorized subject.
+
+    Shape contract (not a vocabulary):
+    - 1–3 tokens matching ``_ASSET_TOKEN_RE``
+    - no sentence punctuation / URLs / standards shapes
+    - auto-deduce requires a proper-name shape
+    - ``explicit=True`` (operator ``asset:…``) also allows a single lowercase
+      token (``asset:brand``); multi-word still needs proper-name shape
+    """
+    words = _asset_tokens(value)
+    if not words:
+        return None
+    if explicit:
+        if len(words) == 1 or _is_proper_name_tokens(words):
+            return {"type": "asset", "value": " ".join(words)}
+        return None
+    if not _is_proper_name_tokens(words):
+        return None
+    return {"type": "asset", "value": " ".join(words)}
+
+
 def coerce_target(raw: Any) -> dict[str, str] | None:
     """Normalize one target to ``{type, value, notes?}``. Trusts producer type."""
     if raw is None:
@@ -298,6 +436,10 @@ def coerce_target(raw: Any) -> dict[str, str] | None:
             str(raw.get("type") or raw.get("asset_type") or ""),
             default="",
         )
+        if typ and not is_subject_type(typ):
+            return None
+        if typ in _ASSET_NAME_TYPES:
+            return as_asset_name(value, explicit=True)
         accepted = accept_asset(value, typ)
         if accepted is None:
             # Dict producers always keep the row (authorization by value).
@@ -316,13 +458,21 @@ def coerce_target(raw: Any) -> dict[str, str] | None:
         return None
     split = split_typed_line(text)
     if split is not None:
-        return accept_asset(split[1], split[0]) or {
-            "type": split[0],
-            "value": split[1][:1024],
+        typ, value = split
+        if not is_subject_type(typ):
+            return None
+        if typ in _ASSET_NAME_TYPES:
+            return as_asset_name(value, explicit=True)
+        return accept_asset(value, typ) or {
+            "type": typ,
+            "value": value[:1024],
         }
     accepted = accept_asset(text)
     if accepted:
         return accepted
+    named = as_asset_name(text)
+    if named:
+        return named
     # Bare string with no standards shape — keep as other (seed/brief text).
     cleaned = _clean_value(text)
     if not cleaned:
@@ -356,23 +506,47 @@ def format_targets(raw: Iterable[Any] | None) -> list[str]:
 
 
 def extract_targets(*texts: str) -> list[dict[str, str]]:
-    """Standards shapes + ``type:value`` lines only (no hostname/filename scrape)."""
+    """Standards shapes + subject ``type:value`` + quoted/proper names.
+
+    Free-text briefs are not scraped for vocabulary: only typed lines, quoted
+    spans, whole-line proper names, and IP/URL/email shapes. Open prose goes
+    through ``SubjectCanonicalizer.suggest_assets`` at the RoE provisioner.
+    """
     blob = "\n".join(t for t in texts if t)
     found: list[dict[str, str]] = []
 
-    for line in blob.replace(",", "\n").splitlines():
+    for line in blob.splitlines():
         item = line.strip()
         if not item:
             continue
         split = split_typed_line(item)
         if split is not None:
-            accepted = accept_asset(split[1], split[0])
+            typ, value = split
+            if not is_subject_type(typ):
+                continue
+            if typ in _ASSET_NAME_TYPES:
+                named = as_asset_name(value, explicit=True)
+                if named:
+                    found.append(named)
+                continue
+            accepted = accept_asset(value, typ)
             if accepted:
                 found.append(accepted)
             else:
-                cleaned = _clean_value(split[1])
+                cleaned = _clean_value(value)
                 if cleaned:
-                    found.append({"type": split[0], "value": cleaned})
+                    found.append({"type": typ, "value": cleaned})
+            continue
+        # Whole-line asset name (RoE textarea / brief that is just "Brand").
+        named = as_asset_name(item)
+        if named:
+            found.append(named)
+
+    # Quoted names inside prose are operator-explicit (company 'brand' / "Org").
+    for match in _QUOTED_ASSET_RE.finditer(blob):
+        named = as_asset_name(match.group(1), explicit=True)
+        if named:
+            found.append(named)
 
     def _add(typ: str, value: str) -> None:
         accepted = accept_asset(value, typ)

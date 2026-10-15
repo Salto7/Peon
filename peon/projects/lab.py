@@ -1,8 +1,6 @@
-"""Lab hub — Toolsmith, imported skills, and Dream."""
+"""Lab hub — Toolsmith and Dream."""
 
 from __future__ import annotations
-
-import json
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
@@ -46,13 +44,13 @@ def lab_dream_page(request: HttpRequest) -> HttpResponse:
             "dream": status,
             "dream_interval_s": interval_s,
             "catalog": catalog,
-            "catalog_json": json.dumps(
+            "catalog_data": (
                 {
                     "datasets": catalog.get("datasets") or [],
                     "sessions": catalog.get("sessions") or [],
                 }
             ),
-            "dream_urls_json": json.dumps(urls),
+            "dream_urls": urls,
         },
     )
 
@@ -124,7 +122,6 @@ urlpatterns = [
     path("", lab_index, name="lab"),
     path("toolsmith/", include("peon.projects.learn")),
     path("roles/", include("peon.projects.lab_roles")),
-    path("skills/", include("peon.projects.lab_skills")),
     path("dream/", lab_dream_page, name="lab_dream"),
     path("dream/api/status/", lab_dream_status, name="lab_dream_status"),
     path("dream/api/catalog/", lab_dream_catalog, name="lab_dream_catalog"),

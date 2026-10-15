@@ -1,66 +1,68 @@
 {% extends "base.html" %}
-{% block title %}{{ job.title }} — live — Peon{% endblock %}
+{% load ui %}
+{% block title %}{{ job.title }} · Peon{% endblock %}
 {% block content %}
-<p class="meta">
-  <a href="{% url 'project_detail' project.pk %}">← {{ project.title }}</a>
-</p>
-<h1>{{ job.title }}</h1>
-<p class="lead">Live job status (polls every 1s). Steer with pause / resume / kill.</p>
-<p class="meta">
-  status <code id="status" class="status">{{ job.status }}</code>
-  · id <code>{{ job.id }}</code>
-  · roles <code>{{ job.role_ids|join:", "|default:"—" }}</code>
-</p>
+<c-page-header title="{{ job.title }}" description="Live job output. Updates every second until the job finishes.">
+  <c-slot name="crumbs">
+    <a class="hover:text-foreground" href="{% url 'project_detail' project.pk %}">{{ project.title }}</a>
+    {% icon "chevron-right" "size-3" %}<span>Job</span>
+  </c-slot>
+  <form method="post" action="{% url 'job_steer' project.pk job.pk %}" class="flex gap-2">
+    {% csrf_token %}
+    <c-button variant="outline" type="submit" name="action" value="pause">{% icon "pause" %} Pause</c-button>
+    <c-button variant="outline" type="submit" name="action" value="resume">{% icon "play" %} Resume</c-button>
+    <c-button variant="destructive" type="submit" name="action" value="kill"
+              data-confirm="The agent process is stopped immediately." data-confirm-title="Kill this job?" data-confirm-label="Kill">{% icon "x" %} Kill</c-button>
+  </form>
+</c-page-header>
 
-<div class="bar">
-  <form method="post" action="{% url 'job_steer' project.pk job.pk %}" style="display:inline">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="pause">
-    <button type="submit" class="secondary">Pause</button>
-  </form>
-  <form method="post" action="{% url 'job_steer' project.pk job.pk %}" style="display:inline">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="resume">
-    <button type="submit" class="secondary">Resume</button>
-  </form>
-  <form method="post" action="{% url 'job_steer' project.pk job.pk %}" style="display:inline">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="kill">
-    <button type="submit">Kill</button>
-  </form>
+<dl class="mb-6 grid gap-3 sm:grid-cols-3">
+  <div class="rounded-xl border bg-card p-4">
+    <dt class="text-xs text-muted-foreground">Status</dt>
+    <dd class="mt-1.5"><c-status value="{{ job.status }}" label="{{ job.get_status_display }}" id="job-status" /></dd>
+  </div>
+  <div class="rounded-xl border bg-card p-4">
+    <dt class="text-xs text-muted-foreground">Roles</dt>
+    <dd class="mt-1.5 truncate text-sm">{{ job.role_ids|join:", "|default:"—" }}</dd>
+  </div>
+  <div class="rounded-xl border bg-card p-4">
+    <dt class="text-xs text-muted-foreground">Job ID</dt>
+    <dd class="mt-1.5 truncate font-mono text-xs">{{ job.id }}</dd>
+  </div>
+</dl>
+
+<div id="job-error" class="mb-6" {% if not job.error %}hidden{% endif %}>
+  <c-alert tone="danger" title="Job error"><span id="job-error-text" class="whitespace-pre-wrap">{{ job.error }}</span></c-alert>
 </div>
 
-<h2>Output</h2>
-<p id="error" class="msg err" {% if not job.error %}hidden{% endif %}>{{ job.error }}</p>
-<pre id="result">{{ job.result|default:"(waiting for worker…)" }}</pre>
+<c-card title="Output" flush>
+  <pre id="job-result" class="max-h-[70vh] overflow-auto p-5 font-mono text-xs leading-relaxed whitespace-pre-wrap">{{ job.result|default:"Waiting for the worker…" }}</pre>
+</c-card>
 
+{% url 'job_live_json' project.pk job.pk as live_url %}
+{{ live_url|json_script:"job-live-url" }}
 <script>
 (function () {
-  const url = "{% url 'job_live_json' project.pk job.pk %}";
-  const statusEl = document.getElementById("status");
-  const resultEl = document.getElementById("result");
-  const errorEl = document.getElementById("error");
-  let timer = null;
+  const url = JSON.parse(document.getElementById("job-live-url").textContent);
+  const status = document.querySelector("#job-status");
+  const result = document.getElementById("job-result");
+  const errorBox = document.getElementById("job-error");
+  const errorText = document.getElementById("job-error-text");
   async function tick() {
+    if (document.hidden) return setTimeout(tick, 1000);
     try {
-      const res = await fetch(url, { headers: { "Accept": "application/json" } });
-      if (!res.ok) return;
-      const data = await res.json();
-      statusEl.textContent = data.status;
-      resultEl.textContent = data.result || "(waiting for worker…)";
-      if (data.error) {
-        errorEl.hidden = false;
-        errorEl.textContent = data.error;
-      } else {
-        errorEl.hidden = true;
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      if (res.ok) {
+        const data = await res.json();
+        if (status) status.lastChild.textContent = data.status_label || data.status;
+        result.textContent = data.result || "Waiting for the worker…";
+        errorBox.hidden = !data.error;
+        errorText.textContent = data.error || "";
+        if (data.terminal) return;
       }
-      if (data.terminal && timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-    } catch (_) { /* ignore transient poll errors */ }
+    } catch (_) { /* transient; retry */ }
+    setTimeout(tick, 1000);
   }
-  timer = setInterval(tick, 1000);
   tick();
 })();
 </script>

@@ -198,8 +198,8 @@ def fire_schedule(schedule: ProjectSchedule) -> Job | None:
                         "schedule_kind": schedule.kind,
                     },
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("write_job_checkpoint failed: %s", exc, exc_info=True)
         arm_schedule(schedule, after=now)
         return job
 

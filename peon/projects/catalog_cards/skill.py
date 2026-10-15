@@ -14,12 +14,21 @@ class SkillCards(CatalogCardsBase):
     SECTION = "skills"
     LABEL = "Skills"
     RELOAD_URL_NAME = "catalog_api_skills_reload"
-    RELOAD_TITLE = "Rescan skills/ via SkillRegistry.reload_skills"
+    RELOAD_TITLE = "Rescan skills/ into the platform catalog"
 
     @classmethod
     def reload(cls) -> dict[str, list]:
-        SkillRegistry.shared().reload_skills()
-        return {"skills": [s.id for s in SkillRegistry.shared().list_skills()]}
+        from peon.projects.platform_catalog import PlatformCatalog
+
+        diff = PlatformCatalog.shared().sync_skills_from_disk()
+        SkillRegistry.shared().invalidate()
+        return diff
+
+    @classmethod
+    def reload_button(cls) -> dict[str, str]:
+        btn = super().reload_button()
+        btn["label"] = "Refresh skills"
+        return btn
 
     @classmethod
     def card(

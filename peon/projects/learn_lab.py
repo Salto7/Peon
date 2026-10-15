@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ from django.conf import settings
 import yaml
 
 from agent_runtime.api import RuntimeSpec, Session, SessionInfo
-from agent_runtime.docker.cli import DockerCli
+from agent_runtime.docker.engine import DockerEngine
 from agent_runtime.registry import RuntimeRegistry
 from orchestrator.tools.catalog import ToolCatalog
 from orchestrator.tools.catalog.catalog import CatalogProvisioner
@@ -56,7 +57,7 @@ class LearnLab(SharedServiceBase):
     def _compose_network(self) -> str:
         """Attach lab to the Peon Compose network so it can reach litellm."""
 
-        return LlmProxy.shared()._compose_network(DockerCli.shared())
+        return LlmProxy.shared()._compose_network(DockerEngine.shared())
 
     def _spec(
         self,

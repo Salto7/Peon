@@ -37,6 +37,34 @@ _COMMAND_TYPES = (
 )
 
 
+def _idle_fields(job: Job) -> dict:
+    """A2A state plus, for parked agents, what they are waiting on."""
+    from peon.projects.a2a import a2a_state
+    from peon.projects.models import JobStatus, ObjectiveStatus
+
+    out = {
+        "a2a_state": a2a_state(job.status),
+        "idle_reason": "",
+        "idle_note": "",
+        "waiting_on": [],
+    }
+    if job.status != JobStatus.IDLE:
+        return out
+    out["idle_reason"] = job.idle_reason or ""
+    out["idle_note"] = job.idle_note or ""
+    obj = getattr(job, "objective", None)
+    if obj is not None and job.idle_reason == "dependencies":
+        try:
+            out["waiting_on"] = [
+                d.seq
+                for d in obj.depends_on.all()
+                if d.status != ObjectiveStatus.COMPLETED
+            ]
+        except Exception:  # noqa: BLE001 — display-only
+            out["waiting_on"] = []
+    return out
+
+
 class ProjectOpsPayload:
     """Build JSON for the war-room ops console (agents, roles, progress)."""
 
@@ -52,6 +80,7 @@ class ProjectOpsPayload:
             "error": job.error,
             "updated_at": job.updated_at.isoformat() if job.updated_at else "",
             "terminal": job.status in TERMINAL_JOB_STATUSES,
+            **_idle_fields(job),
         }
 
     @classmethod
@@ -120,6 +149,7 @@ class ProjectOpsPayload:
             "is_spawn": is_spawn,
             "lane": lane,
             "terminal": job.status in TERMINAL_JOB_STATUSES,
+            **_idle_fields(job),
             "updated_at": job.updated_at.isoformat() if job.updated_at else "",
             "error": job.error or "",
             "role": role,
@@ -154,17 +184,6 @@ class ProjectOpsPayload:
         if spec.is_technical or spec.kind == "technical":
             return "expert"
         return "agent"
-
-    @classmethod
-    def agent_payload(cls, 
-        job: Job, *, subagents: list[Job] | None = None, role: str = "ROOT"
-    ) -> dict:
-        kids = subagents if subagents is not None else list(job.children.all())
-        payload = cls._agent_base(job, role=role)
-        payload["subagents"] = [
-            {**cls._agent_base(c, role="SUB"), "subagents": []} for c in kids
-        ]
-        return payload
 
     @classmethod
     def objective_payload(cls, obj: Objective) -> dict:

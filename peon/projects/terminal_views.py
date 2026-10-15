@@ -5,11 +5,11 @@ from __future__ import annotations
 import base64
 import logging
 
-from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.http import require_GET, require_http_methods
 
-from peon.projects.http_helpers import parse_json_body, with_project_context
+from peon.projects.http_helpers import parse_json_body, sse_response, with_project_context
 from peon.projects.models import Project
 from peon.projects.streaming import audit_project_stream
 from peon.projects.terminal_session import get_registry
@@ -29,6 +29,13 @@ def _audit(project: Project, text: str, *, tag: str = "shell") -> None:
     )
 
 
+def _int(body: dict, request: HttpRequest, key: str, default: int) -> int:
+    try:
+        return int(body.get(key) or request.POST.get(key) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 def _session_or_404(project: Project, session_id: str):
     sess = get_registry().get(session_id, str(project.id))
     if sess is None:
@@ -41,8 +48,8 @@ def _session_or_404(project: Project, session_id: str):
 def project_terminal_open(request: HttpRequest, pk) -> JsonResponse:
     project = get_object_or_404(Project, pk=pk)
     body = parse_json_body(request)
-    cols = int(body.get("cols") or request.POST.get("cols") or 80)
-    rows = int(body.get("rows") or request.POST.get("rows") or 24)
+    cols = _int(body, request, "cols", 80)
+    rows = _int(body, request, "rows", 24)
     try:
         sess, reused = get_registry().open(str(project.id), cols=cols, rows=rows)
     except RuntimeError as exc:
@@ -74,24 +81,25 @@ def project_terminal_stream(request: HttpRequest, pk, session_id: str) -> HttpRe
     reg = get_registry()
 
     def event_stream():
-        yield "event: ready\ndata: ok\n\n"
+        # ``retry`` keeps EventSource from hammering a restarted dev server.
+        yield "retry: 2000\nevent: ready\ndata: ok\n\n"
         try:
             for chunk in reg.iter_output(sess):
-                if not chunk:
+                if chunk is None:
+                    # Comment line: keeps proxies from timing out the idle stream
+                    # and lets the server notice a client that went away.
+                    yield ": ping\n\n"
                     continue
                 payload = base64.b64encode(chunk).decode("ascii")
                 yield f"event: out\ndata: {payload}\n\n"
-        except GeneratorExit:
-            return
         except Exception as exc:
-            yield f"event: error\ndata: {str(exc)[:200]}\n\n"
-        finally:
-            yield "event: exit\ndata: closed\n\n"
+            logger.warning("terminal stream %s failed: %s", sess.id[:8], exc)
+            yield f"event: fail\ndata: {str(exc)[:200]}\n\n"
+            return
+        # Only reached when the shell actually ended (or was closed).
+        yield "event: exit\ndata: closed\n\n"
 
-    resp = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
-    resp["Cache-Control"] = "no-cache"
-    resp["X-Accel-Buffering"] = "no"
-    return resp
+    return sse_response(request, event_stream())
 
 
 @require_http_methods(["POST"])
@@ -129,9 +137,7 @@ def project_terminal_resize(request: HttpRequest, pk, session_id: str) -> JsonRe
     if err is not None:
         return err
     body = parse_json_body(request)
-    cols = int(body.get("cols") or request.POST.get("cols") or sess.cols)
-    rows = int(body.get("rows") or request.POST.get("rows") or sess.rows)
-    sess.resize(cols, rows)
+    sess.resize(_int(body, request, "cols", sess.cols), _int(body, request, "rows", sess.rows))
     return JsonResponse({"ok": True, "cols": sess.cols, "rows": sess.rows})
 
 

@@ -7,7 +7,6 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-import yaml
 
 from agent_runtime.api import Session
 
@@ -69,22 +68,3 @@ def _under_catalog(catalog_dir: Path, path: Path) -> bool:
         return True
     except (OSError, ValueError):
         return False
-
-
-# Fence body must start with install: or verify: (same contract as Learn tool drafts).
-INSTALL_FENCE_RE = re.compile(
-    r"```(?:ya?ml)?\s*\n((?:install:|verify:)[\s\S]*?)```", re.IGNORECASE
-)
-
-
-def install_steps_from_fences(text: str) -> list[dict[str, Any]]:
-    """Return ``install`` step dicts from fenced YAML blocks (empty if none)."""
-    steps: list[dict[str, Any]] = []
-    for match in INSTALL_FENCE_RE.finditer(text or ""):
-        try:
-            raw = yaml.safe_load(match.group(1))
-        except yaml.YAMLError:
-            continue
-        if isinstance(raw, dict) and isinstance(raw.get("install"), list):
-            steps.extend(s for s in raw["install"] if isinstance(s, dict))
-    return steps

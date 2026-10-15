@@ -32,7 +32,6 @@ from orchestrator.skills.manifest import (
     PEON_META_FIELDS,
     ParseProfile,
 )
-from orchestrator.skills.registry_scan import discover_skill_candidates
 from orchestrator.utils.service import SharedServiceBase
 
 # Product fields that belong under ``metadata:`` (Peon layout), not top-level.
@@ -303,12 +302,3 @@ class SkillLinter(SharedServiceBase):
             )
         return issues
 
-    @staticmethod
-    def lint_root(root: Path) -> list[dict[str, Any]]:
-        """Lint every skill directory under ``root`` that has a manifest."""
-        if not root.is_dir():
-            return []
-        return [
-            SkillLinter.lint_dir(candidate.root)
-            for candidate in discover_skill_candidates(root, source="lint")
-        ]

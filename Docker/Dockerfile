@@ -1,4 +1,16 @@
 # Peon web (Phase 0+) — Django + orchestrator library
+
+# Frontend bundles (frontend/ -> peon/static/dist). Tailwind scans the Django
+# templates and legacy page scripts, so those are copied in too.
+FROM node:22-slim AS frontend
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+COPY peon/templates/ /build/peon/templates/
+COPY peon/static/js/ /build/peon/static/js/
+RUN npm run build
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -32,9 +44,9 @@ COPY manage.py .
 COPY peon/ peon/
 COPY orchestrator/ orchestrator/
 COPY agent_runtime/ agent_runtime/
-COPY helpers/ helpers/
 COPY skills/ skills/
 COPY tools/ tools/
+COPY --from=frontend /build/peon/static/dist/ peon/static/dist/
 COPY Docker/entrypoint-web.sh /entrypoint-web.sh
 COPY Docker/entrypoint-worker.sh /entrypoint-worker.sh
 
@@ -44,4 +56,6 @@ RUN chmod +x /app/manage.py /entrypoint-web.sh /entrypoint-worker.sh \
 EXPOSE 8000
 
 ENTRYPOINT ["/entrypoint-web.sh"]
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+# One worker: terminal PTY sessions live in this process (terminal_session.py).
+# ASGI so long-lived SSE streams (live console, terminal) don't pin WSGI threads.
+CMD ["uvicorn", "peon.config.asgi:application", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*", "--lifespan", "off", "--timeout-graceful-shutdown", "10"]

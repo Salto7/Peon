@@ -1,208 +1,208 @@
 {% extends "base.html" %}
-{% load static %}
-{% block title %}Catalog — Peon{% endblock %}
+{% load ui %}
+{% block title %}Catalog · Peon{% endblock %}
 {% block content %}
-<header class="page-header">
-  <div>
-    <h1>Catalog</h1>
-    <p class="lead">Roles, skills, and MCP servers are stored in the platform catalog. Tools stay on disk.</p>
-  </div>
-</header>
+<c-page-header title="Catalog" description="Roles, skills and MCP servers live in the platform catalog. Tools stay on disk." />
 
-<nav class="catalog-jump bar" aria-label="Catalog sections">
-  <a class="btn secondary" href="#roles">Roles ({{ roles|length }})</a>
-  <a class="btn secondary" href="#skills">Skills ({{ skills|length }})</a>
-  <a class="btn secondary" href="#mcp">MCP ({{ mcps|length }})</a>
-  <a class="btn secondary" href="#tools">Tools ({{ tools|length }})</a>
+<nav aria-label="Catalog sections" class="sticky top-0 z-[var(--z-sticky)] -mx-4 mb-6 flex gap-1 overflow-x-auto border-b bg-background/90 px-4 py-2 backdrop-blur md:-mx-8 md:px-8">
+  <a href="#roles" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Roles <c-badge>{{ roles|length }}</c-badge></a>
+  <a href="#skills" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Skills <c-badge>{{ skills|length }}</c-badge></a>
+  <a href="#mcp" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">MCP servers <c-badge>{{ mcps|length }}</c-badge></a>
+  <a href="#tools" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Tools <c-badge>{{ tools|length }}</c-badge></a>
 </nav>
 
-<section class="catalog-section" id="roles" aria-labelledby="roles-heading">
-  <div class="catalog-section-head">
-    <h2 id="roles-heading">Roles</h2>
-    <div class="bar catalog-section-actions">
-      <span class="meta">{{ roles|length }} role{{ roles|length|pluralize }}</span>
-      {% if show_all %}
-        <a class="btn secondary" href="{% url 'catalog' %}#roles">Jobable only</a>
-      {% else %}
-        <a class="btn secondary" href="{% url 'catalog' %}?all=1#roles">Show all</a>
-      {% endif %}
-      <button type="button" class="btn" data-catalog-edit="role" data-id="__new__">New role</button>
-      <a class="btn secondary" href="{% url 'lab_roles' %}">Lab</a>
-    </div>
-  </div>
-
-  <div class="catalog-grid catalog-card-grid">
-    {% for s in roles %}
-    <article class="catalog-card{% if not s.compatible %} catalog-card-incompatible{% endif %}" id="role-{{ s.name }}">
-      <div class="catalog-card-name">
-        <a href="{% url 'catalog_api_role' s.name %}"><code>{{ s.name }}</code></a>
-        <button type="button" class="btn secondary catalog-card-edit" data-catalog-edit="role" data-id="{{ s.name }}">Edit</button>
-        {% if s.deletable %}
-        <button type="button" class="btn danger catalog-card-edit" data-catalog-delete="role" data-id="{{ s.name }}">Delete</button>
+<div class="space-y-12">
+  {# ── Roles ── #}
+  <section id="roles" aria-labelledby="roles-heading" class="scroll-mt-16 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 id="roles-heading" class="text-base font-semibold">Roles</h2>
+        <p class="text-xs text-muted-foreground">{% if show_all %}All roles, including ones agents can't be assigned.{% else %}Roles that can be assigned to jobs.{% endif %}</p>
+      </div>
+      <div class="flex items-center gap-2">
+        {% if show_all %}
+        <c-button variant="ghost" size="sm" href="{% url 'catalog' %}#roles">Assignable only</c-button>
+        {% else %}
+        <c-button variant="ghost" size="sm" href="{% url 'catalog' %}?all=1#roles">Show all</c-button>
         {% endif %}
+        <c-button size="sm" data-catalog-edit="role" data-id="__new__">{% icon "plus" %} New role</c-button>
       </div>
-      {% if s.kind %}<div class="catalog-card-cat">{{ s.kind }}</div>{% elif s.category %}<div class="catalog-card-cat">{{ s.category }}</div>{% endif %}
-      <div class="catalog-card-desc">{{ s.description|default:"(no description)" }}</div>
-      {% if s.skills %}
-      <div class="meta catalog-card-aliases">skills: {{ s.skills|join:", " }}</div>
-      {% endif %}
-      {% if s.aliases %}
-      <div class="meta catalog-card-aliases">aliases: {{ s.aliases|join:", " }}</div>
-      {% endif %}
-      {% if s.tags %}
-      <div class="catalog-card-tags" aria-label="Tags">
-        {% for t in s.tags %}<span class="chip">{{ t }}</span>{% endfor %}
-      </div>
-      {% endif %}
-    </article>
-    {% empty %}
-    <p class="meta">No roles in the platform catalog. Add one in <a href="{% url 'lab_roles' %}">Lab → Roles</a>.</p>
-    {% endfor %}
-  </div>
-</section>
-
-<section class="catalog-section" id="skills" aria-labelledby="skills-heading">
-  <div class="catalog-section-head">
-    <h2 id="skills-heading">Skills</h2>
-    <div class="bar catalog-section-actions">
-      <span class="meta">{{ skills|length }} skill{{ skills|length|pluralize }}</span>
-      <button type="button" class="btn" data-catalog-edit="skill" data-id="__new__">New skill</button>
     </div>
-  </div>
-
-  <div class="catalog-grid catalog-card-grid">
-    {% for s in skills %}
-    <article class="catalog-card" id="skill-{{ s.id }}">
-      <div class="catalog-card-name">
-        <a href="{% url 'catalog_api_skill' s.id %}"><code>{{ s.id }}</code></a>
-        <button type="button" class="btn secondary catalog-card-edit" data-catalog-edit="skill" data-id="{{ s.id }}">Edit</button>
-        <button type="button" class="btn danger catalog-card-edit" data-catalog-delete="skill" data-id="{{ s.id }}">Delete</button>
-      </div>
-      <div class="catalog-card-desc">{{ s.description|default:"(no description)" }}</div>
-      {% if s.tools %}
-      <div class="meta">tools: {% for t in s.tools %}<code>{{ t }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}</div>
-      {% endif %}
-      {% if s.tags %}
-      <div class="catalog-card-tags" aria-label="Tags">
-        {% for t in s.tags %}<span class="chip">{{ t }}</span>{% endfor %}
-      </div>
-      {% endif %}
-    </article>
-    {% empty %}
-    <p class="meta">No skills in the platform catalog.</p>
-    {% endfor %}
-  </div>
-</section>
-
-<section class="catalog-section" id="mcp" aria-labelledby="mcp-heading">
-  <div class="catalog-section-head">
-    <h2 id="mcp-heading">MCP servers</h2>
-    <div class="bar catalog-section-actions">
-      <span class="meta">{{ mcps|length }} server{{ mcps|length|pluralize }}</span>
-      <button type="button" class="btn" data-catalog-edit="mcp" data-id="__new__">New MCP server</button>
+    {% if roles %}
+    <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {% for s in roles %}
+      <article id="role-{{ s.name }}" class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm {% if not s.compatible %}opacity-60{% endif %}">
+        <div class="flex items-start gap-2">
+          <div class="min-w-0 flex-1">
+            <h3 class="truncate font-mono text-[13px] font-medium">{{ s.name }}</h3>
+            {% if s.kind or s.category %}<p class="mt-0.5 text-xs text-muted-foreground">{% firstof s.kind s.category %}</p>{% endif %}
+          </div>
+          <c-menu label="Actions for {{ s.name }}">
+            <button type="button" class="ui-menu-item" data-catalog-edit="role" data-id="{{ s.name }}">{% icon "wrench" %} Edit</button>
+            <a class="ui-menu-item" href="{% url 'catalog_api_role' s.name %}" target="_blank" rel="noopener">{% icon "external-link" %} View JSON</a>
+            {% if s.deletable %}
+            <div class="ui-menu-sep"></div>
+            <button type="button" class="ui-menu-item" data-variant="destructive" data-catalog-delete="role" data-id="{{ s.name }}">{% icon "trash-2" %} Delete</button>
+            {% endif %}
+          </c-menu>
+        </div>
+        <p class="line-clamp-3 text-sm text-muted-foreground">{{ s.description|default:"No description." }}</p>
+        {% if s.skills or s.aliases or s.tags %}
+        <div class="mt-auto flex flex-wrap gap-1.5">
+          {% for sk in s.skills %}<c-badge tone="primary">{{ sk }}</c-badge>{% endfor %}
+          {% for t in s.tags %}<c-badge>{{ t }}</c-badge>{% endfor %}
+        </div>
+        {% if s.aliases %}<p class="text-xs text-muted-foreground">Aliases: {{ s.aliases|join:", " }}</p>{% endif %}
+        {% endif %}
+      </article>
+      {% endfor %}
     </div>
-  </div>
-  <div class="catalog-grid catalog-card-grid">
-    {% for s in mcps %}
-    <article class="catalog-card" id="mcp-{{ s.id }}">
-      <div class="catalog-card-name">
-        <code>{{ s.id }}</code>
-        <button type="button" class="btn secondary catalog-card-edit" data-catalog-edit="mcp" data-id="{{ s.id }}">Edit</button>
-        <button type="button" class="btn danger catalog-card-edit" data-catalog-delete="mcp" data-id="{{ s.id }}">Delete</button>
-      </div>
-      <div class="catalog-card-desc">{{ s.description|default:"(no description)" }}</div>
-      <div class="meta">command <code>{{ s.command }}</code>{% if not s.enabled %} · disabled{% endif %}</div>
-      {% if s.env %}<div class="meta">env: {{ s.env|join:", " }}</div>{% endif %}
-      {% if s.bindings %}
-      <div class="meta">roles: {% for b in s.bindings %}{{ b.role_id }}{% if not forloop.last %}, {% endif %}{% endfor %}</div>
-      {% endif %}
-    </article>
-    {% empty %}
-    <p class="meta">No MCP servers in the platform catalog.</p>
-    {% endfor %}
-  </div>
-</section>
+    {% else %}
+    <c-card><c-empty icon="bot" title="No roles yet">Create one here or in Lab → Roles.</c-empty></c-card>
+    {% endif %}
+  </section>
 
-<section class="catalog-section" id="tools" aria-labelledby="tools-heading">
-  <div class="catalog-section-head">
-    <h2 id="tools-heading">Tools</h2>
-    <div class="bar catalog-section-actions">
-      <span class="meta">{{ tools|length }} tool{{ tools|length|pluralize }}</span>
-      <form method="post" action="{{ tools_reload.url }}" class="catalog-reload-form">
+  {# ── Skills ── #}
+  <section id="skills" aria-labelledby="skills-heading" class="scroll-mt-16 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 id="skills-heading" class="text-base font-semibold">Skills</h2>
+        <p class="text-xs text-muted-foreground">Packs live under <code class="ui-code">skills/</code>; Peon vs Claude type is inferred.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <form method="post" action="{{ skills_reload.url }}">
+          {% csrf_token %}
+          <c-button variant="ghost" size="sm" type="submit" title="{{ skills_reload.title }}">{% icon "refresh-cw" %} {{ skills_reload.label }}</c-button>
+        </form>
+        <c-button size="sm" data-catalog-edit="skill" data-id="__new__">{% icon "plus" %} New skill</c-button>
+      </div>
+    </div>
+    <c-card title="Install a skill" description="From a git repository, the openskills marketplace, or a local folder.">
+      {% url 'catalog_api_skills_install' as skill_install_url %}{% url 'catalog_api_skills_upload' as skill_upload_url %}
+      {% island "install-form" element_id="skill-install" kind="skill" installUrl=skill_install_url uploadUrl=skill_upload_url sources=skill_sources submitLabel="Install skill" %}
+    </c-card>
+    {% if skills %}
+    <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {% for s in skills %}
+      <article id="skill-{{ s.id }}" class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
+        <div class="flex items-start gap-2">
+          <h3 class="min-w-0 flex-1 truncate font-mono text-[13px] font-medium">{{ s.id }}</h3>
+          <c-menu label="Actions for {{ s.id }}">
+            <button type="button" class="ui-menu-item" data-catalog-edit="skill" data-id="{{ s.id }}">{% icon "wrench" %} Edit</button>
+            <a class="ui-menu-item" href="{% url 'catalog_api_skill' s.id %}" target="_blank" rel="noopener">{% icon "external-link" %} View JSON</a>
+            <div class="ui-menu-sep"></div>
+            <button type="button" class="ui-menu-item" data-variant="destructive" data-catalog-delete="skill" data-id="{{ s.id }}">{% icon "trash-2" %} Delete</button>
+          </c-menu>
+        </div>
+        <p class="line-clamp-3 text-sm text-muted-foreground">{{ s.description|default:"No description." }}</p>
+        {% if s.tools or s.tags %}
+        <div class="mt-auto flex flex-wrap gap-1.5">
+          {% for t in s.tools %}<c-badge tone="info">{{ t }}</c-badge>{% endfor %}
+          {% for t in s.tags %}<c-badge>{{ t }}</c-badge>{% endfor %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <c-card><c-empty icon="sparkles" title="No skills installed">Install one above or create a new skill.</c-empty></c-card>
+    {% endif %}
+  </section>
+
+  {# ── MCP ── #}
+  <section id="mcp" aria-labelledby="mcp-heading" class="scroll-mt-16 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 id="mcp-heading" class="text-base font-semibold">MCP servers</h2>
+        <p class="text-xs text-muted-foreground">Set env values per project under Project settings.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <form method="post" action="{{ mcp_reload.url }}">
+          {% csrf_token %}
+          <c-button variant="ghost" size="sm" type="submit" title="{{ mcp_reload.title }}">{% icon "refresh-cw" %} {{ mcp_reload.label }}</c-button>
+        </form>
+        <c-button size="sm" data-catalog-edit="mcp" data-id="__new__">{% icon "plus" %} New server</c-button>
+      </div>
+    </div>
+    <c-card title="Install an MCP server" description="npx creates `npx -y <pkg>`. Disk packs land under mcps/; prefer a non-hidden mcp.json.">
+      {% url 'catalog_api_mcp_install' as mcp_install_url %}{% url 'catalog_api_mcp_upload' as mcp_upload_url %}
+      {% island "install-form" element_id="mcp-install" kind="mcp" installUrl=mcp_install_url uploadUrl=mcp_upload_url sources=mcp_sources submitLabel="Install server" %}
+    </c-card>
+    {% if mcps %}
+    <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {% for s in mcps %}
+      <article id="mcp-{{ s.id }}" class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
+        <div class="flex items-start gap-2">
+          <div class="min-w-0 flex-1">
+            <h3 class="truncate font-mono text-[13px] font-medium">{{ s.id }}</h3>
+            <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">{{ s.command }}</p>
+          </div>
+          {% if not s.enabled %}<c-badge>Disabled</c-badge>{% endif %}
+          <c-menu label="Actions for {{ s.id }}">
+            <button type="button" class="ui-menu-item" data-catalog-edit="mcp" data-id="{{ s.id }}">{% icon "wrench" %} Edit</button>
+            <div class="ui-menu-sep"></div>
+            <button type="button" class="ui-menu-item" data-variant="destructive" data-catalog-delete="mcp" data-id="{{ s.id }}">{% icon "trash-2" %} Delete</button>
+          </c-menu>
+        </div>
+        <p class="line-clamp-3 text-sm text-muted-foreground">{{ s.description|default:"No description." }}</p>
+        {% if s.env or s.bindings %}
+        <div class="mt-auto flex flex-wrap gap-1.5">
+          {% for b in s.bindings %}<c-badge tone="primary">{{ b.role_id }}</c-badge>{% endfor %}
+          {% for e in s.env %}<c-badge><span class="font-mono">{{ e }}</span></c-badge>{% endfor %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <c-card><c-empty icon="server" title="No MCP servers">Install one above or define a new server.</c-empty></c-card>
+    {% endif %}
+  </section>
+
+  {# ── Tools ── #}
+  <section id="tools" aria-labelledby="tools-heading" class="scroll-mt-16 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 id="tools-heading" class="text-base font-semibold">Tools</h2>
+        <p class="text-xs text-muted-foreground">YAML definitions read from the tools catalog directory.</p>
+      </div>
+      <form method="post" action="{{ tools_reload.url }}">
         {% csrf_token %}
-        <button type="submit" class="btn secondary" title="{{ tools_reload.title }}">{{ tools_reload.label }}</button>
+        <c-button variant="ghost" size="sm" type="submit" title="{{ tools_reload.title }}">{% icon "refresh-cw" %} {{ tools_reload.label }}</c-button>
       </form>
     </div>
-  </div>
-
-  <div class="catalog-grid catalog-card-grid">
-    {% for t in tools %}
-    <article class="catalog-card catalog-card-tool" id="tool-{{ t.id }}">
-      <div class="catalog-card-name">
-        <a href="{% url 'catalog_api_tool' t.id %}"><code>{{ t.id }}</code></a>
-        <button type="button" class="btn secondary catalog-card-edit" data-catalog-edit="tool" data-id="{{ t.id }}">Edit</button>
-      </div>
-      {% if t.tier %}<div class="catalog-card-cat">tier {{ t.tier }}</div>{% endif %}
-      {% if t.binary %}<div class="meta catalog-card-life">binary <code>{{ t.binary }}</code></div>{% endif %}
-      <div class="catalog-card-desc">{{ t.description|default:"(no description)" }}</div>
-      {% if t.tags %}
-      <div class="catalog-card-tags" aria-label="Tags">
-        {% for tag in t.tags %}<span class="chip">{{ tag }}</span>{% endfor %}
-      </div>
-      {% endif %}
-      {% if t.roles %}
-      <div class="meta catalog-card-aliases">roles: {{ t.roles|join:", " }}</div>
-      {% endif %}
-    </article>
-    {% empty %}
-    <p class="meta">No tools found under TOOLS_CATALOG_DIR.</p>
-    {% endfor %}
-  </div>
-</section>
-
-<dialog id="catalog-edit-dialog" class="catalog-edit-dialog peon-overlay" aria-labelledby="catalog-edit-title">
-  <form id="catalog-edit-form" class="peon-dialog-card catalog-edit-card" method="dialog">
-    {% csrf_token %}
-    <h3 id="catalog-edit-title">Edit catalog item</h3>
-    <p class="meta" id="catalog-edit-path"></p>
-    <p class="msg warning" id="catalog-edit-error" hidden></p>
-    <label class="meta" for="catalog-edit-main" id="catalog-edit-main-label">Source</label>
-    <textarea id="catalog-edit-main" class="learn-edit catalog-edit-ta" rows="18" spellcheck="false"></textarea>
-    <div id="catalog-edit-script-wrap" hidden>
-      <label class="meta" for="catalog-edit-script">Install script (<code>{id}.sh</code>, optional)</label>
-      <textarea id="catalog-edit-script" class="learn-edit catalog-edit-ta" rows="8" spellcheck="false"></textarea>
+    {% if tools %}
+    <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {% for t in tools %}
+      <article id="tool-{{ t.id }}" class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
+        <div class="flex items-start gap-2">
+          <div class="min-w-0 flex-1">
+            <h3 class="truncate font-mono text-[13px] font-medium">{{ t.id }}</h3>
+            {% if t.binary %}<p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">{{ t.binary }}</p>{% endif %}
+          </div>
+          {% if t.tier %}<c-badge>Tier {{ t.tier }}</c-badge>{% endif %}
+          <c-menu label="Actions for {{ t.id }}">
+            <button type="button" class="ui-menu-item" data-catalog-edit="tool" data-id="{{ t.id }}">{% icon "wrench" %} Edit</button>
+            <a class="ui-menu-item" href="{% url 'catalog_api_tool' t.id %}" target="_blank" rel="noopener">{% icon "external-link" %} View JSON</a>
+          </c-menu>
+        </div>
+        <p class="line-clamp-3 text-sm text-muted-foreground">{{ t.description|default:"No description." }}</p>
+        {% if t.roles or t.tags %}
+        <div class="mt-auto flex flex-wrap gap-1.5">
+          {% for r in t.roles %}<c-badge tone="primary">{{ r }}</c-badge>{% endfor %}
+          {% for tag in t.tags %}<c-badge>{{ tag }}</c-badge>{% endfor %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
     </div>
-    <div id="catalog-edit-role" hidden>
-      <label class="meta" for="catalog-edit-role-id">Role id</label>
-      <input id="catalog-edit-role-id" type="text" pattern="[a-z0-9]+(-[a-z0-9]+)*">
-      <label class="meta" for="catalog-edit-role-kind">Kind</label>
-      <select id="catalog-edit-role-kind">
-        <option value="technical">technical</option>
-        <option value="engagement-pm">engagement-pm</option>
-        <option value="analyzer">analyzer</option>
-      </select>
-      <label class="meta" for="catalog-edit-role-aliases">Aliases (comma-separated)</label>
-      <input id="catalog-edit-role-aliases" type="text">
-      <label class="meta" for="catalog-edit-role-goal">Goal</label>
-      <textarea id="catalog-edit-role-goal" class="learn-edit catalog-edit-ta" rows="4"></textarea>
-      <label class="meta" for="catalog-edit-role-backstory">Backstory</label>
-      <textarea id="catalog-edit-role-backstory" class="learn-edit catalog-edit-ta" rows="6"></textarea>
-    </div>
-    <label class="meta" for="catalog-edit-bindings" id="catalog-edit-bindings-label" hidden>Role mappings (one per line: role_id score lead)</label>
-    <textarea id="catalog-edit-bindings" class="learn-edit catalog-edit-ta" rows="5" spellcheck="false" hidden></textarea>
-    <div id="catalog-edit-files" class="catalog-edit-files" hidden></div>
-    <div class="bar catalog-edit-actions">
-      <button type="button" class="btn" id="catalog-edit-save">Save</button>
-      <button type="button" class="btn secondary" id="catalog-edit-cancel">Cancel</button>
-    </div>
-  </form>
-</dialog>
+    {% else %}
+    <c-card><c-empty icon="wrench" title="No tools found">Add YAML definitions under the tools catalog directory.</c-empty></c-card>
+    {% endif %}
+  </section>
 
-<p class="meta catalog-foot">
-  Resolve roles for a Job: <code>GET/POST /catalog/api/resolve/?brief=…</code>
-</p>
-<script>
-  window.PEON_CATALOG_EDIT = { urls: {{ catalog_edit_urls_json|safe }} };
-</script>
-<script src="{% static 'js/catalog-edit.js' %}?v=20261013b"></script>
+  <p class="text-xs text-muted-foreground">Resolve roles for a job brief: <code class="ui-code">GET/POST /catalog/api/resolve/?brief=…</code></p>
+</div>
+
+{% island "catalog-editor" urls=catalog_edit_urls roleKinds=role_kinds roleNames=role_names %}
 {% endblock %}

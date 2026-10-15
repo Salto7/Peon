@@ -2,6 +2,10 @@
 
 Operator HITL only — not used by agents. Keys (Ctrl+C, Ctrl+R, …) are handled
 by the browser xterm when the panel is focused; this module just shuttles bytes.
+
+The registry is process-local: it only works while the web tier runs as a
+single process (``runserver`` / one gunicorn worker with threads). A dev
+autoreload drops every session; the browser reopens on ``404``.
 """
 
 from __future__ import annotations
@@ -11,20 +15,16 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Iterator
-
-from django.conf import settings
 
 from agent_runtime.api import TerminalHandle
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.workspaces import project_workspace_dir
 
 logger = logging.getLogger(__name__)
 
 _MAX_SESSIONS_PER_PROJECT = 4
 _IDLE_SECONDS = 30 * 60
-_MAX_INPUT = 64 * 1024
+_HEARTBEAT_SECONDS = 15.0
 
 
 @dataclass
@@ -35,34 +35,27 @@ class TerminalSession:
     handle: TerminalHandle
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
-    cols: int = 80
-    rows: int = 24
+    viewers: int = 0
+
+    @property
+    def cols(self) -> int:
+        return int(getattr(self.handle, "cols", 80))
+
+    @property
+    def rows(self) -> int:
+        return int(getattr(self.handle, "rows", 24))
 
     def touch(self) -> None:
         self.last_active = time.time()
-        touch = getattr(self.handle, "touch", None)
-        if touch:
-            touch()
 
     def write(self, data: bytes) -> None:
-        if not data:
-            return
-        if len(data) > _MAX_INPUT:
-            data = data[:_MAX_INPUT]
-        self.touch()
-        self.handle.write(data)
+        if data:
+            self.touch()
+            self.handle.write(data)
 
     def resize(self, cols: int, rows: int) -> None:
-        self.cols = max(1, min(int(cols or 80), 500))
-        self.rows = max(1, min(int(rows or 24), 500))
         self.touch()
-        self.handle.resize(self.cols, self.rows)
-
-    def read_ready(self, timeout: float = 0.25) -> bytes:
-        chunk = self.handle.read(timeout)
-        if chunk:
-            self.touch()
-        return chunk or b""
+        self.handle.resize(cols, rows)
 
     def alive(self) -> bool:
         return self.handle.alive()
@@ -72,175 +65,122 @@ class TerminalSession:
 
 
 class TerminalRegistry:
-    """Process-local session map (web process; requires docker.sock).
-
-    ``open`` reuses one live PTY per project (refresh reconnects). Explicit
-    Disconnect closes it; a later open starts a fresh shell. tmux attach is
-    planned later — not used yet.
-    """
+    """Process-local session map. One live PTY per project; refresh reattaches."""
 
     def __init__(self) -> None:
         self._sessions: dict[str, TerminalSession] = {}
-        self._by_project: dict[str, set[str]] = {}
         self._lock = threading.Lock()
+        self._open_locks: dict[str, threading.Lock] = {}
+
+    def _project_lock(self, project_id: str) -> threading.Lock:
+        with self._lock:
+            return self._open_locks.setdefault(project_id, threading.Lock())
 
     def open(
-        self,
-        project_id: str,
-        *,
-        cols: int = 80,
-        rows: int = 24,
+        self, project_id: str, *, cols: int = 80, rows: int = 24
     ) -> tuple[TerminalSession, bool]:
-        """Return ``(session, reused)``. Reuses a live session when present."""
-        pid = str(project_id).strip()
+        """Return ``(session, reused)``. Reuses the newest live session."""
+        pid = str(project_id or "").strip()
         if not pid:
             raise ValueError("project_id required")
-
         self.reap()
-        keep, extras = self._pick_live(pid)
-        for sid, proj in extras:
-            self.close(sid, proj)
-
-        if keep is not None and keep.alive():
-            keep.resize(cols, rows)
-            keep.touch()
-            logger.info("terminal session %s reused → %s", keep.id[:8], keep.container)
-            return keep, True
-
-        with self._lock:
-            existing = self._by_project.get(pid) or set()
-            if len(existing) >= _MAX_SESSIONS_PER_PROJECT:
+        # Serialize opens per project so a double click does not spawn two shells.
+        with self._project_lock(pid):
+            live = self._live_for(pid)
+            if live:
+                keep, *extras = live
+                for extra in extras:
+                    self.close(extra.id, pid)
+                keep.resize(cols, rows)
+                logger.info("terminal session %s reused → %s", keep.id[:8], keep.container)
+                return keep, True
+            if len(self._for_project(pid)) >= _MAX_SESSIONS_PER_PROJECT:
                 raise RuntimeError(
                     f"At most {_MAX_SESSIONS_PER_PROJECT} terminals per project"
                 )
+            info = ProjectSandbox.provision(pid, bind=False, warm_mcp=False)
+            runtime, spec = ProjectSandbox.spec_for(pid)
+            handle = runtime.open_terminal(spec, cols=int(cols or 80), rows=int(rows or 24))
+            session = TerminalSession(
+                id=uuid.uuid4().hex, project_id=pid, container=info.name, handle=handle
+            )
+            with self._lock:
+                self._sessions[session.id] = session
+            logger.info("terminal session %s → %s", session.id[:8], info.name)
+            return session, False
 
-        info = self._ensure_container(pid)
-        runtime = ProjectSandbox.shared().runtime_for(pid)
-        skills_raw = str(getattr(settings, "SKILLS_DIR", "") or "").strip()
-        helpers_raw = str(getattr(settings, "HELPERS_DIR", "") or "").strip()
-        tools_raw = str(getattr(settings, "TOOLS_CATALOG_DIR", "") or "").strip()
-        skills = Path(skills_raw) if skills_raw else None
-        helpers = Path(helpers_raw) if helpers_raw else None
-        tools = Path(tools_raw) if tools_raw else None
-        handle = runtime.open_terminal(
-            ProjectSandbox.shared()._project_spec(
-                pid,
-                runtime_id=runtime.id,
-                workspace=project_workspace_dir(pid, create=True),
-                skills_dir=skills if skills and skills.is_dir() else None,
-                helpers_dir=helpers if helpers and helpers.is_dir() else None,
-                tools_dir=tools if tools and tools.is_dir() else None,
-            ),
-            cols=int(cols or 80),
-            rows=int(rows or 24),
-        )
-        sid = uuid.uuid4().hex
-        session = TerminalSession(
-            id=sid,
-            project_id=pid,
-            container=info.name,
-            handle=handle,
-            cols=int(cols or 80),
-            rows=int(rows or 24),
-        )
+    def _for_project(self, project_id: str) -> list[TerminalSession]:
         with self._lock:
-            self._sessions[sid] = session
-            self._by_project.setdefault(pid, set()).add(sid)
-        logger.info("terminal session %s → %s", sid[:8], info.name)
-        return session, False
+            return [s for s in self._sessions.values() if s.project_id == project_id]
 
-    def _pick_live(
-        self, project_id: str
-    ) -> tuple[TerminalSession | None, list[tuple[str, str]]]:
-        """Newest live session for project + ids of extras to close."""
-        with self._lock:
-            ids = list(self._by_project.get(project_id) or ())
-            live: list[TerminalSession] = []
-            for sid in ids:
-                sess = self._sessions.get(sid)
-                if sess is not None and sess.alive():
-                    live.append(sess)
-            if not live:
-                return None, []
-            live.sort(key=lambda s: s.last_active, reverse=True)
-            keep = live[0]
-            extras = [(s.id, s.project_id) for s in live[1:]]
-            return keep, extras
+    def _live_for(self, project_id: str) -> list[TerminalSession]:
+        live = [s for s in self._for_project(project_id) if s.alive()]
+        live.sort(key=lambda s: s.last_active, reverse=True)
+        return live
 
     def get(self, session_id: str, project_id: str) -> TerminalSession | None:
-        sid = str(session_id or "").strip()
-        pid = str(project_id or "").strip()
         with self._lock:
-            sess = self._sessions.get(sid)
-            if sess is None or sess.project_id != pid:
-                return None
-            return sess
+            sess = self._sessions.get(str(session_id or "").strip())
+        if sess is None or sess.project_id != str(project_id or "").strip():
+            return None
+        return sess
 
     def close(self, session_id: str, project_id: str) -> bool:
         sess = self.get(session_id, project_id)
         if sess is None:
             return False
-        sess.close()
         with self._lock:
             self._sessions.pop(sess.id, None)
-            ids = self._by_project.get(sess.project_id)
-            if ids is not None:
-                ids.discard(sess.id)
-                if not ids:
-                    self._by_project.pop(sess.project_id, None)
+        sess.close()
         return True
+
+    def close_project(self, project_id: str) -> int:
+        """Close every PTY session for a project (e.g. before workspace delete)."""
+        pid = str(project_id or "").strip()
+        return sum(1 for s in self._for_project(pid) if self.close(s.id, pid))
 
     def reap(self) -> None:
         now = time.time()
-        dead: list[tuple[str, str]] = []
         with self._lock:
-            for sid, sess in list(self._sessions.items()):
-                if (not sess.alive()) or (now - sess.last_active > _IDLE_SECONDS):
-                    dead.append((sid, sess.project_id))
-        for sid, pid in dead:
-            self.close(sid, pid)
+            dead = [
+                s
+                for s in self._sessions.values()
+                if not s.alive()
+                or (s.viewers == 0 and now - s.last_active > _IDLE_SECONDS)
+            ]
+        for sess in dead:
+            self.close(sess.id, sess.project_id)
 
-    def iter_output(self, session: TerminalSession) -> Iterator[bytes]:
-        """Yield PTY bytes until the session dies or is closed."""
-        while True:
-            if self.get(session.id, session.project_id) is None:
-                break
-            if not session.alive():
-                # Drain remaining.
-                while True:
-                    chunk = session.read_ready(0.05)
-                    if not chunk:
-                        break
-                    yield chunk
-                break
-            chunk = session.read_ready(0.35)
-            if chunk:
-                yield chunk
+    def iter_output(self, session: TerminalSession) -> Iterator[bytes | None]:
+        """Yield PTY bytes (replaying scrollback first) until the session ends.
 
-    def _ensure_container(self, project_id: str):
-        ws = project_workspace_dir(project_id, create=True)
-        skills_raw = str(getattr(settings, "SKILLS_DIR", "") or "").strip()
-        helpers_raw = str(getattr(settings, "HELPERS_DIR", "") or "").strip()
-        tools_raw = str(getattr(settings, "TOOLS_CATALOG_DIR", "") or "").strip()
-        skills = Path(skills_raw) if skills_raw else None
-        helpers = Path(helpers_raw) if helpers_raw else None
-        tools = Path(tools_raw) if tools_raw else None
-        return ProjectSandbox.provision(
-            project_id,
-            workspace=ws,
-            skills_dir=skills if skills and skills.is_dir() else None,
-            helpers_dir=helpers if helpers and helpers.is_dir() else None,
-            tools_dir=tools if tools and tools.is_dir() else None,
-        )
+        Yields ``None`` as a heartbeat so the caller can write a keep-alive
+        and notice a client that went away.
+        """
+        handle = session.handle
+        cursor = handle.cursor()
+        last_beat = time.monotonic()
+        with self._lock:
+            session.viewers += 1
+        try:
+            while self.get(session.id, session.project_id) is not None:
+                data, cursor, eof = handle.read_since(cursor, 0.5)
+                if data:
+                    yield data
+                    last_beat = time.monotonic()
+                elif eof:
+                    break
+                elif time.monotonic() - last_beat >= _HEARTBEAT_SECONDS:
+                    yield None
+                    last_beat = time.monotonic()
+        finally:
+            with self._lock:
+                session.viewers = max(0, session.viewers - 1)
+                session.touch()
 
 
-_REGISTRY: TerminalRegistry | None = None
-_REGISTRY_LOCK = threading.Lock()
+_REGISTRY = TerminalRegistry()
 
 
 def get_registry() -> TerminalRegistry:
-    global _REGISTRY
-    with _REGISTRY_LOCK:
-        if _REGISTRY is None:
-            _REGISTRY = TerminalRegistry()
-        return _REGISTRY
+    return _REGISTRY

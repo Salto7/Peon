@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
 import time
@@ -131,11 +130,12 @@ class ShellRunner(SharedServiceBase):
 
     def _run_shell(self, cmd: str, *, timeout: float | None = None) -> int:
         res = Session.current().exec(cmd, timeout=timeout, shell=True)
+        code = res.code if res.code is not None else 1
         if res.stdout:
-            self._stream.emit_stdout(res.stdout)
+            self._stream.emit_stdout(res.stdout, exit_code=code)
         if res.stderr:
-            self._stream.emit_stderr(res.stderr)
-        return res.code if res.code is not None else 1
+            self._stream.emit_stderr(res.stderr, exit_code=code)
+        return code
 
     def run_shell(self, command: str, *, package: str = "") -> int:
         cmd = (command or "").strip()

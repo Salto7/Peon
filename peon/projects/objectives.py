@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from django.db import transaction
 from django.utils import timezone as dj_tz
 
@@ -22,6 +24,8 @@ from orchestrator.utils.commands import normalize_objective_commands
 from orchestrator.utils.paths import format_roe_block
 from peon.projects.tasks import enqueue_job
 from peon.projects.workspaces import project_workspace_dir, safe_workspace_key
+
+logger = logging.getLogger(__name__)
 
 
 def _project_alias(project_id) -> str:
@@ -78,6 +82,41 @@ class ObjectiveScheduler:
     def all_jobs_terminal(self, objective: Objective) -> bool:
         """True only when every Job tagged to the objective has finished."""
         return not self.active_jobs(objective).exists()
+
+    def settle(self, objective: Objective) -> Objective:
+        """Advance status after all tagged jobs finish. Leaves BLOCKED alone.
+
+        Outcome follows the newest terminal job so a replan attempt is not
+        poisoned by older CANCELLED/FAILED rows still tagged to the objective.
+        """
+        if objective.status in {
+            ObjectiveStatus.COMPLETED,
+            ObjectiveStatus.CANCELLED,
+            ObjectiveStatus.BLOCKED,
+        }:
+            return objective
+        if not self.all_jobs_terminal(objective):
+            return objective
+        latest = objective.jobs.order_by("-created_at", "-completed_at").first()
+        if latest is None:
+            return self.mark(objective, ObjectiveStatus.COMPLETED)
+        if latest.status == JobStatus.FAILED:
+            return self.mark(
+                objective,
+                ObjectiveStatus.BLOCKED,
+                reason=(latest.error or "One or more objective jobs failed")[:2000],
+            )
+        if latest.status == JobStatus.CANCELLED:
+            return self.mark(objective, ObjectiveStatus.CANCELLED)
+        return self.mark(objective, ObjectiveStatus.COMPLETED)
+
+    def resume_blocked(
+        self, objective: Objective, *, reason: str = "Operator replied"
+    ) -> Objective:
+        """Move BLOCKED → IN_PROGRESS so follow-up work can run."""
+        if objective.status != ObjectiveStatus.BLOCKED:
+            return objective
+        return self.mark(objective, ObjectiveStatus.IN_PROGRESS, reason=reason)
 
     def ready_objectives(self, project: Project | None) -> list[Objective]:
         """All objectives that may receive a Job now.
@@ -148,16 +187,11 @@ class ObjectiveScheduler:
                 setattr(supplied, field, getattr(objective, field))
             return supplied
 
-        # Completion is a control-plane fact, not an agent assertion. Keeping
-        # this guard here protects every caller, including bridge tools.
         if (
             status == ObjectiveStatus.COMPLETED
             and not self.all_jobs_terminal(objective)
         ):
             return _sync_supplied("status", "blocked_reason", "completed_at")
-        # A late delivery must never reopen an objective whose dependents may
-        # already have been released. Explicit replans/schedules reset to
-        # PENDING before creating fresh work.
         if (
             status == ObjectiveStatus.IN_PROGRESS
             and objective.status == ObjectiveStatus.COMPLETED
@@ -221,10 +255,7 @@ class ObjectiveScheduler:
         return [primary] if primary else []
 
     def build_brief(self, project: Project, objective: Objective) -> str:
-        from peon.projects.workspaces import (
-            format_workspace_artifact_index,
-            project_workspace_dir,
-        )
+        from peon.projects.workspaces import brief_artifact_section
 
         parts = [
             f"Execute project objective OBJ-{objective.seq}: {objective.title}",
@@ -244,34 +275,11 @@ class ObjectiveScheduler:
                 "objective is the analyzer."
             ),
         ]
-        # Artifact index only for reporting roles (keeps specialist briefs small).
-        role_id = (objective.role_id or "").strip()
-        wants_index = False
-        if role_id:
-            try:
-                from orchestrator.crew.roles.registry import RoleRegistry
-
-                role = RoleRegistry.shared().get(role_id)
-                caps = set(role.capabilities or ()) if role else set()
-                wants_index = bool(role and ("report" in caps or role_id == "analyzer"))
-            except Exception:
-                wants_index = role_id == "analyzer"
-        if wants_index:
-            try:
-                ws = project_workspace_dir(str(project.id), create=False)
-                index = format_workspace_artifact_index(ws)
-            except Exception:
-                index = ""
-            if index:
-                parts.extend(
-                    [
-                        "",
-                        "## Workspace artifacts from prior agents",
-                        "Read these with list_workspace_artifacts / "
-                        "read_workspace_artifact (do not re-scan to rediscover them):",
-                        index,
-                    ]
-                )
+        section = brief_artifact_section(
+            str(project.id), role_id=objective.role_id or ""
+        )
+        if section:
+            parts.extend(["", section])
         return "\n".join(parts)
 
     def has_active_job(self, objective: Objective) -> bool:
@@ -287,8 +295,14 @@ class ObjectiveScheduler:
         workspace_id: str | None = None,
         enqueue: bool = True,
         role_ids: list[str] | None = None,
+        standby: bool = False,
     ) -> Job | None:
-        """Spawn one Solo Job for an objective. No-op if deps unmet or job already active."""
+        """Spawn one Solo Job for an objective. No-op if deps unmet or job already active.
+
+        ``standby=True`` also creates the agent when its dependencies are not
+        met: the job is born ``IDLE`` (never queued) and is woken by an A2A
+        handoff when the dependencies complete.
+        """
         from peon.projects.db import using_project
 
         del workspace_id  # project identity is the only workspace identity
@@ -307,9 +321,12 @@ class ObjectiveScheduler:
                     plan_text=plan_text,
                     plan_path=plan_path,
                     role_ids=role_ids,
+                    standby=standby,
                 )
         if job is None:
             return None
+        if job.status == JobStatus.IDLE:
+            enqueue = False  # standby agents are woken, not queued
         # Dramatiq + Cognee only after commit, and only for newly created Jobs.
         # Re-enqueueing an already-active Job was a regression from moving
         # enqueue outside the atomic.
@@ -332,8 +349,8 @@ class ObjectiveScheduler:
                         project_id=str(project.id),
                         source="objective_run",
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("upsert_role_skills failed: %s", exc, exc_info=True)
         return job
 
     def _create_run_locked(
@@ -345,6 +362,7 @@ class ObjectiveScheduler:
         plan_text: str = "",
         plan_path: str = "",
         role_ids: list[str] | None = None,
+        standby: bool = False,
     ) -> tuple[Job | None, bool]:
         """Return ``(job, created)``. ``created`` is False for existing active jobs."""
         if objective.status in {
@@ -352,7 +370,8 @@ class ObjectiveScheduler:
             ObjectiveStatus.CANCELLED,
         }:
             return None, False
-        if not self.dependencies_met(objective):
+        deps_met = self.dependencies_met(objective)
+        if not deps_met and not standby:
             return None, False
         if self.has_active_job(objective):
             existing = objective.jobs.exclude(
@@ -391,7 +410,8 @@ class ObjectiveScheduler:
             title=f"OBJ-{objective.seq}: {objective.title}"[:255],
             description=self.build_brief(project, objective),
             lifecycle=JobLifecycle.LONG,
-            status=JobStatus.PENDING,
+            status=JobStatus.PENDING if deps_met else JobStatus.IDLE,
+            idle_reason="" if deps_met else "dependencies",
             role_ids=solo,
             skill_ids=skills,
             project=project,
@@ -400,74 +420,24 @@ class ObjectiveScheduler:
             plan_path=plan_path or "plans/latest.md",
             workspace_id=ws,
         )
+        if not deps_met:
+            # Standby agent: the objective stays PENDING until it is woken.
+            return job, True
         if objective.status != ObjectiveStatus.IN_PROGRESS:
             self._mark_locked(
                 objective, objective.pk, alias, ObjectiveStatus.IN_PROGRESS
             )
         return job, True
 
-    def enqueue_peer_jobs(
-        self,
-        project: Project,
-        objective: Objective,
-        peers: list[dict] | list[str],
-        *,
-        plan_text: str = "",
-        workspace_id: str | None = None,
-        parent: Job | None = None,
-    ) -> list[Job]:
-        """Enqueue specialist Jobs on the same objective (context-driven peers).
-
-        ``peers`` items are dicts ``{title, description, role_id}`` or bare
-        bare role id strings. Concurrent peers are allowed while other Jobs
-        on the objective are still running.
-        """
-        created: list[Job] = []
-        del workspace_id  # project identity is the only workspace identity
-        if objective.status == ObjectiveStatus.CANCELLED:
-            return created
-        ws = safe_workspace_key(str(project.id))
-        project_workspace_dir(ws)
-        primary = (self.roles_for(objective) or [""])[0]
-        base_brief = self.build_brief(project, objective)
-        for raw in peers:
-            if isinstance(raw, str):
-                role = raw.strip()
-                title = f"OBJ-{objective.seq}/{role}: {objective.title}"[:255]
-                description = base_brief
-            elif isinstance(raw, dict):
-                role = str(raw.get("role_id") or primary or "").strip()
-                title = str(raw.get("title") or role or objective.title).strip()[:255]
-                focus = str(raw.get("description") or "").strip()
-                description = (
-                    f"{base_brief}\n\n## Specialist focus\n{focus}" if focus else base_brief
-                )
-            else:
-                continue
-            if not role and not title:
-                continue
-            alias = _project_alias(project.id)
-            job = Job.objects.using(alias).create(
-                title=title or f"OBJ-{objective.seq}: {objective.title}"[:255],
-                description=description,
-                lifecycle=JobLifecycle.LONG,
-                status=JobStatus.PENDING,
-                role_ids=[role] if role else list(self.roles_for(objective)[:1]),
-                project=project,
-                objective=objective,
-                parent=parent,
-                plan_text=plan_text or "",
-                plan_path="plans/latest.md",
-                workspace_id=ws,
-            )
-            if objective.status == ObjectiveStatus.PENDING:
-                self.mark(objective, ObjectiveStatus.IN_PROGRESS)
-            enqueue_job(str(job.id))
-            created.append(job)
-        return created
-
     def enqueue_ready(self, project: Project | None) -> list[Job]:
-        """Create+enqueue Jobs for every currently ready objective."""
+        """Spawn every planned agent; start the ready ones, park the rest.
+
+        * Objectives whose dependencies are met get a running job (or have
+          their standby job woken with the dependency handoffs).
+        * Objectives still waiting on dependencies get an ``IDLE`` standby
+          agent now, so the whole crew exists from the moment the plan is set.
+        Returns the jobs that were queued or woken.
+        """
         if project is None:
             return []
         project.refresh_from_db()
@@ -480,14 +450,34 @@ class ObjectiveScheduler:
             project.status = ProjectStatus.ACTIVE
             project.completed_at = None
             project.save(update_fields=["status", "completed_at", "updated_at"])
+        from peon.projects import a2a
+
+        try:
+            a2a.sweep_orphan_standby(project)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("standby sweep failed: %s", exc, exc_info=True)
         plan_text = (
             project.jobs.order_by("-created_at")
             .values_list("plan_text", flat=True)
             .first()
             or ""
         )
-        created: list[Job] = []
-        for obj in self.ready_objectives(project):
+        started: list[Job] = []
+        alias = _project_alias(project.id)
+        ready = self.ready_objectives(project)
+        for obj in ready:
+            idle = (
+                Job.objects.using(alias)
+                .filter(objective=obj, status=JobStatus.IDLE, parent__isnull=True)
+                .order_by("created_at")
+                .first()
+            )
+            if idle is not None:
+                a2a.deliver_handoffs(obj)
+                if a2a.wake_job(idle, reason=f"OBJ-{obj.seq} dependencies completed"):
+                    self.mark(obj, ObjectiveStatus.IN_PROGRESS)
+                    started.append(idle)
+                continue
             job = self.create_run(
                 project,
                 obj,
@@ -495,8 +485,23 @@ class ObjectiveScheduler:
                 workspace_id=str(project.id),
             )
             if job is not None:
-                created.append(job)
-        return created
+                started.append(job)
+
+        # Everyone else gets a standby agent so the crew is visible and wired.
+        ready_ids = {o.pk for o in ready}
+        for obj in project.objectives.order_by("seq", "created_at"):
+            if obj.pk in ready_ids or obj.status != ObjectiveStatus.PENDING:
+                continue
+            if not (obj.role_id or "").strip() or self.has_active_job(obj):
+                continue
+            self.create_run(
+                project,
+                obj,
+                plan_text=plan_text,
+                workspace_id=str(project.id),
+                standby=True,
+            )
+        return started
 
     def enqueue_next(self, project: Project | None) -> Job | None:
         """Enqueue all ready objective Jobs; return the first created (compat)."""
@@ -609,6 +614,8 @@ class ObjectivePlanSync:
                 }:
                     # Replan must re-open matched terminal objectives (esp. analyzer
                     # bookend). Leaving them COMPLETED skipped the report rewrite.
+                    # Detach prior-attempt jobs so settle cannot re-cancel from them.
+                    Job.objects.using(alias).filter(objective=obj).update(objective=None)
                     obj.status = ObjectiveStatus.PENDING
                     obj.blocked_reason = ""
                     obj.completed_at = None

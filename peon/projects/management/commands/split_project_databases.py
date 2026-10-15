@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand
-from django.db import connections, transaction
+from django.db import transaction
 
 from peon.projects.db import (
     PROJECT_MODEL_NAMES,
@@ -54,7 +54,6 @@ class Command(BaseCommand):
             "AssetGraph",
             "OperatorPrompt",
             "ProjectSchedule",
-            "AgentMessage",
         ]
         counts: dict[str, int] = {}
         with using_project(pid):
@@ -99,7 +98,7 @@ class Command(BaseCommand):
                 src.delete()
         return counts
 
-    def _upsert(self, model, alias: str, row, *, skip_m2m: bool = False) -> None:
+    def _upsert(self, model, alias: str, row) -> None:
         fields = {}
         for field in model._meta.concrete_fields:
             if field.primary_key:

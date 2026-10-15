@@ -87,7 +87,9 @@ def configure_orchestrator() -> None:
                 Path(path).resolve()
                 for path in getattr(settings, "SKILLS_EXTRA_DIRS", ())
             ),
-            helpers_dir=Path(settings.HELPERS_DIR).resolve(),
+            mcps_dir=Path(
+                getattr(settings, "MCPS_DIR", None) or (Path(settings.BASE_DIR) / "mcps")
+            ).resolve(),
             tools_catalog_dir=Path(settings.TOOLS_CATALOG_DIR).resolve(),
             workspaces_dir=Path(settings.PROJECT_WORKSPACES_DIR).resolve(),
             platform_workspace_dir=Path(
@@ -172,6 +174,93 @@ def configure_broker() -> None:
     logger.info("dramatiq broker ready enabled=%s url=%s", enabled, url if enabled else "-")
 
 
+def _process_kind() -> str:
+    """``web`` | ``worker`` for long-running servers, else ``""``.
+
+    Boot side effects (catalog seed, LLM proxy container, scheduler chains,
+    CrewAI import) are skipped for one-off commands (``migrate``, ``shell``,
+    ``check``, scripts) and for the ``runserver`` autoreload *parent*, which
+    only watches files — otherwise every reload repeats them twice.
+    """
+    import os
+    import sys
+
+    argv = [a.lower() for a in sys.argv]
+    prog = os.path.basename(argv[0]) if argv else ""
+    command = argv[1] if len(argv) > 1 else ""
+    if prog == "dramatiq" or (prog == "manage.py" and command == "run_worker"):
+        return "worker"
+    if prog == "manage.py":
+        if command == "runserver" and (
+            os.environ.get("RUN_MAIN") == "true" or "--noreload" in argv
+        ):
+            return "web"
+        return ""
+    # gunicorn / uvicorn; not ``python -c`` or stdin scripts.
+    return "" if prog in {"", "-", "-c"} else "web"
+
+
+def _boot_services(kind: str) -> None:
+    """Runs on a thread once app loading finishes.
+
+    ``peon.projects.tasks`` calls ``django.setup()`` at import time (and is
+    still half-imported while the Dramatiq CLI loads it), so importing it from
+    ``ready()`` always failed — the scanners never started.
+    """
+    import time
+
+    from django.apps import apps
+
+    deadline = time.monotonic() + 60
+    while not apps.ready and time.monotonic() < deadline:
+        time.sleep(0.2)
+    time.sleep(1.0)  # let the worker finish importing its actor module
+    if str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai").strip().lower() == "crewai":
+        try:
+            import crewai  # noqa: F401 — pay the import cost before the first job
+        except Exception as exc:
+            logger.warning("crewai warm import skipped: %s", exc)
+    try:
+        from peon.projects.llm_proxy import LlmProxy
+        from peon.projects.runtime_settings import PeonSettings
+
+        if PeonSettings.get_bool("LLM_PROXY_ENABLED", True):
+            LlmProxy.shared().ensure()
+    except Exception as exc:
+        logger.warning("llm proxy kick skipped: %s", exc)
+    try:
+        from peon.projects.tasks import ensure_dream_scheduler, ensure_durable_scheduler
+
+        # The worker runs the actors: on its boot, replace whatever chain exists
+        # (it may be from older code); the web process only fills a gap.
+        force = kind == "worker"
+        logger.info(
+            "schedulers: durable=%s dream=%s",
+            ensure_durable_scheduler(force=force),
+            ensure_dream_scheduler(force=force),
+        )
+    except Exception as exc:
+        logger.warning("scheduler kick failed: %s", exc)
+
+
+
+def _watch_vite_manifest() -> None:
+    """Restart runserver when ``vite build --watch`` rewrites the manifest.
+
+    django-vite reads manifest.json once per process, so new asset hashes are
+    only picked up after a reload.
+    """
+    from django.utils.autoreload import autoreload_started
+
+    if not settings.DEBUG:
+        return
+    manifest = Path(settings.DJANGO_VITE["default"]["manifest_path"])
+
+    def watch(sender, **kwargs):
+        sender.extra_files.add(manifest)
+
+    autoreload_started.connect(watch, weak=False)
+
 class ProjectsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "peon.projects"
@@ -179,85 +268,24 @@ class ProjectsConfig(AppConfig):
     verbose_name = "Projects"
 
     def ready(self) -> None:
-        # Broker only — do not import tasks here (dramatiq worker imports tasks
-        # which may call django.setup(); nested populate() would fail).
+        import threading
+
         from peon.projects.db import configure_sqlite_concurrency
 
         configure_sqlite_concurrency()
+        _watch_vite_manifest()
         configure_orchestrator()
         configure_broker()
-        import sys
-
-        argv = " ".join(sys.argv).lower()
-        if not any(x in argv for x in ("migrate", "makemigrations", "test", "check")):
-            try:
-                from peon.projects.platform_catalog import PlatformCatalog
-
-                PlatformCatalog.shared().ensure_seeded()
-            except Exception:
-                pass
         RuntimeRegistry.shared().register_builtin()
-        self._warm_crewai()
-        self._kick_llm_proxy()
-        self._kick_durable_scheduler()
-        self._kick_dream_scheduler()
-
-    @staticmethod
-    def _kick_llm_proxy() -> None:
-        """Ensure LiteLLM gateway matches Settings intent (needed for Cognee)."""
-        import sys
-
-        argv = " ".join(sys.argv).lower()
-        if any(x in argv for x in ("migrate", "makemigrations", "test", "check")):
+        kind = _process_kind()
+        if not kind:
             return
         try:
-            from peon.projects.llm_proxy import LlmProxy
-            from peon.projects.runtime_settings import PeonSettings
+            from peon.projects.platform_catalog import PlatformCatalog
 
-            if PeonSettings.get_bool("LLM_PROXY_ENABLED", True):
-                LlmProxy.shared().ensure()
+            PlatformCatalog.shared().ensure_seeded()
         except Exception as exc:
-            logger.debug("llm proxy kick skipped: %s", exc)
-
-    @staticmethod
-    def _kick_durable_scheduler() -> None:
-        """Start the durable schedule scanner (skipped during migrate/test)."""
-        import sys
-
-        argv = " ".join(sys.argv).lower()
-        if any(x in argv for x in ("migrate", "makemigrations", "test", "check")):
-            return
-        try:
-            # deferred: avoid importing tasks during nested django.setup
-            from peon.projects.tasks import ensure_durable_scheduler
-
-            ensure_durable_scheduler()
-        except Exception as exc:
-            logger.debug("durable scheduler kick skipped: %s", exc)
-
-    @staticmethod
-    def _kick_dream_scheduler() -> None:
-        """Start Cognee background dreaming (skipped during migrate/test)."""
-        import sys
-
-        argv = " ".join(sys.argv).lower()
-        if any(x in argv for x in ("migrate", "makemigrations", "test", "check")):
-            return
-        try:
-            from peon.projects.tasks import ensure_dream_scheduler
-
-            ensure_dream_scheduler()
-        except Exception as exc:
-            logger.debug("dream scheduler kick skipped: %s", exc)
-
-    @staticmethod
-    def _warm_crewai() -> None:
-        """Pay CrewAI import cost at process boot, not on the first job."""
-        module = str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai").strip().lower()
-        if module != "crewai":
-            return
-        try:
-            # deferred: startup warm
-            import crewai  # noqa: F401
-        except Exception as exc:
-            logger.debug("crewai warm import skipped: %s", exc)
+            logger.warning("platform catalog seed skipped: %s", exc)
+        threading.Thread(
+            target=_boot_services, args=(kind,), name="peon-boot", daemon=True
+        ).start()

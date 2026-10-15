@@ -140,10 +140,10 @@ def upsert_role_skills(
                         payload={"skill_ids": merged, "source": source},
                     ),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("role skill transcript append failed: %s", exc, exc_info=True)
     except Exception as exc:
-        logger.debug("role_skills memory failed: %s", exc)
+        logger.warning("role_skills memory failed: %s", exc)
     return entry
 
 

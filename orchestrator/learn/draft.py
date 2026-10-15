@@ -558,19 +558,3 @@ def authoring_prompt(
         )
     lines.append(f"Available catalog tools:\n{yaml.safe_dump(catalog, sort_keys=False)}")
     return "\n".join(lines)
-
-
-class DraftPipeline:
-    """Cohesive API for tool suggestions and skill draft normalization."""
-
-    catalog_summaries = staticmethod(catalog_summaries)
-    filter_catalog = staticmethod(filter_catalog)
-    propose_missing_tool = staticmethod(propose_missing_tool)
-    skill_prompt = staticmethod(skill_prompt)
-    tool_suggest_human = staticmethod(tool_suggest_human)
-    tool_replan_human = staticmethod(tool_replan_human)
-    tool_suggestion_from_payload = staticmethod(tool_suggestion_from_payload)
-    authoring_prompt = staticmethod(authoring_prompt)
-    finalize_skill_payload = staticmethod(finalize_skill_payload)
-    skill_result_dict = staticmethod(skill_result_dict)
-    valid_skill_name = staticmethod(valid_skill_name)

@@ -1,4 +1,4 @@
-/* New-project create flow: kind slide + status dialog while planning. */
+/* New-project create flow: kind choice + status dialog while planning. */
 (function () {
   function setStep(list, key, state, detail) {
     if (!list) return;
@@ -14,6 +14,7 @@
             ? "is-done"
             : "is-pending"
     );
+    li.setAttribute("data-state", state || "pending");
     var det = li.querySelector(".create-step-detail");
     if (det) det.textContent = detail || "";
   }
@@ -35,30 +36,21 @@
     });
   }
 
-  function bindKindSlide() {
-    var btn = document.getElementById("kind-toggle");
-    var kindInput = document.getElementById("kind");
-    var label = document.getElementById("kind-label");
+  function bindKindChoice() {
     var startStep = document.querySelector(
       '#create-status-steps [data-step="start"] .create-step-body strong'
     );
-    if (!btn || !kindInput) return;
-
-    function apply(kind) {
-      var durable = kind === "durable";
-      kindInput.value = durable ? "durable" : "timed";
-      btn.classList.toggle("is-durable", durable);
-      btn.setAttribute("aria-checked", durable ? "true" : "false");
-      if (label) label.textContent = durable ? "Durable" : "Timed";
+    function apply() {
+      var picked = document.querySelector('input[name="kind"]:checked');
       if (startStep) {
-        startStep.textContent = durable ? "Review plan graph" : "Start agents";
+        startStep.textContent =
+          picked && picked.value === "durable" ? "Review plan graph" : "Start agents";
       }
     }
-
-    btn.addEventListener("click", function () {
-      apply(kindInput.value === "durable" ? "timed" : "durable");
+    document.querySelectorAll('input[name="kind"]').forEach(function (radio) {
+      radio.addEventListener("change", apply);
     });
-    apply(kindInput.value || "timed");
+    apply();
   }
 
   function openDialog(dialog) {
@@ -90,7 +82,7 @@
     var submitBtn = document.getElementById("project-create-submit");
     if (!form || !dialog || form.dataset.boundCreate) return;
     form.dataset.boundCreate = "1";
-    bindKindSlide();
+    bindKindChoice();
 
     if (closeBtn) {
       closeBtn.addEventListener("click", function () {

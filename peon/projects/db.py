@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import threading
 import uuid
@@ -33,7 +34,6 @@ PLATFORM_ONLY_MODEL_NAMES = frozenset(
 # engagement FKs (job.project) resolve without cross-DB joins.
 REGISTRY_MODEL_NAMES = frozenset({"Project"})
 
-PLATFORM_MODEL_NAMES = PLATFORM_ONLY_MODEL_NAMES | REGISTRY_MODEL_NAMES
 
 # Engagement tables live in /workspaces/<uuid>/db.sqlite3 (and orphan Jobs on default).
 PROJECT_MODEL_NAMES = frozenset(
@@ -48,7 +48,6 @@ PROJECT_MODEL_NAMES = frozenset(
         "Finding",
         "AssetGraph",
         "JobCheckpoint",
-        "AgentMessage",
         "ProjectMcpConfig",
     }
 )
@@ -194,6 +193,18 @@ def mirror_project_row(project_id: object) -> None:
     Project.objects.using(alias).update_or_create(pk=pid, defaults=defaults)
 
 
+@contextmanager
+def _file_lock(path: Path) -> Iterator[None]:
+    """Cross-process exclusive lock (web and worker both first-touch new DBs)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 def ensure_project_database(project_id: object) -> str:
     """Register alias and apply migrations once per process.
 
@@ -207,7 +218,8 @@ def ensure_project_database(project_id: object) -> str:
     alias = register_project_database(pid)
     from django.core.management import call_command
 
-    with _migrate_lock:
+    lock_path = project_db_path(pid).with_name(f".{pid}.migrate.lock")
+    with _migrate_lock, _file_lock(lock_path):
         if alias not in _migrated_aliases:
             try:
                 call_command(

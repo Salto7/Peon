@@ -159,16 +159,3 @@ def propose_work_body(context_notes: str = "", max_agents: int = 4) -> str:
     )
 
 
-def send_agent_message_body(
-    body: str,
-    to_job_id: str = "",
-    type: str = "inform",
-    artifact_refs: str = "",
-) -> str:
-    refs = [p.strip() for p in (artifact_refs or "").split(",") if p.strip()]
-    return get_job().bridge.send_message(
-        to_job_id=to_job_id or "",
-        type=(type or "inform").strip().lower(),
-        body=body or "",
-        artifact_refs=refs,
-    )

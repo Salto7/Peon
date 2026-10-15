@@ -1,0 +1,11 @@
+{% comment %}<c-stat label="Running agents" value="3" icon="bot" tone="danger" />{% endcomment %}
+{% load ui %}
+<c-vars label="" value="" icon="" tone="" />
+<div class="rounded-xl border bg-card p-4 shadow-sm" {{ attrs }}>
+  <div class="flex items-center justify-between text-xs font-medium text-muted-foreground">
+    <span>{{ label }}</span>
+    {% if icon %}{% icon icon "size-4" %}{% endif %}
+  </div>
+  <div class="mt-2 text-2xl font-semibold tabular-nums {% if tone == 'danger' %}text-destructive{% elif tone == 'warning' %}text-warning{% elif tone == 'success' %}text-success{% endif %}">{{ value }}</div>
+  {% if slot %}<div class="mt-1 text-xs text-muted-foreground">{{ slot }}</div>{% endif %}
+</div>

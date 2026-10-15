@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "corp-osint": {
+      "command": "uv",
+      "args": ["run", "--project", ".", "python", "mcp_server.py"],
+      "env": {},
+      "install": {
+        "kind": "uv",
+        "manifest": "pyproject.toml"
+      }
+    }
+  }
+}

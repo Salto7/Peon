@@ -1,0 +1,16 @@
+{% comment %}
+<c-button variant="primary|secondary|outline|ghost|destructive|link" size="sm|md|icon|icon-sm" href="…">
+Renders <a> when href is set, otherwise <button>.
+{% endcomment %}
+<c-vars variant="primary" size="md" href="" type="button" class="" />
+{% if variant == "secondary" %}{% firstof "bg-secondary text-secondary-foreground hover:bg-secondary/80" as v %}
+{% elif variant == "outline" %}{% firstof "border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground" as v %}
+{% elif variant == "ghost" %}{% firstof "hover:bg-accent hover:text-accent-foreground" as v %}
+{% elif variant == "destructive" %}{% firstof "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90" as v %}
+{% elif variant == "link" %}{% firstof "text-link underline-offset-4 hover:underline" as v %}
+{% else %}{% firstof "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90" as v %}{% endif %}
+{% if size == "sm" %}{% firstof "h-8 gap-1.5 px-3 text-xs" as s %}
+{% elif size == "icon" %}{% firstof "size-9" as s %}
+{% elif size == "icon-sm" %}{% firstof "size-8" as s %}
+{% else %}{% firstof "h-9 px-4" as s %}{% endif %}
+{% if href %}<a href="{{ href }}" class="inline-flex cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors outline-none aria-disabled:pointer-events-none aria-disabled:opacity-50 [&_svg]:size-4 {{ v }} {{ s }} {{ class }}" {{ attrs }}>{{ slot }}</a>{% else %}<button type="{{ type }}" class="inline-flex cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors outline-none disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 {{ v }} {{ s }} {{ class }}" {{ attrs }}>{{ slot }}</button>{% endif %}

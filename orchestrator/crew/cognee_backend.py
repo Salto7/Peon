@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.error
-import urllib.request
 from typing import Any
+
+import httpx
 
 from django.conf import settings
 
@@ -61,7 +61,7 @@ class CogneeBackend(SharedServiceBase):
         if not self.enabled():
             return {"ok": False, "enabled": False, "error": "COGNEE_ENABLED=false"}
         try:
-            code, body = self._request("GET", "/health", json_body=None)
+            code, body = self._request("GET", "/health")
             return {
                 "ok": 200 <= code < 300,
                 "enabled": True,
@@ -102,17 +102,12 @@ class CogneeBackend(SharedServiceBase):
         if sid:
             fields["session_id"] = sid
         try:
-            code, body = self._multipart(
+            mime = "application/json" if filename.endswith(".json") else "text/plain"
+            code, body = self._request(
+                "POST",
                 "/api/v1/remember",
-                fields=fields,
-                file_field="data",
-                filename=filename,
-                file_bytes=text.encode("utf-8"),
-                content_type=(
-                    "application/json"
-                    if filename.endswith(".json")
-                    else "text/plain; charset=utf-8"
-                ),
+                data=fields,
+                files={"data": (filename, text.encode("utf-8"), mime)},
             )
             return {"ok": 200 <= code < 300, "status_code": code, "body": body}
         except Exception as exc:
@@ -234,7 +229,7 @@ class CogneeBackend(SharedServiceBase):
         if not self.enabled():
             return {"ok": False, "datasets": []}
         try:
-            code, body = self._request("GET", "/api/v1/datasets", json_body=None)
+            code, body = self._request("GET", "/api/v1/datasets")
             rows = body if isinstance(body, list) else (body or {}).get("datasets") or []
             return {"ok": 200 <= code < 300, "status_code": code, "datasets": rows}
         except Exception as exc:
@@ -256,7 +251,7 @@ class CogneeBackend(SharedServiceBase):
             f"&offset={max(0, int(offset or 0))}"
         )
         try:
-            code, body = self._request("GET", f"/api/v1/sessions{q}", json_body=None)
+            code, body = self._request("GET", f"/api/v1/sessions{q}")
             rows = []
             if isinstance(body, dict):
                 rows = body.get("sessions") or []
@@ -362,79 +357,23 @@ class CogneeBackend(SharedServiceBase):
         method: str,
         path: str,
         *,
-        json_body: dict[str, Any] | None,
+        json_body: dict[str, Any] | None = None,
+        data: dict[str, str] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
     ) -> tuple[int, Any]:
-        url = f"{self.base_url()}{path}"
-        data = None
-        headers = {"Accept": "application/json"}
-        if json_body is not None:
-            data = json.dumps(json_body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout_s()) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-                code = int(getattr(resp, "status", 200) or 200)
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
-            code = int(exc.code)
-        if not raw.strip():
-            return code, {}
-        try:
-            return code, json.loads(raw)
-        except json.JSONDecodeError:
-            return code, raw
-
-    def _multipart(
-        self,
-        path: str,
-        *,
-        fields: dict[str, str],
-        file_field: str,
-        filename: str,
-        file_bytes: bytes,
-        content_type: str,
-    ) -> tuple[int, Any]:
-        boundary = "----PeonCogneeBoundary7MA4YWxkTrZu0gW"
-        lines: list[bytes] = []
-        for key, value in fields.items():
-            lines.append(f"--{boundary}\r\n".encode())
-            lines.append(
-                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
-            )
-            lines.append(f"{value}\r\n".encode())
-        lines.append(f"--{boundary}\r\n".encode())
-        lines.append(
-            (
-                f'Content-Disposition: form-data; name="{file_field}"; '
-                f'filename="{filename}"\r\n'
-            ).encode()
+        """HTTP call to the Cognee sidecar; returns ``(status, json-or-text)``."""
+        resp = httpx.request(
+            method,
+            f"{self.base_url()}{path}",
+            json=json_body,
+            data=data,
+            files=files,
+            headers={"Accept": "application/json"},
+            timeout=self.timeout_s(),
         )
-        lines.append(f"Content-Type: {content_type}\r\n\r\n".encode())
-        lines.append(file_bytes)
-        lines.append(b"\r\n")
-        lines.append(f"--{boundary}--\r\n".encode())
-        body = b"".join(lines)
-        url = f"{self.base_url()}{path}"
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-            },
-            method="POST",
-        )
+        if not resp.text.strip():
+            return resp.status_code, {}
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_s()) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-                code = int(getattr(resp, "status", 200) or 200)
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
-            code = int(exc.code)
-        if not raw.strip():
-            return code, {}
-        try:
-            return code, json.loads(raw)
-        except json.JSONDecodeError:
-            return code, raw
+            return resp.status_code, resp.json()
+        except ValueError:
+            return resp.status_code, resp.text

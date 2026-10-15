@@ -8,7 +8,19 @@ from typing import Any
 
 import yaml
 
-from orchestrator.learn.draft import DraftPipeline
+from orchestrator.learn.draft import (
+    authoring_prompt,
+    catalog_summaries,
+    filter_catalog,
+    finalize_skill_payload,
+    propose_missing_tool,
+    skill_prompt,
+    skill_result_dict,
+    tool_replan_human,
+    tool_suggest_human,
+    tool_suggestion_from_payload,
+    valid_skill_name,
+)
 from orchestrator.skills.provision import SkillLinter
 from orchestrator.utils.llm import require_llm, chat_json
 from orchestrator.utils.service import SharedServiceBase
@@ -30,10 +42,10 @@ class LearnAuthoring(SharedServiceBase):
         if not text:
             raise ValueError("prompt is required")
         require_llm()
-        return DraftPipeline.tool_suggestion_from_payload(
+        return tool_suggestion_from_payload(
             chat_json(
-                DraftPipeline.skill_prompt(_TOOLS_SUGGESTOR),
-                DraftPipeline.tool_suggest_human(text),
+                skill_prompt(_TOOLS_SUGGESTOR),
+                tool_suggest_human(text),
             )
         )
 
@@ -50,20 +62,20 @@ class LearnAuthoring(SharedServiceBase):
         if not text:
             raise ValueError("prompt is required")
         require_llm()
-        catalog = DraftPipeline.filter_catalog(
-            DraftPipeline.catalog_summaries(),
+        catalog = filter_catalog(
+            catalog_summaries(),
             tools,
         )
 
         tool_suggestion, proposed, install_recipes = (
-            DraftPipeline.propose_missing_tool(
+            propose_missing_tool(
                 text,
                 LearnAuthoring.suggest_tool,
             )
         )
 
-        system = DraftPipeline.skill_prompt(_SKILL_WRITER)
-        human = DraftPipeline.authoring_prompt(
+        system = skill_prompt(_SKILL_WRITER)
+        human = authoring_prompt(
             text,
             catalog,
             proposed=proposed,
@@ -75,7 +87,7 @@ class LearnAuthoring(SharedServiceBase):
             raise RuntimeError("skill-writer returned non-object JSON")
 
         name, skill_md, files, suggested, mode, lint = (
-            DraftPipeline.finalize_skill_payload(
+            finalize_skill_payload(
                 payload,
                 prompt=text,
                 proposed=proposed,
@@ -96,7 +108,7 @@ class LearnAuthoring(SharedServiceBase):
             if isinstance(repair, dict):
                 try:
                     name, skill_md, files, suggested, mode, lint = (
-                        DraftPipeline.finalize_skill_payload(
+                        finalize_skill_payload(
                         repair,
                         prompt=text,
                         proposed=proposed,
@@ -107,7 +119,7 @@ class LearnAuthoring(SharedServiceBase):
                 except RuntimeError:
                     pass
 
-        return DraftPipeline.skill_result_dict(
+        return skill_result_dict(
             name=name,
             skill_md=skill_md,
             files=files,
@@ -129,10 +141,10 @@ class LearnAuthoring(SharedServiceBase):
     ) -> dict[str, Any]:
         """Revise a tool recipe after a failed learn-lab install test."""
         require_llm()
-        return DraftPipeline.tool_suggestion_from_payload(
+        return tool_suggestion_from_payload(
             chat_json(
-                DraftPipeline.skill_prompt(_TOOLS_SUGGESTOR),
-                DraftPipeline.tool_replan_human(
+                skill_prompt(_TOOLS_SUGGESTOR),
+                tool_replan_human(
                     prompt=prompt,
                     yaml_text=yaml_text,
                     install_script=install_script,
@@ -150,7 +162,7 @@ class LearnAuthoring(SharedServiceBase):
         nm = (name or "").strip().lower()
         md = (skill_md or "").strip()
         file_map = {str(k): str(v) for k, v in (files or {}).items()}
-        if not DraftPipeline.valid_skill_name(nm):
+        if not valid_skill_name(nm):
             raise ValueError(f"invalid skill name {nm!r}")
         if not md:
             raise ValueError("skill_md is required")

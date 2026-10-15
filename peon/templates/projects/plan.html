@@ -1,77 +1,62 @@
 {% extends "base.html" %}
-{% load static %}
-{% block title %}Plan — {{ project.title }} — Peon{% endblock %}
-{% block body_class %}plan-editor{% endblock %}
+{% load static ui %}
+{% block title %}Plan · {{ project.title }} · Peon{% endblock %}
+{% block main_class %}mx-auto w-full max-w-[1680px] flex-1 px-4 py-6 md:px-6{% endblock %}
 {% block content %}
-<header class="page-header">
-  <div>
-    <h1>Durable plan</h1>
-    <p class="lead">{{ project.title }} — edit agents, prompts, and dependencies, then accept to start.</p>
-  </div>
-  <p class="bar">
-    <a class="btn secondary" href="{% url 'project_list' %}">← Projects</a>
-    <span class="status-pill" data-status="pending">{{ project.kind }}</span>
-  </p>
-</header>
+<c-page-header title="Review the plan" description="Edit agents, prompts and dependencies, then accept to start the engagement.">
+  <c-slot name="crumbs">
+    <a class="hover:text-foreground" href="{% url 'project_list' %}">Projects</a>{% icon "chevron-right" "size-3" %}<span>{{ project.title }}</span>{% icon "chevron-right" "size-3" %}<span>Plan</span>
+  </c-slot>
+  <c-button variant="outline" id="plan-add-agent">{% icon "plus" %} Add agent</c-button>
+  <c-button variant="outline" id="plan-save">Save draft</c-button>
+  <c-button id="plan-accept">{% icon "play" %} Accept & start</c-button>
+</c-page-header>
 
-<section class="panel plan-editor-panel">
-  <div class="workspace-header">
-    <h2>Agent graph</h2>
-    <div class="bar">
-      <button type="button" class="secondary" id="plan-add-agent">Add agent</button>
-      <button type="button" class="secondary" id="plan-save">Save</button>
-      <button type="button" id="plan-accept">Accept &amp; start</button>
+<div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
+  <section class="min-w-0 overflow-hidden rounded-xl border bg-card shadow-sm" aria-labelledby="plan-graph-heading">
+    <div class="flex items-center justify-between border-b px-4 py-3">
+      <h2 id="plan-graph-heading" class="text-sm font-semibold">Agent graph</h2>
+      <p class="text-xs text-muted-foreground" id="plan-status">Click a node to edit its role, prompt and dependencies.</p>
     </div>
-  </div>
-  <p class="meta" id="plan-status">Dependency graph of the planned crew. Click a node to edit role, prompt, and deps.</p>
-  <div class="plan-editor-body">
-    <div id="plan-graph-host" class="plan-graph-host" aria-label="Editable agent plan graph"></div>
-    <aside class="plan-editor-aside" id="plan-editor-aside" hidden>
-      <h3 id="plan-edit-title">Edit agent</h3>
-      <label for="plan-edit-role">Role</label>
-      <select id="plan-edit-role"></select>
-      <label for="plan-edit-name">Title</label>
-      <input id="plan-edit-name" type="text">
-      <label for="plan-edit-prompt">Prompt / description</label>
-      <textarea id="plan-edit-prompt" rows="8"></textarea>
-      <fieldset class="plan-edit-skills">
-        <legend>Skills</legend>
-        <div id="plan-edit-skills" class="skill-check-list"></div>
-      </fieldset>
-      <label for="plan-edit-commands">Commands (one per line)</label>
-      <textarea id="plan-edit-commands" rows="3"></textarea>
-      <label for="plan-edit-deps">Depends on (OBJ seq, comma-separated)</label>
-      <input id="plan-edit-deps" type="text" placeholder="e.g. 1, 2">
-      <div class="bar">
-        <button type="button" class="secondary" id="plan-edit-apply">Apply</button>
-        <button type="button" class="secondary" id="plan-edit-remove">Remove</button>
-        <button type="button" class="secondary" id="plan-edit-close">Close</button>
-      </div>
-    </aside>
-  </div>
-</section>
+    <div id="plan-graph-host" class="agent-tree h-[min(70vh,44rem)] overflow-auto" aria-label="Editable agent plan graph"></div>
+  </section>
 
-<section class="panel" id="plan-schedules-panel">
-  <div class="workspace-header">
-    <h2>Schedules</h2>
-    <div class="bar">
-      <button type="button" class="secondary" id="plan-add-schedule">Add interval schedule</button>
+  <aside id="plan-editor-aside" hidden class="space-y-4 rounded-xl border bg-card p-4 shadow-sm xl:sticky xl:top-6 xl:self-start">
+    <h3 id="plan-edit-title" class="text-sm font-semibold">Edit agent</h3>
+    <c-field label="Role" for="plan-edit-role"><select id="plan-edit-role" class="ui-select"></select></c-field>
+    <c-field label="Title" for="plan-edit-name"><input id="plan-edit-name" type="text" class="ui-input"></c-field>
+    <c-field label="Prompt" for="plan-edit-prompt"><textarea id="plan-edit-prompt" rows="7" class="ui-textarea"></textarea></c-field>
+    <fieldset class="space-y-1.5">
+      <legend class="ui-label">Skills</legend>
+      <div id="plan-edit-skills" class="skill-check-list"></div>
+    </fieldset>
+    <c-field label="Commands" for="plan-edit-commands" help="One per line."><textarea id="plan-edit-commands" rows="3" class="ui-textarea font-mono"></textarea></c-field>
+    <c-field label="Depends on" for="plan-edit-deps" help="Objective numbers, comma-separated."><input id="plan-edit-deps" type="text" class="ui-input" placeholder="1, 2"></c-field>
+    <div class="flex flex-wrap justify-end gap-2 border-t pt-4">
+      <c-button variant="ghost" size="sm" id="plan-edit-close">Close</c-button>
+      <c-button variant="outline" size="sm" id="plan-edit-remove" class="text-destructive hover:text-destructive">Remove</c-button>
+      <c-button size="sm" id="plan-edit-apply">Apply</c-button>
     </div>
-  </div>
-  <p class="meta">Cron or interval cadence for durable re-fire (Dramatiq Jobs).</p>
-  <div id="plan-schedules-host" class="plan-schedules-host"></div>
-</section>
+  </aside>
+</div>
+
+<c-card title="Schedules" description="Cron or interval cadence for re-firing durable work." id="plan-schedules-panel" class="mt-6">
+  <c-slot name="actions"><c-button variant="outline" size="sm" id="plan-add-schedule">{% icon "plus" %} Add interval schedule</c-button></c-slot>
+  <div id="plan-schedules-host"></div>
+</c-card>
 
 {{ plan_graph|json_script:"plan-graph-data" }}
 {% endblock %}
 {% block scripts %}
-<script src="{% static 'js/plan-graph.js' %}?v=20261010b"></script>
+<script defer src="{% static 'js/plan-graph.js' %}"></script>
 <script>
-  PeonPlanGraph.init({
-    hostId: "plan-graph-host",
-    projectPk: "{{ project.pk }}",
-    apiUrl: "{% url 'project_plan_api' project.pk %}",
-    data: JSON.parse(document.getElementById("plan-graph-data").textContent),
+  document.addEventListener("DOMContentLoaded", function () {
+    PeonPlanGraph.init({
+      hostId: "plan-graph-host",
+      projectPk: "{{ project.pk }}",
+      apiUrl: "{% url 'project_plan_api' project.pk %}",
+      data: JSON.parse(document.getElementById("plan-graph-data").textContent),
+    });
   });
 </script>
 {% endblock %}

@@ -1,0 +1,3 @@
+{% comment %}<c-badge tone="neutral|primary|success|warning|danger|info">…</c-badge>{% endcomment %}
+<c-vars tone="neutral" class="" />
+<span class="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium whitespace-nowrap {% if tone == 'success' %}border-success/25 bg-success/10 text-success{% elif tone == 'warning' %}border-warning/25 bg-warning/10 text-warning{% elif tone == 'danger' %}border-destructive/25 bg-destructive/10 text-destructive{% elif tone == 'info' %}border-info/25 bg-info/10 text-info{% elif tone == 'primary' %}border-primary/25 bg-primary/10 text-link{% else %}border-border bg-muted text-muted-foreground{% endif %} {{ class }}" {{ attrs }}>{{ slot }}</span>

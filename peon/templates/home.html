@@ -1,111 +1,85 @@
 {% extends "base.html" %}
-{% block title %}Home — Peon{% endblock %}
+{% load ui %}
+{% block title %}Overview · Peon{% endblock %}
 {% block content %}
-<header class="page-header">
-  <div>
-    <h1>Operations</h1>
-    <p class="lead">Control-plane status across projects, agents, and sandboxes.</p>
-  </div>
-  <p class="bar">
-    <a class="btn" href="{% url 'project_create' %}">New project</a>
-    <a class="btn secondary" href="{% url 'project_list' %}">All projects</a>
-  </p>
-</header>
+<c-page-header title="Overview" description="Projects, agents and sandboxes across the platform.">
+  <c-button href="{% url 'project_create' %}">{% icon "plus" %} New project</c-button>
+</c-page-header>
 
 {% if notices %}
-<section class="home-notices" aria-label="Notices">
-  {% for note in notices %}
-  <p class="msg warning">{{ note }}</p>
-  {% endfor %}
-</section>
+<div class="mb-6 space-y-2">
+  {% for note in notices %}<c-alert tone="warning">{{ note }}</c-alert>{% endfor %}
+</div>
 {% endif %}
 
-<section class="home-kpis" aria-label="Key metrics">
-  <div class="home-kpi">
-    <span class="home-kpi-value">{{ kpis.active_projects }}</span>
-    <span class="home-kpi-label">Active projects</span>
-  </div>
-  <div class="home-kpi">
-    <span class="home-kpi-value">{{ kpis.running_jobs }}</span>
-    <span class="home-kpi-label">Running agents</span>
-  </div>
-  <div class="home-kpi">
-    <span class="home-kpi-value">{{ kpis.paused_projects }}</span>
-    <span class="home-kpi-label">Paused</span>
-  </div>
-  <div class="home-kpi{% if kpis.failed_jobs %} home-kpi-warn{% endif %}">
-    <span class="home-kpi-value">{{ kpis.failed_jobs }}</span>
-    <span class="home-kpi-label">Failed jobs</span>
-  </div>
+<section aria-label="Key metrics" class="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+  <c-stat label="Active projects" value="{{ kpis.active_projects }}" icon="folder-kanban" />
+  <c-stat label="Running agents" value="{{ kpis.running_jobs }}" icon="bot" />
+  <c-stat label="Paused projects" value="{{ kpis.paused_projects }}" icon="pause" />
+  <c-stat label="Failed jobs" value="{{ kpis.failed_jobs }}" icon="triangle-alert" tone="{% if kpis.failed_jobs %}danger{% endif %}" />
 </section>
 
-<section class="panel">
-  <div class="page-header tight">
-    <h2>Projects</h2>
-    <p class="meta">Sandbox: {% if sandbox_per_project %}per-project{% else %}shared{% endif %}</p>
-  </div>
-  {% if project_rows %}
-  <table>
-    <thead>
-      <tr>
-        <th>Title</th>
-        <th>Status</th>
-        <th>Sandbox</th>
-        <th>Created</th>
-      </tr>
-    </thead>
-    <tbody>
-    {% for row in project_rows %}
-      <tr>
-        <td><a href="{% url 'project_detail' row.project.pk %}">{{ row.project.title }}</a>
-          <span class="kind-pill" data-kind="{{ row.project.kind }}">{{ row.project.get_kind_display }}</span>
-        </td>
-        <td class="meta status">{{ row.project.status }}</td>
-        <td class="meta"><code>{{ row.sandbox_name }}</code>
-          <span class="home-sandbox-mode">{{ row.sandbox_mode }}</span></td>
-        <td class="meta">{{ row.project.created_at }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="meta">No projects yet. <a href="{% url 'project_create' %}">Start one</a>.</p>
-  {% endif %}
-</section>
+<div class="grid gap-6 {% if failed_recent or stream_errors %}xl:grid-cols-3{% endif %}">
+  <c-card title="Recent projects" description="Sandbox mode: {% if sandbox_per_project %}one per project{% else %}shared{% endif %}" flush class="xl:col-span-2">
+    <c-slot name="actions">
+      <c-button variant="ghost" size="sm" href="{% url 'project_list' %}">View all {% icon "chevron-right" %}</c-button>
+    </c-slot>
+    {% if project_rows %}
+    <div class="ui-table-wrap">
+      <table class="ui-table">
+        <thead>
+          <tr><th>Project</th><th>Status</th><th>Sandbox</th><th class="text-right">Created</th></tr>
+        </thead>
+        <tbody>
+        {% for row in project_rows %}
+          <tr>
+            <td class="w-full max-w-0">
+              <div class="flex items-center gap-2">
+                <a class="ui-link truncate" href="{% url 'project_detail' row.project.pk %}">{{ row.project.title }}</a>
+                <c-badge>{{ row.project.get_kind_display }}</c-badge>
+              </div>
+            </td>
+            <td><c-status value="{{ row.project.status }}" label="{{ row.project.get_status_display }}" /></td>
+            <td class="text-muted-foreground"><code class="ui-code">{{ row.sandbox_name }}</code> <span class="text-xs">{{ row.sandbox_mode }}</span></td>
+            <td class="text-right whitespace-nowrap text-muted-foreground" title="{{ row.project.created_at|date:'c' }}">{{ row.project.created_at|timesince }} ago</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <c-empty icon="folder-kanban" title="No projects yet">
+      Start an engagement to plan objectives and dispatch agents.
+      <c-slot name="action"><c-button href="{% url 'project_create' %}" size="sm">{% icon "plus" %} New project</c-button></c-slot>
+    </c-empty>
+    {% endif %}
+  </c-card>
 
-{% if failed_recent or stream_errors %}
-<section class="panel home-alerts" aria-label="Recent errors">
-  <h2>Alerts</h2>
-  {% if failed_recent %}
-  <h3 class="home-alert-sub">Failed jobs</h3>
-  <ul class="home-alert-list">
-    {% for job in failed_recent %}
-    <li>
-      {% if job.project %}
-      <a href="{% url 'project_detail' job.project_id %}">{{ job.project.title }}</a>
-      ·
-      {% endif %}
-      <span class="meta">{{ job.title }}</span>
-      <pre class="home-alert-detail">{{ job.error|truncatechars:240 }}</pre>
-    </li>
-    {% endfor %}
-  </ul>
+  {% if failed_recent or stream_errors %}
+  <c-card title="Alerts" description="Most recent failures across projects." flush>
+    <ul class="divide-y">
+      {% for job in failed_recent %}
+      <li class="space-y-1.5 px-5 py-3">
+        <div class="flex items-center gap-2 text-sm">
+          <c-status value="failed" label="Job failed" />
+          {% if job.project %}<a class="ui-link truncate" href="{% url 'project_detail' job.project_id %}">{{ job.project.title }}</a>{% endif %}
+        </div>
+        <p class="truncate text-xs text-muted-foreground">{{ job.title }}</p>
+        <pre class="max-h-24 overflow-auto rounded-md bg-muted p-2 text-xs whitespace-pre-wrap">{{ job.error|truncatechars:240 }}</pre>
+      </li>
+      {% endfor %}
+      {% for msg in stream_errors %}
+      <li class="space-y-1.5 px-5 py-3">
+        <div class="flex items-center gap-2 text-sm">
+          <c-badge tone="warning">Stream error</c-badge>
+          {% if msg.job.project_id %}<a class="ui-link truncate" href="{% url 'project_detail' msg.job.project_id %}">{{ msg.job.project.title }}</a>{% endif %}
+          <span class="ml-auto text-xs whitespace-nowrap text-muted-foreground">{{ msg.created_at|timesince }} ago</span>
+        </div>
+        <pre class="max-h-24 overflow-auto rounded-md bg-muted p-2 text-xs whitespace-pre-wrap">{{ msg.content|truncatechars:240 }}</pre>
+      </li>
+      {% endfor %}
+    </ul>
+  </c-card>
   {% endif %}
-  {% if stream_errors %}
-  <h3 class="home-alert-sub">Stream errors</h3>
-  <ul class="home-alert-list">
-    {% for msg in stream_errors %}
-    <li>
-      {% if msg.job.project_id %}
-      <a href="{% url 'project_detail' msg.job.project_id %}">{{ msg.job.project.title }}</a>
-      ·
-      {% endif %}
-      <span class="meta">{{ msg.created_at }}</span>
-      <pre class="home-alert-detail">{{ msg.content|truncatechars:240 }}</pre>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-</section>
-{% endif %}
+</div>
 {% endblock %}

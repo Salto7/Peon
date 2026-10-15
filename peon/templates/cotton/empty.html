@@ -1,0 +1,9 @@
+{% comment %}<c-empty icon="inbox" title="No projects yet">description<c-slot name="action">…</c-slot></c-empty>{% endcomment %}
+{% load ui %}
+<c-vars icon="inbox" title="" />
+<div class="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
+  <div class="mb-1 flex size-10 items-center justify-center rounded-lg border bg-muted text-muted-foreground">{% icon icon "size-5" %}</div>
+  <p class="text-sm font-medium">{{ title }}</p>
+  {% if slot %}<p class="max-w-sm text-sm text-muted-foreground">{{ slot }}</p>{% endif %}
+  {% if action %}<div class="mt-3">{{ action }}</div>{% endif %}
+</div>

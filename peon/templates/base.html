@@ -1,137 +1,93 @@
-{% load static %}
-<!DOCTYPE html>
+{% load static django_vite ui %}<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script>
     (function () {
+      var root = document.documentElement;
       try {
-        var t = localStorage.getItem("peon-theme");
-        document.documentElement.setAttribute(
-          "data-theme",
-          t === "light" ? "light" : "dark"
-        );
-      } catch (e) {
-        document.documentElement.setAttribute("data-theme", "dark");
-      }
-      try {
-        if (localStorage.getItem("peon-app-side-collapsed") === "1") {
-          document.documentElement.classList.add("app-side-collapsed");
-        }
-      } catch (e2) {}
+        if (localStorage.getItem("peon-theme") === "light") root.setAttribute("data-theme", "light");
+        if (localStorage.getItem("peon-sidebar-collapsed") === "1") root.setAttribute("data-sidebar-collapsed", "");
+      } catch (e) {}
     })();
   </script>
   <title>{% block title %}Peon{% endblock %}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'css/peon.css' %}?v=20261010f">
-  <link rel="icon" type="image/png" href="{% static 'img/favicon.png' %}?v=20260925c">
+  <link rel="icon" type="image/png" href="{% static 'img/favicon.png' %}">
+  {% vite_asset 'src/entries/base.ts' %}
   {% block head %}{% endblock %}
 </head>
-<body class="app-shell {% block body_class %}{% endblock %}">
-  <aside class="app-side" id="app-side" aria-label="App navigation">
-    <div class="app-side-top">
-      <a class="app-brand" href="{% url 'home' %}" title="Home">
-        <img class="app-brand-logo" src="{% static 'img/peon.gif' %}?v=20260925a" width="32" height="32" alt="Peon">
-      </a>
-      <div class="app-side-actions">
-        <button type="button" class="app-side-icon-btn" id="palette-open" data-palette-open
-                title="Search (Shift+S)" aria-label="Search">
-          <span aria-hidden="true">⌕</span>
-        </button>
-        <button type="button" class="app-side-icon-btn app-side-toggle" id="app-side-toggle"
-                aria-label="Collapse sidebar" title="Collapse sidebar" aria-expanded="true">
-          <span class="app-side-toggle-icon" aria-hidden="true">‹</span>
+<body>
+  <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[var(--z-toast)] focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-foreground">Skip to content</a>
+
+  <div class="flex min-h-dvh">
+    {# Mobile drawer backdrop #}
+    <div class="fixed inset-0 z-[var(--z-overlay)] hidden bg-black/50 sidebar-open:block md:hidden!" data-sidebar-dismiss aria-hidden="true"></div>
+
+    <aside id="app-sidebar" aria-label="Main"
+           class="fixed inset-y-0 left-0 z-[var(--z-modal)] flex w-[var(--sidebar-width)] -translate-x-full flex-col border-r border-sidebar-border bg-sidebar transition-[transform,width] duration-150 sidebar-open:translate-x-0 md:sticky md:top-0 md:h-dvh md:translate-x-0 sidebar-collapsed:md:w-[var(--sidebar-width-collapsed)]">
+      <div class="flex h-14 items-center gap-2 px-3 sidebar-collapsed:md:justify-center sidebar-collapsed:md:px-0">
+        <a href="{% url 'home' %}" class="flex min-w-0 items-center gap-2 rounded-md" title="Home">
+          <img src="{% static 'img/favicon.png' %}" width="28" height="28" alt="" class="size-7 rounded-md [image-rendering:pixelated]">
+          <span class="truncate text-sm font-semibold tracking-tight sidebar-collapsed:md:sr-only">Peon</span>
+        </a>
+        <c-button variant="ghost" size="icon-sm" class="ml-auto md:hidden" data-sidebar-dismiss aria-label="Close menu">{% icon "x" %}</c-button>
+      </div>
+
+      <div class="px-3 pb-2 sidebar-collapsed:md:px-2">
+        <button type="button" data-palette-open
+                class="flex h-8 w-full cursor-pointer items-center gap-2 rounded-md border bg-background px-2 text-sm text-muted-foreground shadow-sm transition-colors hover:bg-accent sidebar-collapsed:md:justify-center sidebar-collapsed:md:px-0">
+          {% icon "search" %}
+          <span class="sidebar-collapsed:md:sr-only">Search…</span>
+          <kbd class="ml-auto rounded border bg-muted px-1.5 font-mono text-[10px] sidebar-collapsed:md:hidden">⌘K</kbd>
         </button>
       </div>
-    </div>
-    <nav class="app-side-nav">
-      <a class="app-side-link{% if nav == 'projects' %} is-active{% endif %}"
-         href="{% url 'project_list' %}" title="Projects">
-        <span class="app-side-ico" aria-hidden="true">▣</span>
-        <span class="app-side-label">Projects</span>
-        <span class="app-side-badge" id="hitl-global-badge" hidden>0</span>
-      </a>
-      <a class="app-side-link{% if nav == 'catalog' %} is-active{% endif %}"
-         href="{% url 'catalog' %}" title="Shared catalog">
-        <span class="app-side-ico" aria-hidden="true">☰</span>
-        <span class="app-side-label">Shared catalog</span>
-      </a>
-      <div class="app-side-group">
-        <a class="app-side-link{% if nav == 'lab' and not lab_section %} is-active{% endif %}"
-           href="{% url 'lab' %}" title="Lab">
-          <span class="app-side-ico" aria-hidden="true">⚒</span>
-          <span class="app-side-label">Lab</span>
-        </a>
-        <div class="app-side-subnav" aria-label="Lab pages">
-          <a class="app-side-sublink{% if lab_section == 'toolsmith' %} is-active{% endif %}"
-             href="{% url 'lab_toolsmith' %}" title="Toolsmith">Toolsmith</a>
-          <a class="app-side-sublink{% if lab_section == 'skills' %} is-active{% endif %}"
-             href="{% url 'lab_skills' %}" title="Imported skills">Imported skills</a>
-          <a class="app-side-sublink{% if lab_section == 'dream' %} is-active{% endif %}"
-             href="{% url 'lab_dream' %}" title="Dream">Dream</a>
+
+      <nav aria-label="Primary" class="flex-1 space-y-1 overflow-y-auto px-3 py-1 sidebar-collapsed:md:px-2">
+        <c-nav-section>
+          <c-nav-item href="{% url 'home' %}" icon="house" label="Home" active="{% if nav == 'home' %}1{% endif %}" />
+          <c-nav-item href="{% url 'project_list' %}" icon="folder-kanban" label="Projects" active="{% if nav == 'projects' %}1{% endif %}" badge="data-hitl-badge" />
+          <c-nav-item href="{% url 'catalog' %}" icon="library" label="Catalog" active="{% if nav == 'catalog' %}1{% endif %}" />
+        </c-nav-section>
+        <c-nav-section label="Lab">
+          <c-nav-item href="{% url 'lab_toolsmith' %}" icon="hammer" label="Toolsmith" active="{% if lab_section == 'toolsmith' %}1{% endif %}" />
+          <c-nav-item href="{% url 'lab_dream' %}" icon="brain" label="Dream" active="{% if lab_section == 'dream' %}1{% endif %}" />
+        </c-nav-section>
+        {% block sidebar_extra %}{% endblock %}
+      </nav>
+
+      <div class="space-y-0.5 border-t border-sidebar-border px-3 py-2 sidebar-collapsed:md:px-2">
+        <c-nav-item href="{% url 'settings_page' %}" icon="settings" label="Settings" active="{% if nav == 'settings' %}1{% endif %}" />
+        <c-nav-item href="/admin/" icon="shield" label="Django admin" />
+        <div class="flex items-center gap-1 pt-1 sidebar-collapsed:md:flex-col">
+          <c-button variant="ghost" size="icon-sm" data-theme-toggle aria-label="Toggle theme" title="Toggle theme">
+            <span class="hidden dark:inline">{% icon "sun" %}</span><span class="dark:hidden">{% icon "moon" %}</span>
+          </c-button>
+          <span class="ml-auto hidden md:block sidebar-collapsed:md:ml-0">
+            <c-button variant="ghost" size="icon-sm" data-sidebar-collapse aria-label="Toggle sidebar" title="Toggle sidebar">{% icon "panel-left" %}</c-button>
+          </span>
         </div>
       </div>
-      <a class="app-side-link{% if nav == 'settings' %} is-active{% endif %}"
-         href="{% url 'settings_page' %}" title="Peon Settings">
-        <span class="app-side-ico" aria-hidden="true">⚙</span>
-        <span class="app-side-label">Peon Settings</span>
-      </a>
-      <a class="app-side-link" href="/admin/" title="Django admin">
-        <span class="app-side-ico" aria-hidden="true">◆</span>
-        <span class="app-side-label">Django admin</span>
-      </a>
-    </nav>
-  </aside>
-  <div class="app-main">
-    <main class="shell">
-      {% if messages %}
-        {% for message in messages %}
-          <div class="msg {% if message.tags %}{{ message.tags }}{% endif %}" data-toast-source>{{ message }}</div>
-        {% endfor %}
-      {% endif %}
-      {% block content %}{% endblock %}
-    </main>
+    </aside>
+
+    <div class="flex min-w-0 flex-1 flex-col">
+      <header class="sticky top-0 z-[var(--z-sticky)] flex h-12 items-center gap-2 border-b bg-background/90 px-4 backdrop-blur md:hidden">
+        <c-button variant="ghost" size="icon-sm" data-sidebar-open aria-label="Open menu" aria-controls="app-sidebar">{% icon "menu" %}</c-button>
+        <span class="text-sm font-semibold">Peon</span>
+        <c-button variant="ghost" size="icon-sm" class="ml-auto" data-palette-open aria-label="Search">{% icon "search" %}</c-button>
+      </header>
+      <main id="main" tabindex="-1" class="{% block main_class %}mx-auto w-full max-w-6xl flex-1 px-4 py-6 md:px-8 md:py-8{% endblock %}">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
   </div>
 
-  <div id="toast-root" class="toast-root" aria-live="polite"></div>
-
-  <dialog id="palette-dialog" class="palette-dialog peon-dialog" aria-label="Command palette">
-    <form method="dialog" class="palette-form peon-dialog-card" id="palette-form">
-      <input type="search" id="palette-input" placeholder="Search projects, roles, tools, findings…" autocomplete="off">
-      <ul id="palette-results" class="palette-results" role="listbox"></ul>
-      <p class="meta palette-hint">↑↓ navigate · Enter open · Esc close · ⇧S open</p>
-    </form>
-  </dialog>
-
-  <dialog id="hitl-global-dialog" class="hitl-global-dialog peon-dialog" aria-labelledby="hitl-global-title">
-    <div class="hitl-global-card peon-dialog-card">
-      <h2 id="hitl-global-title">Operator input needed</h2>
-      <p class="meta">Project: <a href="#" id="hitl-global-project"></a></p>
-      <p class="hitl-global-question" id="hitl-global-question"></p>
-      <label class="meta" for="hitl-global-reply">Reply / edit</label>
-      <textarea id="hitl-global-reply" rows="3" placeholder="Optional reply — required for Edit"></textarea>
-      <div class="bar hitl-global-actions">
-        <button type="button" id="hitl-global-approve">Approve</button>
-        <button type="button" class="secondary" id="hitl-global-edit">Edit &amp; send</button>
-        <button type="button" class="secondary" id="hitl-global-deny">Deny</button>
-        <button type="button" class="secondary" id="hitl-global-open">Open project</button>
-        <button type="button" class="secondary" id="hitl-global-dismiss">Dismiss</button>
-      </div>
-    </div>
-  </dialog>
-
-  <script src="{% static 'js/peon-ui.js' %}?v=20261010b"></script>
-  <script src="{% static 'js/hitl-global.js' %}?v=20261010b"></script>
-  <script>
-    PeonUI.init({ searchUrl: "{% url 'search_json' %}" });
-    PeonHitlGlobal.init({
-      listUrl: "{% url 'pending_inputs_global' %}",
-      decideUrl: "{% url 'pending_input_decide' %}",
-    });
-  </script>
+  {% url 'search_json' as search_url %}{% url 'pending_inputs_global' as hitl_list_url %}{% url 'pending_input_decide' as hitl_decide_url %}{% url 'global_events' as events_url %}
+  {% flash_payload messages as flash %}
+  {% island "toaster" messages=flash %}
+  {% island "command-palette" searchUrl=search_url %}
+  {% island "hitl-prompt" listUrl=hitl_list_url decideUrl=hitl_decide_url eventsUrl=events_url %}
+  {% island "confirm" %}
   {% block scripts %}{% endblock %}
 </body>
 </html>

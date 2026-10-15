@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+
 from typing import Any, Iterable
 
 from peon.projects.models import Project, RulesOfEngagement
 from peon.projects.target_discovery import SubjectCanonicalizer
 from peon.projects.target_shapes import (
+    as_asset_name,
     coerce_targets,
     extract_targets,
+    is_subject_type,
 )
 from peon.projects.asset_graph import AssetGraphEngine
+
+logger = logging.getLogger(__name__)
 
 def roe_block_reason(role_ids: Iterable[str] | None, scope: Iterable[Any] | None) -> str | None:
     """Fail-closed when technical probe roles have no in-scope *values*."""
@@ -54,11 +60,37 @@ def provision_project_roe(
     alias = ensure_project_database(project.pk)
     deduced: list[str] = []
     with using_project(project.pk):
-        scope = coerce_targets(roe.in_scope)
+        # Re-validate stored rows against the asset-name shape contract.
+        title_label = (project.title or "").strip().lower()
+        cleaned_scope: list[dict[str, str]] = []
+        for row in coerce_targets(roe.in_scope):
+            typ = str(row.get("type") or "")
+            val = str(row.get("value") or "").strip()
+            if not is_subject_type(typ):
+                continue
+            if typ == "asset":
+                if as_asset_name(val, explicit=True) is None:
+                    continue
+                # Title is a label unless it itself has proper-name shape.
+                if title_label and val.lower() == title_label and as_asset_name(val) is None:
+                    continue
+            cleaned_scope.append(row)
+        scope = cleaned_scope
+        if scope != list(roe.in_scope or []):
+            roe.in_scope = scope
+            roe.save(using=alias, update_fields=["in_scope", "updated_at"])
         if not scope:
-            parts = list(texts or [])
-            parts.extend([project.title or "", project.summary or ""])
+            # Prefer operator brief — never job objective prose or title labels.
+            parts = [project.summary or ""]
+            parts.extend(str(t or "") for t in (texts or []) if str(t or "").strip())
             assets = extract_targets(*parts)
+            if not assets:
+                # Same brief corpus as extract_targets (summary + provision texts).
+                blob = "\n".join(p.strip() for p in parts if (p or "").strip())
+                if len(blob) >= 2:
+                    assets = coerce_targets(SubjectCanonicalizer.suggest_assets(blob))
+            if not assets:
+                assets = extract_targets(project.title or "")
             if assets:
                 roe.in_scope = assets
                 deduced = [t["value"] for t in assets]
@@ -143,8 +175,8 @@ def add_candidates(roe: RulesOfEngagement, raw: Iterable) -> int:
                 bucket="candidate",
                 source="rules_of_engagement",
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("asset graph ingest failed: %s", exc, exc_info=True)
     return len(roe.candidates) - before
 
 def authorize_operator_scope(roe: RulesOfEngagement, text: str) -> list[dict[str, str]]:

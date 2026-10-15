@@ -34,29 +34,6 @@ def safe_join(root: Path, relative_path: str | None) -> Path | None:
     return target
 
 
-def write_rel_files(
-    root: Path,
-    files: dict[str, str],
-    *,
-    skip: set[str] | frozenset[str] = frozenset(),
-) -> list[str]:
-    """Write relative text files under ``root``; return written relative paths."""
-    written: list[str] = []
-    for rel, content in (files or {}).items():
-        rel_s = normalize_rel_path(str(rel))
-        if not rel_s or rel_s in skip:
-            if rel_s is None and str(rel or "").strip():
-                raise ValueError(f"unsafe file path {rel!r}")
-            continue
-        path = safe_join(root, rel_s)
-        if path is None:
-            raise ValueError(f"unsafe file path {rel!r}")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(str(content).rstrip() + "\n", encoding="utf-8")
-        written.append(rel_s)
-    return written
-
-
 def workspaces_root() -> Path:
     root = Path(get_config().workspaces_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -74,10 +51,6 @@ def job_dir(job_id: str) -> Path:
     path = (root / safe_workspace_key(str(job_id))).resolve()
     path.relative_to(root)
     return path
-
-
-def plans_dir(job_id: str) -> Path:
-    return job_dir(job_id) / "plans"
 
 
 def ensure_workspace_layout(root: Path) -> Path:

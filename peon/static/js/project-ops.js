@@ -73,6 +73,8 @@
     var tag = String(meta.tag || meta.feed_tag || "").toLowerCase();
     var event = streamEvent(meta);
     var role = String(meta.role || meta.chat_role || "").toLowerCase();
+    // Agent-to-agent traffic: messages, idle, wake.
+    if (tag === "a2a" || event.indexOf("a2a_") === 0) return "A2A";
     if (role === "user" || tag === "you") return "YOU";
     if (tag === "need" || event === "need_input") return "NEED";
     if (tag === "stop" || event === "operator_stop") return "STOP";
@@ -99,7 +101,12 @@
     var t = String(typ || "log").toLowerCase();
     if (t === "tool" || event === "provision_cli")
       return "TOOL";
-    if (t === "error" || t === "stderr") return "ERR";
+    if (t === "error") return "ERR";
+    if (t === "stderr") {
+      // A command that exited 0 only wrote tool chatter to stderr (banners,
+      // progress, `set -x` traces); that is not a failure.
+      return meta.exit_code === 0 ? "LOG" : "ERR";
+    }
     if (t === "status") return "STATUS";
     if (t === "result") return "RESULT";
     if (t === "thinking") return "THINK";
@@ -108,9 +115,16 @@
   }
 
   var feedFilter = "all";
+  // Agent the feed / chat are scoped to; "" = project-wide.
+  var focusJobId = "";
+
+  function jobMatchesFocus(jobId) {
+    return !focusJobId || String(jobId || "") === focusJobId;
+  }
 
   function feedFilterKey(badge) {
     var b = String(badge || "").toUpperCase();
+    if (b === "A2A") return "a2a";
     if (b === "TOOL") return "tool";
     if (b === "FIND") return "find";
     if (b === "ERR") return "err";
@@ -125,9 +139,18 @@
     var entries = log.querySelectorAll(".stream-entry");
     entries.forEach(function (article) {
       var key = article.dataset.feedKey || "other";
-      var show = feedFilter === "all" || key === feedFilter;
+      var show =
+        (feedFilter === "all" || key === feedFilter) &&
+        jobMatchesFocus(article.dataset.jobId);
       article.hidden = !show;
     });
+    var thread = el("chat-thread");
+    if (thread) {
+      thread.querySelectorAll(".chat-bubble:not(.chat-bubble-thinking)").forEach(function (b) {
+        b.hidden = !jobMatchesFocus(b.dataset.jobId);
+      });
+    }
+    if (log.dataset.followBottom !== "0") log.scrollTop = log.scrollHeight;
   }
 
   function bindFeedFilters() {
@@ -240,16 +263,6 @@
       });
     });
     return out;
-  }
-
-  function pickDefaultAgent(agents) {
-    const flat = flattenAgents(agents);
-    const running = flat.find(function (a) {
-      return a.status === "running" || a.status === "paused";
-    });
-    if (running) return running;
-    if (flat.length) return flat[0];
-    return null;
   }
 
   function rerunJob(projectPk, agent, command) {
@@ -711,6 +724,17 @@
       !!agent.terminal ||
       ["completed", "failed", "cancelled"].indexOf(status) >= 0;
 
+    const talk = document.createElement("button");
+    talk.type = "button";
+    talk.className = "secondary";
+    talk.textContent = terminal ? "Ask agent" : "Message agent";
+    talk.addEventListener("click", function () {
+      window.dispatchEvent(
+        new CustomEvent("peon:chat-target", { detail: { jobId: String(agent.id) } })
+      );
+    });
+    container.appendChild(talk);
+
     if (status === "pending" || terminal) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -747,16 +771,73 @@
     container.appendChild(live);
   }
 
+  // Latest project-level data, for the project-wide context view.
+  var projectView = { project: null, agents: [], objectives: [] };
+
+  function renderProjectContext(body) {
+    const project = projectView.project;
+    const head = document.createElement("div");
+    head.className = "context-head";
+    const name = document.createElement("strong");
+    name.textContent = (project && project.name) || "Project";
+    head.appendChild(name);
+    if (project && project.status) head.appendChild(statusPill(project.status));
+    const scope = document.createElement("span");
+    scope.className = "meta context-role";
+    scope.textContent = "project-wide" + (project && project.phase ? " · " + project.phase : "");
+    head.appendChild(scope);
+    body.appendChild(head);
+
+    const flat = flattenAgents(projectView.agents);
+    const counts = {};
+    flat.forEach(function (a) {
+      const k = String(a.status || "pending");
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    const chips = document.createElement("div");
+    chips.className = "chip-row context-roles";
+    const total = document.createElement("span");
+    total.className = "chip";
+    total.textContent = flat.length + " agents";
+    chips.appendChild(total);
+    Object.keys(counts).forEach(function (k) {
+      const c = document.createElement("span");
+      c.className = "chip";
+      c.textContent = counts[k] + " " + k;
+      chips.appendChild(c);
+    });
+    body.appendChild(chips);
+
+    if (projectView.objectives.length) {
+      const label = document.createElement("div");
+      label.className = "meta";
+      label.textContent = "Objectives";
+      body.appendChild(label);
+      projectView.objectives.forEach(function (o) {
+        const row = document.createElement("div");
+        row.className = "context-objective";
+        const t = document.createElement("div");
+        t.className = "context-obj-title";
+        t.textContent =
+          (o.seq != null ? "OBJ-" + o.seq + " · " : "") + (o.title || o.name || o.id);
+        row.appendChild(t);
+        row.appendChild(statusPill(o.status));
+        body.appendChild(row);
+      });
+    }
+    const hint = document.createElement("p");
+    hint.className = "meta";
+    hint.textContent = "Select an agent in the graph for its context; click empty space to return here.";
+    body.appendChild(hint);
+  }
+
   function renderContext(agent, latestByJob) {
     const body = el("context-body");
     const actions = el("context-actions");
     if (!body) return;
     body.replaceChildren();
     if (!agent) {
-      const p = document.createElement("p");
-      p.className = "meta";
-      p.textContent = "Select an agent in the graph.";
-      body.appendChild(p);
+      renderProjectContext(body);
       if (actions) actions.replaceChildren();
       return;
     }
@@ -917,6 +998,12 @@
       });
       menu.appendChild(b);
     };
+    mk("Message agent", function () {
+      if (onEdit) onEdit(agent);
+      window.dispatchEvent(
+        new CustomEvent("peon:chat-target", { detail: { jobId: String(agent.id) } })
+      );
+    });
     mk("Edit command", function () {
       if (onEdit) onEdit(agent);
       openCommandEditDialog(projectPk, agent, onEdit);
@@ -1057,6 +1144,11 @@
     var who = document.createElement("span");
     who.textContent =
       side === "user" ? "You" : side === "system" ? "Need input" : "Peon";
+    var agentLabel = String(metaObj.agent_label || "").trim();
+    if (agentLabel) {
+      // Addressed conversation: "You → Recon Specialist" / "Recon Specialist".
+      who.textContent = side === "user" ? "You → " + agentLabel : agentLabel;
+    }
     meta.appendChild(who);
     var time = document.createElement("span");
     time.textContent = formatTime(msg.created_at) || "";
@@ -1077,8 +1169,20 @@
 
     bubble.appendChild(meta);
     bubble.appendChild(body);
+    var bubbleJob = String(
+      msg.job_id || metaObj.to_job_id || metaObj.from_job_id || metaObj.job_id || ""
+    );
+    if (bubbleJob) bubble.dataset.jobId = bubbleJob;
+    if (!jobMatchesFocus(bubbleJob)) bubble.hidden = true;
     thread.appendChild(bubble);
     thread.scrollTop = thread.scrollHeight;
+  }
+
+  function setFocus(jobId) {
+    focusJobId = String(jobId || "");
+    applyFeedFilter();
+    var thread = el("chat-thread");
+    if (thread) thread.scrollTop = thread.scrollHeight;
   }
 
   function appendMessage(log, msg, latestByJob) {
@@ -1138,11 +1242,15 @@
     badge.textContent = badgeText;
     meta.appendChild(badge);
     article.dataset.feedKey = feedFilterKey(badgeText);
+    if (badgeText === "ERR") article.classList.add("is-error");
 
     article.appendChild(body);
     article.appendChild(meta);
     log.appendChild(article);
-    if (feedFilter !== "all" && article.dataset.feedKey !== feedFilter) {
+    if (
+      (feedFilter !== "all" && article.dataset.feedKey !== feedFilter) ||
+      !jobMatchesFocus(article.dataset.jobId)
+    ) {
       article.hidden = true;
     }
     log.scrollTop = log.scrollHeight;
@@ -1713,9 +1821,33 @@
       const knownAgentStatus = {};
       const latestByJob = {};
 
+      function deselectAgent() {
+        if (!selectedId) return;
+        selectedId = "";
+        setFocus("");
+        if (window.PeonProjectConsoleChat && window.PeonProjectConsoleChat.select) {
+          window.PeonProjectConsoleChat.select("");
+        }
+        renderGraph(
+          agentsList,
+          agentsCache,
+          projectPk,
+          selectedId,
+          selectAgent,
+          onAgentContext
+        );
+        renderContext(null, latestByJob);
+        fillContextActions(el("context-actions"), null, projectPk);
+      }
+      window.addEventListener("peon:agent-deselected", deselectAgent);
+
       function selectAgent(agent) {
         if (!agent) return;
         selectedId = String(agent.id);
+        setFocus(selectedId);
+        if (window.PeonProjectConsoleChat && window.PeonProjectConsoleChat.select) {
+          window.PeonProjectConsoleChat.select(selectedId);
+        }
         window.dispatchEvent(
           new CustomEvent("peon:agent-selected", {
             detail: { jobId: String(agent.id), agent: agent },
@@ -1896,14 +2028,22 @@
           if (sig === lastSig) return;
           lastSig = sig;
           agentsCache = agents;
+          if (
+            window.PeonProjectConsoleChat &&
+            window.PeonProjectConsoleChat.setAgents
+          ) {
+            window.PeonProjectConsoleChat.setAgents(flattenAgents(agents));
+          }
 
           let selected = flattenAgents(agents).find(function (a) {
             return String(a.id) === selectedId;
           });
-          if (!selected) {
-            selected = pickDefaultAgent(agents);
-            selectedId = selected ? String(selected.id) : "";
+          if (!selected && selectedId) {
+            // The selected agent disappeared: fall back to the project view.
+            selectedId = "";
+            setFocus("");
           }
+          projectView = { project: project, agents: agents, objectives: objectives };
           renderGraph(
             agentsList,
             agents,
@@ -1920,10 +2060,13 @@
         } catch (_) {}
       }
 
-      setInterval(pollMessages, 1000);
-      setInterval(pollJobs, 2000);
-      pollMessages();
-      pollJobs();
+      if (PeonUI.live) {
+        // Server-sent events: refresh only when the server reports a change.
+        PeonUI.live(projectPk, { onMessages: pollMessages, onChange: pollJobs });
+      } else {
+        PeonUI.poll(pollMessages, 1000);
+        PeonUI.poll(pollJobs, 2000);
+      }
       reloadFindings = bindFindingsBoard(
         projectPk,
         opts.findingStatuses || []

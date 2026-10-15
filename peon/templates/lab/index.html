@@ -1,37 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Lab — Peon{% endblock %}
+{% load ui %}
+{% block title %}Lab · Peon{% endblock %}
 {% block content %}
-<header class="page-header">
-  <div>
-    <h1>Lab</h1>
-    <p class="lead">Author catalog capabilities, manage engagement roles, install Claude skills, and govern Cognee memory.</p>
-  </div>
-</header>
-
-<ul class="lab-page-list">
-  <li>
-    <a class="lab-page-link" href="{% url 'lab_toolsmith' %}">
-      <span class="lab-page-link-title">Toolsmith</span>
-      <span class="lab-page-link-desc">Suggest, edit, and save catalog tools and skills with OpenCode.</span>
-    </a>
-  </li>
-  <li>
-    <a class="lab-page-link" href="{% url 'lab_roles' %}">
-      <span class="lab-page-link-title">Roles</span>
-      <span class="lab-page-link-desc">View and edit engagement roles in the platform database.</span>
-    </a>
-  </li>
-  <li>
-    <a class="lab-page-link" href="{% url 'lab_skills' %}">
-      <span class="lab-page-link-title">Imported skills</span>
-      <span class="lab-page-link-desc">Install Claude Agent Skills and assign them to matching roles automatically.</span>
-    </a>
-  </li>
-  <li>
-    <a class="lab-page-link" href="{% url 'lab_dream' %}">
-      <span class="lab-page-link-title">Dream</span>
-      <span class="lab-page-link-desc">Cognee health, recall, and background dreaming cycles.</span>
-    </a>
-  </li>
-</ul>
+<c-page-header title="Lab" description="Author catalog capabilities and govern long-term memory." />
+<div class="grid gap-4 sm:grid-cols-2">
+  <a href="{% url 'lab_toolsmith' %}" class="group rounded-xl border bg-card p-5 shadow-sm transition-colors hover:border-primary/40 hover:bg-accent/40">
+    <div class="mb-3 flex size-9 items-center justify-center rounded-lg border bg-muted text-muted-foreground group-hover:text-foreground">{% icon "hammer" %}</div>
+    <h2 class="text-sm font-semibold">Toolsmith</h2>
+    <p class="mt-1 text-sm text-muted-foreground">Suggest, edit, test and save catalog tools and skills with OpenCode.</p>
+  </a>
+  <a href="{% url 'lab_dream' %}" class="group rounded-xl border bg-card p-5 shadow-sm transition-colors hover:border-primary/40 hover:bg-accent/40">
+    <div class="mb-3 flex size-9 items-center justify-center rounded-lg border bg-muted text-muted-foreground group-hover:text-foreground">{% icon "brain" %}</div>
+    <h2 class="text-sm font-semibold">Dream</h2>
+    <p class="mt-1 text-sm text-muted-foreground">Cognee health, memory recall and background dreaming cycles.</p>
+  </a>
+</div>
 {% endblock %}

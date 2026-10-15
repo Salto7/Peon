@@ -17,7 +17,6 @@ from orchestrator.skills.common import (
     MAX_COMPATIBILITY_LEN,
     MAX_DESCRIPTION_LEN,
     MAX_NAME_LEN,
-    MANIFEST_NAMES,
     valid_skill_name,
 )
 from orchestrator.utils.strings import as_bool, as_str_list

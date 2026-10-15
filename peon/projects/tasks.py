@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 def process_job(job_id: str) -> None:
     """Claim PENDING→RUNNING then run the job agent inside the project sandbox."""
     # circular: tasks ↔ job_run
-    from peon.projects.job_run import JobExecutionService
+    from peon.projects.job_run import finish_job, run_job
 
     close_old_connections()
 
@@ -83,10 +83,10 @@ def process_job(job_id: str) -> None:
             return
 
         try:
-            JobExecutionService.run(job)
+            run_job(job)
         except Exception as exc:
             logger.exception("process_job failed for %s", job_id)
-            JobExecutionService.finish(job, status=JobStatus.FAILED, error=str(exc))
+            finish_job(job, status=JobStatus.FAILED, error=str(exc))
         finally:
             close_old_connections()
 
@@ -187,14 +187,55 @@ def enqueue_learn_lab_cleanup() -> dict:
     return result
 
 
-# Durable schedule scanner interval (ms). Re-arms itself after each pass.
+# Self re-arming scanners. Exactly one chain per scanner: ``_arm`` stores a
+# token in Redis and a run only re-arms while it still holds that token, so a
+# second chain (several processes booting at once) retires itself, and a dead
+# chain is restarted by the next process boot once its key expires.
 _DURABLE_SCHEDULER_MS = max(
     15_000, int(getattr(settings, "DURABLE_SCHEDULER_INTERVAL_MS", 60_000) or 60_000)
 )
+_SCHEDULER_KEY = "peon:scheduler:{}"
+
+
+def _redis():
+    client = getattr(dramatiq.get_broker(), "client", None)
+    if client is None:
+        raise RuntimeError("scheduler needs the Redis broker")
+    return client
+
+
+def _arm(actor, name: str, delay_ms: int, *, force: bool = False) -> bool:
+    """Start a chain unless one is alive. Returns True when this call armed it."""
+    import uuid
+
+    token = uuid.uuid4().hex
+    ttl = max(60, (delay_ms * 3) // 1000 + 120)
+    key = _SCHEDULER_KEY.format(name)
+    if not _redis().set(key, token, nx=not force, ex=ttl):
+        return False
+    actor.send_with_options(args=(token,), delay=delay_ms)
+    return True
+
+
+def _rearm(actor, name: str, token: str, delay_ms: int) -> None:
+    """Re-queue the chain that owns ``token``; a stale chain stops here."""
+    if not token:
+        # Legacy untokened message: hand over to a tokened chain (if none runs).
+        _arm(actor, name, delay_ms)
+        return
+    key = _SCHEDULER_KEY.format(name)
+    client = _redis()
+    current = client.get(key)
+    current = current.decode() if isinstance(current, bytes) else current
+    if current not in (None, token):
+        logger.info("%s: duplicate chain retired", name)
+        return
+    client.set(key, token, ex=max(60, (delay_ms * 3) // 1000 + 120))
+    actor.send_with_options(args=(token,), delay=delay_ms)
 
 
 @dramatiq.actor(queue_name="peon.jobs", max_retries=1, time_limit=120_000)
-def durable_scheduler() -> None:
+def durable_scheduler(token: str = "") -> None:
     """Fire due ProjectSchedule rows (cron/interval), then re-queue self."""
     close_old_connections()
     try:
@@ -209,22 +250,21 @@ def durable_scheduler() -> None:
         close_old_connections()
         if _dramatiq_enabled():
             try:
-                durable_scheduler.send_with_options(delay=_DURABLE_SCHEDULER_MS)
+                _rearm(durable_scheduler, "durable", token, _DURABLE_SCHEDULER_MS)
             except Exception:
-                logger.debug("durable_scheduler re-arm failed", exc_info=True)
+                logger.warning("durable_scheduler re-arm failed", exc_info=True)
 
 
-def ensure_durable_scheduler() -> bool:
-    """Kick the durable schedule scanner once (idempotent enough for AppConfig.ready)."""
+def ensure_durable_scheduler(*, force: bool = False) -> bool:
+    """Start the durable schedule scanner if no chain is alive (``force``: always)."""
     if not _dramatiq_enabled():
         return False
     if not getattr(settings, "DURABLE_SCHEDULER_ENABLED", True):
         return False
     try:
-        durable_scheduler.send_with_options(delay=5_000)
-        return True
+        return _arm(durable_scheduler, "durable", 5_000, force=force)
     except Exception:
-        logger.debug("ensure_durable_scheduler failed", exc_info=True)
+        logger.warning("ensure_durable_scheduler failed", exc_info=True)
         return False
 
 
@@ -253,7 +293,7 @@ def _dreaming_enabled() -> bool:
 
 
 @dramatiq.actor(queue_name="peon.jobs", max_retries=1, time_limit=600_000)
-def dream_scheduler() -> None:
+def dream_scheduler(token: str = "") -> None:
     """Run a Cognee improve (dream) cycle, then re-queue self."""
     close_old_connections()
     try:
@@ -268,20 +308,19 @@ def dream_scheduler() -> None:
         close_old_connections()
         if _dramatiq_enabled() and _dreaming_enabled():
             try:
-                dream_scheduler.send_with_options(delay=_dream_interval_ms())
+                _rearm(dream_scheduler, "dream", token, _dream_interval_ms())
             except Exception:
-                logger.debug("dream_scheduler re-arm failed", exc_info=True)
+                logger.warning("dream_scheduler re-arm failed", exc_info=True)
 
 
-def ensure_dream_scheduler() -> bool:
-    """Kick the Cognee dream scanner once (AppConfig.ready)."""
+def ensure_dream_scheduler(*, force: bool = False) -> bool:
+    """Start the Cognee dream scanner if no chain is alive (``force``: always)."""
     if not _dramatiq_enabled():
         return False
     if not _dreaming_enabled():
         return False
     try:
-        dream_scheduler.send_with_options(delay=30_000)
-        return True
+        return _arm(dream_scheduler, "dream", 30_000, force=force)
     except Exception:
-        logger.debug("ensure_dream_scheduler failed", exc_info=True)
+        logger.warning("ensure_dream_scheduler failed", exc_info=True)
         return False
