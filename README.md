@@ -66,7 +66,7 @@ flowchart TD
 - **PM** — `project-manager` plans objectives, steers/cancels, coordinates specialists.
 - **Roles** — platform DB identities (Lab → Roles) plus skill affinity bindings stored in the same catalog.
 - **Workers** — One Dramatiq **Job** per objective/child in the sandbox; `spawn_work` / `wait_for_work` for fan-out.
-- **A2A** — Structured `AgentMessage` between live jobs (not chat scraping). Spawn creates jobs; A2A coordinates them.
+- **A2A** — Structured `AgentMessage` between live jobs. Spawn creates jobs; A2A coordinates them.
 
 ### Engagement
 
@@ -83,12 +83,12 @@ flowchart TD
 - **Per-project sandbox** — Isolated Docker; artifacts stay in-project; wiped on delete.
 - **Catalogs** — roles, skills, role mappings, and MCP servers live in the platform SQLite catalog; CLI tools stay in `tools/catalog/*.yaml`.
 - **Install cascade** — PATH → catalog YAML → LLM recipe (`apt` / `github_release` / `git_clone` / `pip` / `custom` + `verify`).
-- **MCP** — MCP servers are parsed into the platform catalog and provisioned inside the project sandbox. Heavy backing services stay outside the container and are reached through per-project environment values.
+- **MCP** — MCP servers are parsed into the platform catalog and provisioned inside the project sandbox. Heavy backing services (ghidra,BHCE ...etc) stay outside the container and are reached through URIs.
 
 ### Lab
 
 - **Toolsmith** — Prompt Poen to prepare installation package for a complex/custom tool or skill. if code writting is needed, Peon uses OpenCode; Toolsmish also help linting and testing draft packages in a Lab sandbox (not mid-engagement). 
-- **Dream** — Improve performance by curating and improving persistant memory by improvement cycle. improved memory is recalled when a new project starts, reducing potential issues nad learning from previous prompts/mistakes.
+- **Dream** — Improve performance by curating and improving persistant memory by improvement cycle. improved memory is recalled when a new project starts, reducing potential issues nad learning from previous prompts/mistakes (need to be revised).
 
 ### Memory (Cognee)
 
