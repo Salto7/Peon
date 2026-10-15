@@ -125,6 +125,26 @@ def provision_project_roe(
     return roe, deduced
 
 
+def _escalate_scope_change(roe: RulesOfEngagement, added: list[dict[str, str]]) -> None:
+    """Wake the resident governance PM so it can re-govern after a scope change."""
+    if not added:
+        return
+    project = getattr(roe, "project", None)
+    if project is None:
+        return
+    try:
+        from peon.projects import a2a
+
+        vals = ", ".join(t.get("value", "") for t in added if t.get("value"))[:300]
+        a2a.notify_governor(
+            project,
+            text=f"Scope changed: {len(added)} target(s) now in RoE in_scope: {vals}",
+            escalate=True,
+        )
+    except Exception:
+        logger.debug("governor scope-escalate failed", exc_info=True)
+
+
 def promote_candidates(
     roe: RulesOfEngagement,
     *,
@@ -154,6 +174,7 @@ def promote_candidates(
         using=project_alias_or_default(roe.project_id),
         update_fields=["in_scope", "candidates", "updated_at"],
     )
+    _escalate_scope_change(roe, chosen)
     return len(chosen)
 
 
@@ -205,6 +226,7 @@ def authorize_operator_scope(roe: RulesOfEngagement, text: str) -> list[dict[str
     ]
     roe.candidates = cands
     roe.save(update_fields=["in_scope", "candidates", "updated_at"])
+    _escalate_scope_change(roe, novel)
     return novel
 
 
