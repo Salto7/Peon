@@ -16,6 +16,11 @@ _JSON_OBJ = re.compile(r"\{.*\}", re.S)
 _THINK = frozenset(["thinking", "reasoning", "thought"])
 
 
+def is_kebab(value: str) -> bool:
+    """True for a lowercase kebab-case id (``nmap``, ``http-prober``)."""
+    return bool(_KEBAB.match((value or "").strip()))
+
+
 def as_bool(value: Any, *, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value

@@ -140,9 +140,7 @@ class DockerEngine(SharedBase):
 
     def ps_ids(self, *filters: str, all_containers: bool = True) -> list[str]:
         try:
-            listed = self.client.containers.list(
-                all=all_containers, filters=_filters(filters)
-            )
+            listed = self.client.containers.list(all=all_containers, filters=_filters(filters))
         except DockerException:
             return []
         return [box.id for box in listed]
@@ -162,6 +160,7 @@ class DockerEngine(SharedBase):
         extra_hosts: dict[str, str] | None = None,
         restart_policy: str = "",
         command: list[str] | None = None,
+        shm_size: str = "",
     ) -> ExecResult:
         kwargs: dict[str, Any] = {
             "name": name,
@@ -185,6 +184,8 @@ class DockerEngine(SharedBase):
             kwargs["extra_hosts"] = dict(extra_hosts)
         if restart_policy:
             kwargs["restart_policy"] = {"Name": restart_policy}
+        if shm_size:
+            kwargs["shm_size"] = shm_size
         try:
             box = self.client.containers.run(image, **kwargs)
         except DockerException as exc:
@@ -204,6 +205,7 @@ class DockerEngine(SharedBase):
         extra_hosts: dict[str, str] | None = None,
         command: list[str] | None = None,
         pull_image: bool = False,
+        shm_size: str = "",
     ) -> str:
         exists, running = self.inspect_running(name)
         if exists and running:
@@ -229,6 +231,7 @@ class DockerEngine(SharedBase):
             env=env,
             extra_hosts=extra_hosts,
             command=command,
+            shm_size=shm_size,
         )
         if create.ok:
             return "created"

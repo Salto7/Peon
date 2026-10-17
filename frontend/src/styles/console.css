@@ -96,7 +96,13 @@
     @apply flex min-w-0 items-center gap-2.5;
   }
   .org-agent-icon {
-    @apply relative grid size-8 shrink-0 place-items-center rounded-md bg-muted text-sm text-muted-foreground;
+    @apply relative grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground;
+  }
+  .org-agent-glyph {
+    /* Chess glyphs sit in a small part of the em box, so the type size is
+       larger than the square and the overflow clip keeps the ink inside it. */
+    @apply grid size-full place-items-center overflow-hidden text-[44px] leading-none;
+    border-radius: inherit;
   }
   .org-agent-led,
   .flow-node-led {
@@ -110,6 +116,15 @@
   }
   .flow-node-led[data-led="failed"] {
     @apply bg-destructive;
+  }
+  /* Running, but no stream activity in a while — may be stuck; needs a look,
+     distinct from the normal pulsing "active" blue. */
+  .flow-node-led[data-led="stale"] {
+    @apply bg-warning;
+    box-shadow: 0 0 0 2px color-mix(in oklch, var(--warning) 35%, transparent);
+  }
+  .org-agent-node[data-led="stale"] .org-agent-title {
+    @apply text-warning;
   }
   .org-agent-text {
     @apply flex min-w-0 flex-col gap-0.5;
@@ -133,6 +148,44 @@
   .org-agent-live {
     @apply truncate text-[11px] text-muted-foreground;
   }
+  .org-agent-activity {
+    @apply block max-w-full truncate text-[11px] text-muted-foreground;
+    width: fit-content;
+  }
+  .org-agent-stale {
+    @apply block max-w-full truncate text-[11px] font-medium text-warning;
+    width: fit-content;
+  }
+  .org-agent-activity.is-live {
+    color: transparent;
+    background-image: linear-gradient(
+      90deg,
+      var(--muted-foreground) 0%,
+      var(--muted-foreground) 35%,
+      var(--foreground) 50%,
+      var(--muted-foreground) 65%,
+      var(--muted-foreground) 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    animation: activity-flash 1.8s linear infinite;
+  }
+  @keyframes activity-flash {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: 0% 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .org-agent-activity.is-live {
+      animation: none;
+      color: var(--muted-foreground);
+      background: none;
+    }
+  }
   .org-agent-obj-link {
     @apply text-link hover:underline;
   }
@@ -146,7 +199,10 @@
     @apply absolute right-3 bottom-3 z-[var(--z-sticky)] flex flex-col overflow-hidden rounded-md border bg-popover shadow-sm;
   }
   .as-zoom-btn {
-    @apply grid size-8 cursor-pointer place-items-center text-sm text-foreground hover:bg-accent;
+    @apply grid h-8 min-w-8 cursor-pointer place-items-center px-1.5 text-sm text-foreground hover:bg-accent;
+  }
+  .as-zoom-fit {
+    @apply text-xs font-medium;
   }
   .agents-empty {
     @apply p-6 text-sm text-muted-foreground;
@@ -447,4 +503,29 @@
   .flow-node[data-led="idle"] {
     @apply opacity-80;
   }
+}
+
+/* Maximised panel (data-maximize-toggle): full viewport, graph fills the rest. */
+.maximizable .maximize-icon-off {
+  display: none;
+}
+.maximizable[data-maximized] .maximize-icon-on {
+  display: none;
+}
+.maximizable[data-maximized] .maximize-icon-off {
+  display: inline-flex;
+}
+.maximizable[data-maximized] {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+  border: 0;
+}
+.maximizable[data-maximized] .agent-tree {
+  height: auto !important;
+  flex: 1 1 0;
+  min-height: 0;
 }

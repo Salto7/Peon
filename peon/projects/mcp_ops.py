@@ -9,14 +9,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_SECRET_HINT = re.compile(
-    r"(token|password|secret|api_?key|authorization|access_token|refresh_token)",
-    re.I,
-)
-
-
-def _looks_secret(name: str) -> bool:
-    return bool(_SECRET_HINT.search(str(name or "")))
 
 
 def list_project_mcp_configs(project_id: object) -> list[dict[str, Any]]:
@@ -50,16 +42,26 @@ def list_project_mcp_configs(project_id: object) -> list[dict[str, Any]]:
         # Secret values never go back to the browser; the form shows "set".
         fields = [
             {
-                "name": name,
-                "required": bool(required),
-                "value": "" if _looks_secret(name) else stored.get(name, ""),
-                "secret": _looks_secret(name),
-                "is_set": bool(stored.get(name)),
+                "name": f["name"],
+                "required": bool(f.get("required")),
+                "type": f.get("type") or "string",
+                "description": f.get("description") or "",
+                "default": f.get("default") or "",
+                "choices": list(f.get("choices") or []),
+                "value": (
+                    ""
+                    if f.get("type") == "secret"
+                    else stored.get(f["name"], f.get("default") or "")
+                ),
+                "secret": f.get("type") == "secret",
+                "is_set": bool(stored.get(f["name"])),
             }
-            for name, required in rec.env_schema
+            for f in rec.env_schema_full
         ]
         missing = [
-            name for name, required in rec.env_schema if required and not stored.get(name)
+            f["name"]
+            for f in rec.env_schema_full
+            if f.get("required") and not stored.get(f["name"])
         ]
         out.append(
             {
@@ -111,7 +113,8 @@ def save_project_mcp_env(
     rec = PlatformCatalog.shared().get_mcp(mid)
     if rec is None or not rec.enabled:
         raise ValueError(f"unknown or disabled MCP server {mid!r}")
-    allowed = {name for name, _req in rec.env_schema}
+    fields_by_name = {f["name"]: f for f in rec.env_schema_full}
+    allowed = set(fields_by_name)
     cleaned: dict[str, str] = {}
     for key, value in (env or {}).items():
         name = str(key or "").strip()
@@ -120,6 +123,19 @@ def save_project_mcp_env(
         if not _ENV_NAME.match(name):
             raise ValueError(f"invalid env name {name!r}")
         text = "" if value is None else str(value).strip()
+        etype = fields_by_name[name].get("type") or "string"
+        if etype == "boolean":
+            if text:
+                text = "true" if text.lower() in {"true", "1", "on", "yes"} else "false"
+        elif etype == "number" and text:
+            try:
+                float(text)
+            except ValueError:
+                raise ValueError(f"{name} must be a number") from None
+        elif etype == "choice" and text:
+            choices = fields_by_name[name].get("choices") or []
+            if choices and text not in choices:
+                raise ValueError(f"{name} must be one of {', '.join(choices)}")
         if text:
             cleaned[name] = text
 
@@ -129,7 +145,8 @@ def save_project_mcp_env(
 
     stored = _stored_env(alias, pid, mid)
     for name in allowed:
-        if _looks_secret(name) and name not in cleaned and name not in clear and stored.get(name):
+        is_secret = fields_by_name[name].get("type") == "secret"
+        if is_secret and name not in cleaned and name not in clear and stored.get(name):
             cleaned[name] = stored[name]
 
     qs = ProjectMcpConfig.objects.using(alias).filter(project_id=pid, mcp_id=mid)
@@ -148,7 +165,7 @@ def save_project_mcp_from_post(project_id: object, post) -> int:
     """Parse ``env__<mcp_id>__<NAME>`` form fields. Returns servers updated."""
     buckets: dict[str, dict[str, str]] = {}
     clears: dict[str, set[str]] = {}
-    for key in post.keys():
+    for key in post:
         prefix, _, rest = str(key or "").partition("__")
         if prefix not in {"env", "clear"}:
             continue

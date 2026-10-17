@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
-from typing import Iterable, Optional
 
 
 def _split_no_proxy(raw: str | None) -> tuple[str, ...]:
@@ -13,7 +13,7 @@ def _split_no_proxy(raw: str | None) -> tuple[str, ...]:
     return tuple(p.strip() for p in raw.replace(";", ",").split(",") if p.strip())
 
 
-def resolve_proxy_url(explicit: str | None = None) -> Optional[str]:
+def resolve_proxy_url(explicit: str | None = None) -> str | None:
     """CLI/env proxy resolution. Empty string disables env proxy."""
     if explicit is not None:
         return explicit.strip() or None
@@ -143,15 +143,17 @@ class LimitsConfig:
 
     max_entities: int = 12
     max_enrich_domains: int = 6
-    entra_verify_max: int = 200
+    # None = no limit. These bound *work*; they must never silently drop
+    # discovered domains from the result.
+    entra_verify_max: int | None = None
     entra_verify_concurrency: int = 10
-    dangling_max_domains: int = 200
+    dangling_max_domains: int | None = None
     dangling_concurrency: int = 12
     dangling_check_rdap: bool = True
     urlscan_size: int = 30
     dnslytics_max_domains: int = 5
     dnslytics_max_gtm_reverse: int = 5
-    tenant_domains_max: int = 150
+    tenant_domains_max: int | None = None
     playwright_max_queries: int = 6
 
 

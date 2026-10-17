@@ -5,6 +5,10 @@
  *    (``data-confirm-label``, ``data-confirm-title``; destructive by default).
  *  - ``<form data-bulk id=X>`` with ``[data-bulk-row][form=X]`` checkboxes,
  *    ``[data-bulk-all]``, ``[data-bulk-count]`` and ``[data-bulk-btn]``.
+ *  - ``[data-collapse-toggle=ID]`` button toggles ``data-collapsed`` on ``#ID``
+ *    (state remembered in localStorage).
+ *  - ``[data-maximize-toggle=ID]`` button toggles ``data-maximized`` on ``#ID``
+ *    (full-viewport panel; Esc exits).
  *  - ``<details data-menu>`` dropdowns close on outside click / Escape.
  */
 export const CONFIRM_EVENT = "peon:confirm";
@@ -139,8 +143,85 @@ function bindMenus() {
   document.addEventListener("scroll", reposition, true);
 }
 
+function collapseKey(id: string) {
+  return `peon:collapse:${id}`;
+}
+
+function applyCollapse(id: string, collapsed: boolean) {
+  const target = document.getElementById(id);
+  if (!target) return;
+  target.toggleAttribute("data-collapsed", collapsed);
+  document
+    .querySelectorAll<HTMLElement>(`[data-collapse-toggle="${id}"]`)
+    .forEach((btn) => {
+      btn.setAttribute("aria-expanded", String(!collapsed));
+      btn.title = collapsed ? "Expand" : "Collapse";
+    });
+}
+
+function bindCollapse() {
+  document.querySelectorAll<HTMLElement>("[data-collapse-toggle]").forEach((btn) => {
+    const id = btn.dataset.collapseToggle ?? "";
+    let stored = false;
+    try {
+      stored = localStorage.getItem(collapseKey(id)) === "1";
+    } catch {
+      /* storage unavailable */
+    }
+    applyCollapse(id, stored);
+  });
+  document.addEventListener("click", (e) => {
+    const btn = (e.target as Element).closest<HTMLElement>("[data-collapse-toggle]");
+    if (!btn) return;
+    const id = btn.dataset.collapseToggle ?? "";
+    const target = document.getElementById(id);
+    if (!target) return;
+    const collapsed = !target.hasAttribute("data-collapsed");
+    applyCollapse(id, collapsed);
+    try {
+      localStorage.setItem(collapseKey(id), collapsed ? "1" : "0");
+    } catch {
+      /* storage unavailable */
+    }
+  });
+}
+
+function setMaximized(target: HTMLElement, on: boolean) {
+  target.toggleAttribute("data-maximized", on);
+  document.body.style.overflow = on ? "hidden" : "";
+  document
+    .querySelectorAll<HTMLElement>(`[data-maximize-toggle="${target.id}"]`)
+    .forEach((btn) => {
+      btn.setAttribute("aria-pressed", String(on));
+      const label = on ? "Exit full screen (Esc)" : "Maximise graph";
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+    });
+  // Let the layout settle, then ask graph widgets to re-centre / re-fit.
+  requestAnimationFrame(() => {
+    window.dispatchEvent(new Event("resize"));
+    target.querySelector<HTMLElement>('[data-ag-zoom="center"]')?.click();
+  });
+}
+
+function bindMaximize() {
+  document.addEventListener("click", (e) => {
+    const btn = (e.target as Element).closest<HTMLElement>("[data-maximize-toggle]");
+    if (!btn) return;
+    const target = document.getElementById(btn.dataset.maximizeToggle ?? "");
+    if (target) setMaximized(target, !target.hasAttribute("data-maximized"));
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const open = document.querySelector<HTMLElement>("[data-maximized]");
+    if (open?.id) setMaximized(open, false);
+  });
+}
+
 export function bindBehaviors() {
   bindConfirm();
   bindBulk();
+  bindCollapse();
+  bindMaximize();
   bindMenus();
 }

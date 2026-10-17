@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import logging
-
 import json
+import logging
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +21,11 @@ from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.utils.commands import catalog_cli_in_command
 from orchestrator.utils.paths import format_roe_block, safe_join
 from orchestrator.utils.stream_events import (
+    EVENT_READ_ARTIFACT,
+    EVENT_RECORD_FINDING,
+    EVENT_REPORT_NOTE,
     EVENT_RUN_CLI,
+    EVENT_WRITE_ARTIFACT,
     envelope,
     event_of,
     hosts_in_command,
@@ -30,8 +34,8 @@ from orchestrator.utils.stream_events import (
     payload_command,
     payload_hosts,
 )
-from peon.projects.hitl import create_operator_prompt
 from peon.projects.findings import FindingStore
+from peon.projects.hitl import create_operator_prompt
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
     Finding,
@@ -59,25 +63,74 @@ def agent_run_config() -> AgentRunConfig:
     """Load agent governors from Peon Settings (DB) with .env defaults."""
     return agent_run_config_from_mapping(
         {
-            "AGENT_MAX_FAILURE_REPLANS": PeonSettings.get_int(
-                "AGENT_MAX_FAILURE_REPLANS", 2
-            ),
+            "AGENT_MAX_FAILURE_REPLANS": PeonSettings.get_int("AGENT_MAX_FAILURE_REPLANS", 2),
             "AGENT_MAX_ITERATIONS": PeonSettings.get_int("AGENT_MAX_ITERATIONS", 40),
             "AGENT_MAX_SUBAGENTS": PeonSettings.get_int("AGENT_MAX_SUBAGENTS", 4),
-            "AGENT_MAX_SUBAGENT_DEPTH": PeonSettings.get_int(
-                "AGENT_MAX_SUBAGENT_DEPTH", 2
-            ),
-            "AGENT_RUNTIME_ENABLED": PeonSettings.get_bool(
-                "AGENT_RUNTIME_ENABLED", True
-            ),
-            "CREW_REASONING_EFFORT": PeonSettings.get_str(
-                "CREW_REASONING_EFFORT", "low"
-            ),
-            "CREW_REASONING_MAX_ATTEMPTS": PeonSettings.get_int(
-                "CREW_REASONING_MAX_ATTEMPTS", 1
-            ),
+            "AGENT_MAX_SUBAGENT_DEPTH": PeonSettings.get_int("AGENT_MAX_SUBAGENT_DEPTH", 2),
+            "AGENT_RUNTIME_ENABLED": PeonSettings.get_bool("AGENT_RUNTIME_ENABLED", True),
+            "CREW_REASONING_EFFORT": PeonSettings.get_str("CREW_REASONING_EFFORT", "low"),
+            "CREW_REASONING_MAX_ATTEMPTS": PeonSettings.get_int("CREW_REASONING_MAX_ATTEMPTS", 1),
         }
     )
+
+
+GENERATED_MARK = "<!-- peon:generated -->"
+
+
+def _section_is_generated(report: str, heading: str) -> bool:
+    """True when ``## heading`` exists and carries the generated-content mark."""
+    lines = report.split("\n")
+    want = f"## {heading}".strip().lower()
+    for i, ln in enumerate(lines):
+        if ln.strip().lower() != want:
+            continue
+        for nxt in lines[i + 1 : i + 4]:
+            if nxt.strip() == GENERATED_MARK:
+                return True
+            if nxt.startswith("## "):
+                break
+    return False
+
+
+def _strip_leading_heading(body: str, heading: str) -> str:
+    """Drop a first line that merely repeats the section heading (any ``#`` level)."""
+    lines = (body or "").strip().split("\n")
+    first = lines[0].strip().lstrip("#").strip().rstrip(":").lower() if lines else ""
+    if lines and lines[0].lstrip().startswith("#") and first == heading.strip().lower():
+        return "\n".join(lines[1:]).strip()
+    return (body or "").strip()
+
+
+def _replace_section(report: str, heading: str, body: str) -> str | None:
+    """Swap the body of an existing ``## heading`` section; None if absent.
+
+    Re-writing a section (e.g. after the deterministic analyzer draft) must
+    replace it, not append a second copy.
+    """
+    lines = report.split("\n")
+    want = f"## {heading}".strip().lower()
+    start = next((i for i, ln in enumerate(lines) if ln.strip().lower() == want), None)
+    if start is None:
+        return None
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    new = [lines[start], "", body.strip(), ""]
+    return "\n".join(lines[:start] + new + lines[end:]).rstrip() + "\n"
+
+
+@contextmanager
+def _report_lock(lock_path: Path):
+    """Exclusive advisory lock so concurrent report appends cannot clobber."""
+    import fcntl
+
+    with open(lock_path, "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 class JobAgentBridge(AgentBridgeBase):
@@ -116,13 +169,9 @@ class JobAgentBridge(AgentBridgeBase):
 
         brief = (description or "").strip()
         if scope_slice:
-            slice_lines = [
-                f"- {k}: {v}" for k, v in scope_slice.items() if str(k).strip()
-            ]
+            slice_lines = [f"- {k}: {v}" for k, v in scope_slice.items() if str(k).strip()]
             if slice_lines:
-                brief = (
-                    f"{brief}\n\n## Scope slice\n" + "\n".join(slice_lines)
-                ).strip()
+                brief = (f"{brief}\n\n## Scope slice\n" + "\n".join(slice_lines)).strip()
                 # Scope-slice values must stay inside engagement RoE for
                 # technical roles (PM/analyzer do not probe).
                 for role_id in roles:
@@ -166,41 +215,92 @@ class JobAgentBridge(AgentBridgeBase):
                 break
         return depth
 
+    def _lane_skills(self, role) -> list[str]:
+        """Skills this job's objective bound it to — the lane its workers stay in."""
+        from orchestrator.skills.bind import resolve_skill_ids
+
+        raw = [
+            str(s).strip() for s in (getattr(self._job, "skill_ids", None) or []) if str(s).strip()
+        ]
+        if not raw and self._job.objective_id and self._job.objective:
+            raw = [
+                str(s).strip()
+                for s in (getattr(self._job.objective, "skill_ids", None) or [])
+                if str(s).strip()
+            ]
+        return list(resolve_skill_ids(role, raw)) if raw else []
+
+    @staticmethod
+    def _canonical_skill_id(requested: str, known: list[str]) -> str:
+        """Map a loosely written skill id onto a known one.
+
+        Exact (case-insensitive) match first, then the bare name without its
+        provider prefix (``name`` -> ``provider/name``) when that is
+        unambiguous. Returns "" when nothing matches.
+        """
+        want = requested.strip().lower()
+        for sid in known:
+            if sid.lower() == want:
+                return sid
+        hits = [sid for sid in known if sid.lower().rsplit("/", 1)[-1] == want]
+        return hits[0] if len(hits) == 1 else ""
+
     def _resolve_child_skills(
         self, roles: list[str], skill_ids: list[str] | None
     ) -> list[str] | str:
-        """Bind child skills to the target role's group; error string on failure."""
+        """Bind child skills; error string on failure.
+
+        A worker for the *same role* stays inside this job's lane (the skills
+        its objective was planned with): omitting ``skill_ids`` inherits the
+        lane, naming one outside it is refused — the lane's skill carries the
+        workflow and recording rules the objective depends on, and silently
+        swapping it is how the wrong tool ends up doing the work. Another role
+        is bound by that role's own skill group.
+        """
         from orchestrator.skills.bind import resolve_skill_ids
 
         primary = roles[0] if roles else ""
         role = RoleRegistry.shared().get(primary)
         if role is None:
             return f"Error: unknown role_id {primary!r}"
+        own_role = ((self._job.role_ids or [""])[0] or "").strip()
+        lane = self._lane_skills(role) if primary == own_role else []
+        group = list(resolve_skill_ids(role, None))
         requested = [str(s).strip() for s in (skill_ids or []) if str(s).strip()]
-        if requested:
-            selected = list(resolve_skill_ids(role, requested))
-            if not selected:
+
+        if not requested:
+            return lane or list(role.skills or ()) or group
+
+        known = list(dict.fromkeys([*lane, *group, *(role.skills or ())]))
+        selected: list[str] = []
+        unknown: list[str] = []
+        for want in requested:
+            sid = self._canonical_skill_id(want, known)
+            if sid and sid not in selected:
+                selected.append(sid)
+            elif not sid:
+                unknown.append(want)
+        if unknown or not selected:
+            return (
+                f"Error: unknown skill_ids {', '.join(unknown or requested)} for "
+                f"role {primary!r}; available: {', '.join(known) or '(none)'}"
+            )
+        usable = list(resolve_skill_ids(role, selected))
+        if not usable:
+            return (
+                f"Error: no valid skill_ids for role {primary!r} "
+                f"(requested: {', '.join(requested)})"
+            )
+        if lane:
+            outside = [sid for sid in usable if sid not in lane]
+            if outside:
                 return (
-                    f"Error: no valid skill_ids for role {primary!r} "
-                    f"(requested: {', '.join(requested)})"
+                    f"Error: {', '.join(outside)} is outside this objective's "
+                    f"skills ({', '.join(lane)}). Spawn with those skill_ids "
+                    "(or leave skill_ids empty) — other skills belong to "
+                    "other objectives/roles."
                 )
-            return selected
-        parent_skills = [
-            str(s).strip()
-            for s in (getattr(self._job, "skill_ids", None) or [])
-            if str(s).strip()
-        ]
-        if not parent_skills and self._job.objective_id and self._job.objective:
-            parent_skills = [
-                str(s).strip()
-                for s in (getattr(self._job.objective, "skill_ids", None) or [])
-                if str(s).strip()
-            ]
-        if parent_skills:
-            inherited = list(resolve_skill_ids(role, parent_skills))
-            if inherited:
-                return inherited
-        return list(role.skills or ())
+        return usable
 
     def _spawn_linked(
         self,
@@ -221,10 +321,7 @@ class JobAgentBridge(AgentBridgeBase):
             with transaction.atomic(using=alias):
                 if link == "peer":
                     if not self._job.objective_id:
-                        return (
-                            "Error: peer spawn requires project + objective "
-                            "on this job."
-                        )
+                        return "Error: peer spawn requires project + objective on this job."
                     active = (
                         Job.objects.using(alias)
                         .filter(objective_id=self._job.objective_id)
@@ -239,17 +336,10 @@ class JobAgentBridge(AgentBridgeBase):
                 else:
                     depth = self._spawn_depth()
                     if depth >= cfg.max_subagent_depth:
-                        return (
-                            f"Error: child depth limit ({cfg.max_subagent_depth})"
-                        )
-                    active = self._job.children.exclude(
-                        status__in=TERMINAL_JOB_STATUSES
-                    ).count()
+                        return f"Error: child depth limit ({cfg.max_subagent_depth})"
+                    active = self._job.children.exclude(status__in=TERMINAL_JOB_STATUSES).count()
                     if active >= cfg.max_subagents:
-                        return (
-                            f"Error: too many active child agents "
-                            f"(max {cfg.max_subagents})"
-                        )
+                        return f"Error: too many active child agents (max {cfg.max_subagents})"
 
                 roles = list(role_ids) or list(self._job.role_ids or [])
                 resolved = self._resolve_child_skills(roles, skill_ids)
@@ -284,9 +374,7 @@ class JobAgentBridge(AgentBridgeBase):
                     plan_path=self._job.plan_path or "",
                 )
         enqueue_job(str(child.id))
-        self._record_handoff(
-            child, link=link, title=title, role_ids=roles, skill_ids=resolved
-        )
+        self._record_handoff(child, link=link, title=title, role_ids=roles, skill_ids=resolved)
         return str(child.id)
 
     def _record_handoff(
@@ -339,20 +427,16 @@ class JobAgentBridge(AgentBridgeBase):
         )
         # Keep the governor in the picture: spawns are informs (no wake).
         if self._job.project_id:
-            try:
-                from peon.projects import a2a
+            from peon.projects import a2a
 
-                a2a.notify_governor(
-                    self._job.project,
-                    text=(
-                        f"{self._role_id() or 'agent'} spawned {link} agent "
-                        f"{child.id} ({role_id or '-'}): {(title or '')[:160]}"
-                    ),
-                    from_job=self._job,
-                    escalate=False,
-                )
-            except Exception:
-                logger.debug("governor spawn-inform failed", exc_info=True)
+            a2a.try_notify_governor(
+                self._job.project,
+                text=(
+                    f"{self._role_id() or 'agent'} spawned {link} agent "
+                    f"{child.id} ({role_id or '-'}): {(title or '')[:160]}"
+                ),
+                from_job=self._job,
+            )
 
     def append_transcript(self, record: Any) -> None:
         """Append structured transcript to project workspace jsonl (+ optional memory)."""
@@ -437,9 +521,7 @@ class JobAgentBridge(AgentBridgeBase):
                 return
             seen.add(jid)
             roles = ",".join(job.role_ids or []) or "-"
-            lines.append(
-                f"{'  ' * depth}- {job.id} [{job.status}] {job.title[:60]} roles={roles}"
-            )
+            lines.append(f"{'  ' * depth}- {job.id} [{job.status}] {job.title[:60]} roles={roles}")
             for child in by_parent.get(jid, []):
                 walk(child, depth + 1)
 
@@ -447,9 +529,7 @@ class JobAgentBridge(AgentBridgeBase):
             walk(root, 0)
         return "\n".join(lines) if lines else "No delegation tree."
 
-    def wait_agents(
-        self, *, job_ids: list[str] | None = None, timeout_seconds: int = 600
-    ) -> str:
+    def wait_agents(self, *, job_ids: list[str] | None = None, timeout_seconds: int = 600) -> str:
         """Non-blocking status of child agents — never holds the worker thread."""
         del timeout_seconds  # reserved for future release-wait
         qs = self._job.children.all()
@@ -491,8 +571,7 @@ class JobAgentBridge(AgentBridgeBase):
         if not rows:
             return "No objectives."
         return "\n".join(
-            f"OBJ-{o.seq} [{o.status}] {o.title} role={o.role_id or '-'}"
-            for o in rows
+            f"OBJ-{o.seq} [{o.status}] {o.title} role={o.role_id or '-'}" for o in rows
         )
 
     def update_objective_status(self, seq: int, status: str, note: str = "") -> str:
@@ -511,7 +590,6 @@ class JobAgentBridge(AgentBridgeBase):
         valid = {c.value for c in ObjectiveStatus}
         if status not in valid:
             return f"Invalid status {status!r}; want one of {sorted(valid)}"
-
 
         sched = ObjectiveScheduler()
         project = self._job.project
@@ -537,31 +615,30 @@ class JobAgentBridge(AgentBridgeBase):
                 )
             return f"OBJ-{obj.seq} → {obj.status}; queued job {job.id}"
 
-        if (
-            status == ObjectiveStatus.COMPLETED
-            and not sched.all_jobs_terminal(obj)
-        ):
-            active = sched.active_jobs(obj).count()
-            return (
-                f"OBJ-{obj.seq} remains {obj.status}; "
-                f"{active} tagged job(s) still active"
-            )
+        if status == ObjectiveStatus.COMPLETED and not sched.all_jobs_terminal(obj):
+            # The calling job is itself still active: its completion settles
+            # the objective, so only *other* active jobs block it.
+            others = sched.active_jobs(obj).exclude(pk=self._job.pk).count()
+            if others == 0:
+                return (
+                    f"OBJ-{obj.seq} will complete when you finish your turn — "
+                    "no other jobs are active. Give your final summary now; do "
+                    "not spawn more work to close it."
+                )
+            return f"OBJ-{obj.seq} remains {obj.status}; {others} other tagged job(s) still active"
         sched.mark(obj, status, reason=reason)
         if status == ObjectiveStatus.BLOCKED:
-            try:
-                from peon.projects import a2a
+            from peon.projects import a2a
 
-                a2a.notify_governor(
-                    project,
-                    text=(
-                        f"OBJ-{obj.seq} {obj.title} blocked: "
-                        f"{reason or obj.blocked_reason or 'blocked'}"
-                    ),
-                    from_job=self._job,
-                    escalate=True,
-                )
-            except Exception:
-                logger.debug("governor block-escalate failed", exc_info=True)
+            a2a.try_notify_governor(
+                project,
+                text=(
+                    f"OBJ-{obj.seq} {obj.title} blocked: "
+                    f"{reason or obj.blocked_reason or 'blocked'}"
+                ),
+                from_job=self._job,
+                escalate=True,
+            )
             try:
                 from peon.projects.models import OperatorPromptKind
 
@@ -581,10 +658,7 @@ class JobAgentBridge(AgentBridgeBase):
                 queued = sched.enqueue_ready(project)
                 if queued:
                     ids = ", ".join(str(j.id) for j in queued[:8])
-                    return (
-                        f"OBJ-{obj.seq} → {obj.status}; "
-                        f"queued {len(queued)} ready job(s): {ids}"
-                    )
+                    return f"OBJ-{obj.seq} → {obj.status}; queued {len(queued)} ready job(s): {ids}"
             except Exception as exc:
                 logger.warning("enqueueing ready objectives failed: %s", exc, exc_info=True)
         return f"OBJ-{obj.seq} → {obj.status}"
@@ -597,18 +671,14 @@ class JobAgentBridge(AgentBridgeBase):
         blocks_job: bool = True,
     ) -> str:
         """Create a typed OperatorPrompt for the global HITL popup."""
-        from peon.projects.models import OperatorPromptKind, ObjectiveStatus
+        from peon.projects.models import ObjectiveStatus, OperatorPromptKind
 
         text = (question or "").strip()
         if not text:
             return "Error: question is required."
         if not self._job.project_id:
             return "Error: no project on this job."
-        opts = [
-            o.strip()
-            for o in (options or "").replace(";", ",").split(",")
-            if o.strip()
-        ]
+        opts = [o.strip() for o in (options or "").replace(";", ",").split(",") if o.strip()]
         try:
             prompt = create_operator_prompt(
                 self._job.project,
@@ -640,9 +710,7 @@ class JobAgentBridge(AgentBridgeBase):
             "kind": str(fields.get("kind") or "observation"),
             "evidence": str(fields.get("evidence") or ""),
             "host": str(fields.get("host") or ""),
-            "description": str(
-                fields.get("description") or fields.get("summary") or ""
-            ),
+            "description": str(fields.get("description") or fields.get("summary") or ""),
             "asset_type": str(fields.get("asset_type") or ""),
             "evidence_path": str(fields.get("evidence_path") or ""),
             "remediation": str(fields.get("remediation") or ""),
@@ -654,9 +722,7 @@ class JobAgentBridge(AgentBridgeBase):
             "subjects": fields.get("subjects")
             if isinstance(fields.get("subjects"), list)
             else None,
-            "metadata": fields.get("metadata")
-            if isinstance(fields.get("metadata"), dict)
-            else {},
+            "metadata": fields.get("metadata") if isinstance(fields.get("metadata"), dict) else {},
         }
 
     def record_finding(self, **fields: Any) -> str:
@@ -672,6 +738,11 @@ class JobAgentBridge(AgentBridgeBase):
         )
         if row is None:
             return "Finding not recorded (deduped or invalid)."
+        self.emit(
+            "tool",
+            f"Recorded FIND-{row.seq}: {row.title[:80]}",
+            metadata=envelope(EVENT_RECORD_FINDING, {"seq": row.seq}),
+        )
         return f"Recorded FIND-{row.seq}: {row.title[:80]}"
 
     def record_findings(self, findings_json: str) -> str:
@@ -695,6 +766,12 @@ class JobAgentBridge(AgentBridgeBase):
                 objective=self._job.objective,
             ):
                 n += 1
+        if n:
+            self.emit(
+                "tool",
+                f"Recorded {n} finding(s).",
+                metadata=envelope(EVENT_RECORD_FINDING, {"count": n}),
+            )
         return f"Recorded {n} finding(s)."
 
     # --- Memory -------------------------------------------------------
@@ -708,9 +785,7 @@ class JobAgentBridge(AgentBridgeBase):
         if not (query or "").strip():
             return "Error: query is required."
         try:
-            return memory_store.recall_text(
-                self._job.project, query, role_id=self._role_id()
-            )
+            return memory_store.recall_text(self._job.project, query, role_id=self._role_id())
         except Exception as exc:  # noqa: BLE001
             logger.warning("recall_memory failed: %s", exc, exc_info=True)
             return f"Error: memory recall failed ({exc})"
@@ -780,38 +855,102 @@ class JobAgentBridge(AgentBridgeBase):
             .exists()
         )
 
-    def send_message(self, to: str, content: str, *, kind: str = "inform") -> str:
+    def send_message(
+        self, to: str, content: str, *, kind: str = "inform", reply_to: str = ""
+    ) -> str:
         if not self._job.project_id:
             return "Error: no project on this job."
         from peon.projects import a2a
 
-        target, why = a2a.resolve_recipient(
-            self._job.project, to, sender=self._job
-        )
-        if target is None:
-            return f"Error: {why}. Use list_team to see who you can message."
-        if target.pk == self._job.pk:
-            return "Error: that is you."
-        try:
-            row = a2a.send_message(
-                self._job.project,
-                to_job=target,
-                text=content,
-                from_job=self._job,
-                kind=kind if kind in {"inform", "request", "reply"} else "inform",
+        ids = [t.strip() for t in (to or "").split(",") if t.strip()]
+        if not ids:
+            return "Error: to is required (one or more agent ids, comma-separated)."
+        cap = max(1, PeonSettings.get_int("A2A_MAX_RECIPIENTS", 5))
+        if len(ids) > cap:
+            return f"Error: {len(ids)} recipients exceeds the limit of {cap} per send."
+
+        # Resolve every id before sending anything — a partially addressed
+        # multi-send would leave the caller unsure who actually got the message.
+        targets: list[Job] = []
+        for raw in ids:
+            target, why = a2a.resolve_recipient(self._job.project, raw, sender=self._job)
+            if target is None:
+                return f"Error: {raw!r} — {why}. Use list_team to see who you can message."
+            if target.pk == self._job.pk:
+                return "Error: that is you."
+            targets.append(target)
+
+        reply_row = None
+        if reply_to.strip():
+            reply_row = self._own_received_message(reply_to.strip())
+            if reply_row is None:
+                return (
+                    f"Error: {reply_to!r} is not a message you received — "
+                    "reply_to must be a message_id from your own inbox."
+                )
+
+        sent: list[str] = []
+        for target in targets:
+            try:
+                row = a2a.send_message(
+                    self._job.project,
+                    to_job=target,
+                    text=content,
+                    from_job=self._job,
+                    kind=kind if kind in {"inform", "request", "reply"} else "inform",
+                    reply_to=reply_row,
+                )
+            except ValueError as exc:
+                sent.append(f"{a2a.agent_label(target)}: Error — {exc}")
+                continue
+            target.refresh_from_db()
+            state = (
+                "woken and queued"
+                if target.status == JobStatus.PENDING
+                else f"delivered ({target.status})"
             )
-        except ValueError as exc:
-            return f"Error: {exc}"
-        target.refresh_from_db()
-        state = (
-            "woken and queued"
-            if target.status == JobStatus.PENDING
-            else f"delivered ({target.status})"
-        )
+            sent.append(f"{a2a.agent_label(target)} [{state}], message id {row.pk}")
         return (
-            f"Message sent to {target.title} [{state}]. "
-            f"Message id {row.pk}. Replies arrive in your inbox (check_inbox)."
+            "Sent:\n"
+            + "\n".join(f"- {line}" for line in sent)
+            + "\n\nReplies arrive in your inbox (check_inbox); use message_status "
+            "to check whether a specific send was read."
         )
+
+    def _own_received_message(self, message_id: str):
+        from peon.projects.db import qs_using
+        from peon.projects.models import AgentMessage
+
+        try:
+            import uuid
+
+            mid = uuid.UUID(message_id)
+        except ValueError:
+            return None
+        return qs_using(AgentMessage, self._job.project_id).filter(pk=mid, to_job=self._job).first()
+
+    def message_status(self, limit: int = 10) -> str:
+        if not self._job.project_id:
+            return "No project on this job."
+        from peon.projects import a2a
+
+        rows = a2a.sent_message_status(self._job, limit=int(limit or 10))
+        if not rows:
+            return "You have not sent any messages yet."
+        lines = []
+        for r in rows:
+            flags = []
+            if r["read"]:
+                flags.append("read")
+            else:
+                flags.append("unread")
+            if r["replied"]:
+                flags.append("replied")
+            line = f"{r['message_id']} → {r['to']} [{', '.join(flags)}]"
+            if r["reply_text"]:
+                line += f"\n  reply: {r['reply_text']}"
+            lines.append(line)
+        return "\n".join(lines)
 
     def check_inbox(self) -> str:
         if not self._job.project_id:
@@ -881,9 +1020,7 @@ class JobAgentBridge(AgentBridgeBase):
 
         role = ((self._job.role_ids or [""])[0] or "agent").strip()
         try:
-            report = AssetGraphEngine(self._job.project).record(
-                assets, relations, source=role
-            )
+            report = AssetGraphEngine(self._job.project).record(assets, relations, source=role)
         except Exception as exc:
             logger.warning("record_assets failed: %s", exc, exc_info=True)
             return f"Error: could not update the asset graph ({exc})"
@@ -914,9 +1051,44 @@ class JobAgentBridge(AgentBridgeBase):
             f"FIND-{f.seq} [{f.severity}/{f.kind}] {f.title}"
             + (f" host={f.host}" if f.host else "")
             + (f" port={f.port}" if f.port is not None else "")
-            + (f" — {(f.evidence or f.description or '')[:120]}" if (f.evidence or f.description) else "")
+            + (
+                f" — {(f.evidence or f.description or '')[:120]}"
+                if (f.evidence or f.description)
+                else ""
+            )
             for f in rows
         )
+
+    def write_workspace_artifact(self, path: str, content: str) -> str:
+        """Write a text deliverable under ``workspace/`` (no command execution).
+
+        Lets a supervisor persist its lane's output (a synthesis, a manifest)
+        without a shell, so producing a file never needs another spawned job.
+        """
+        rel = (path or "").strip().lstrip("/")
+        parts = Path(rel).parts
+        if not rel or ".." in parts or not parts or parts[0] != "workspace":
+            return "Error: path must be relative and under workspace/."
+        text = content if isinstance(content, str) else str(content or "")
+        if len(text.encode("utf-8")) > 2_000_000:
+            return "Error: content exceeds 2 MB."
+        root = resolve_job_workspace(self._job).resolve()
+        target = safe_join(root, rel)
+        if target is None:
+            return "Error: path escapes workspace."
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(f".{target.name}.tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(target)
+        except OSError as exc:
+            return f"Error writing {rel}: {exc}"
+        self.emit(
+            "tool",
+            f"Wrote {rel}",
+            metadata=envelope(EVENT_WRITE_ARTIFACT, {"path": rel}),
+        )
+        return f"Wrote {rel} ({len(text)} chars)."
 
     def list_workspace_artifacts(self) -> str:
         """List evidence files prior agents left under the job workspace."""
@@ -931,7 +1103,7 @@ class JobAgentBridge(AgentBridgeBase):
 
         Default/ceiling are large enough for MCP pipeline JSON (often 200–500KB).
         Pass a higher ``max_chars`` (up to 5_000_000) for oversized handoffs —
-        truncated JSON silently drops trailing arrays such as ``dangling_domains``.
+        truncated JSON silently drops trailing arrays.
         """
         rel = (path or "").strip().lstrip("/")
         if not rel or ".." in Path(rel).parts:
@@ -948,6 +1120,11 @@ class JobAgentBridge(AgentBridgeBase):
         top = target.relative_to(root).parts[0] if target.relative_to(root).parts else ""
         if top not in {"workspace", "findings"}:
             return "Error: only workspace/ and findings/ artifacts are readable."
+        self.emit(
+            "tool",
+            f"read {rel}",
+            metadata=envelope(EVENT_READ_ARTIFACT, {"path": rel}),
+        )
         try:
             text = target.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
@@ -959,8 +1136,7 @@ class JobAgentBridge(AgentBridgeBase):
         limit = max(1_000, min(requested, 5_000_000))
         if len(text) > limit:
             return (
-                text[:limit].rstrip()
-                + f"\n\n…(truncated at {limit} chars of {len(text)}; "
+                text[:limit].rstrip() + f"\n\n…(truncated at {limit} chars of {len(text)}; "
                 f"file={rel} — re-read with max_chars>={len(text)} to load fully)"
             )
         return text
@@ -969,7 +1145,7 @@ class JobAgentBridge(AgentBridgeBase):
         """Append report markdown under findings/report.md — never a Finding row."""
 
         heading = (section or "note").strip()[:120] or "note"
-        text = (body or "").strip()
+        text = _strip_leading_heading(body, heading)
         if not text:
             return "Error: report note body required."
         ws = resolve_job_workspace(self._job)
@@ -977,22 +1153,38 @@ class JobAgentBridge(AgentBridgeBase):
         report_dir.mkdir(parents=True, exist_ok=True)
         path = report_dir / "report.md"
         block = f"\n## {heading}\n\n{text}\n"
+        title = (
+            self._job.project.title
+            if self._job.project_id and self._job.project
+            else self._job.title
+        )
         try:
-            existing = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-            if not existing.strip():
-                title = (
-                    self._job.project.title
-                    if self._job.project_id and self._job.project
-                    else self._job.title
+            # Parallel tool calls append concurrently: serialize the
+            # read-modify-write or later notes overwrite earlier ones.
+            with _report_lock(report_dir / ".report.lock"):
+                existing = (
+                    path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
                 )
-                existing = f"# Security report — {title}\n"
-            path.write_text(existing.rstrip() + "\n" + block, encoding="utf-8")
+                if not existing.strip():
+                    existing = f"# Penetration Test Report — {title}\n"
+                if _section_is_generated(existing, heading):
+                    return (
+                        f"Section '{heading}' is generated from workspace "
+                        "evidence and is read-only. Put your analysis in "
+                        "another section and refer to it."
+                    )
+                updated = _replace_section(existing, heading, text)
+                if updated is None:
+                    updated = existing.rstrip() + "\n" + block
+                tmp = path.with_name(f".{path.name}.tmp")
+                tmp.write_text(updated, encoding="utf-8")
+                tmp.replace(path)
         except OSError as exc:
             return f"Failed to write report note: {exc}"
         self.emit(
             "status",
             f"Report note appended: {heading}",
-            metadata=envelope("report_note", {"section": heading}),
+            metadata=envelope(EVENT_REPORT_NOTE, {"section": heading}),
         )
         return f"Appended report section '{heading}' to findings/report.md"
 
@@ -1007,15 +1199,13 @@ class JobAgentBridge(AgentBridgeBase):
             self.replan_requested = False
         from peon.projects.db import ensure_project_database, using_project
 
-        alias = (
-            ensure_project_database(self._job.project_id)
-            if self._job.project_id
-            else "default"
-        )
+        alias = ensure_project_database(self._job.project_id) if self._job.project_id else "default"
         with using_project(self._job.project_id):
             with transaction.atomic(using=alias):
-                directives = JobDirective.objects.using(alias).select_for_update().filter(
-                    job_id=self._job.id, consumed_at__isnull=True
+                directives = (
+                    JobDirective.objects.using(alias)
+                    .select_for_update()
+                    .filter(job_id=self._job.id, consumed_at__isnull=True)
                 )
                 if kinds is not None:
                     directives = directives.filter(kind__in=kinds)
@@ -1048,9 +1238,7 @@ class JobAgentBridge(AgentBridgeBase):
                             "OPERATOR INSTRUCTION — revise your approach and continue "
                             f"under Rules of Engagement:\n{text}"
                         )
-                JobDirective.objects.using(alias).bulk_update(
-                    pending, ["consumed_at"]
-                )
+                JobDirective.objects.using(alias).bulk_update(pending, ["consumed_at"])
         return out
 
     def list_agents(self) -> str:
@@ -1140,9 +1328,7 @@ class JobAgentBridge(AgentBridgeBase):
         roe = self._roe()
         if roe is None:
             return "No Rules of Engagement on this project."
-        if not any(
-            (t.get("value") or "").strip() for t in coerce_targets(roe.in_scope)
-        ):
+        if not any((t.get("value") or "").strip() for t in coerce_targets(roe.in_scope)):
             return "in_scope is empty — promote targets before active probing"
         return ""
 
@@ -1251,9 +1437,7 @@ class JobAgentBridge(AgentBridgeBase):
             return "no RoE on project"
 
         scope_vals = [
-            (t.get("value") or "").strip()
-            for t in coerce_targets(roe.in_scope)
-            if t.get("value")
+            (t.get("value") or "").strip() for t in coerce_targets(roe.in_scope) if t.get("value")
         ]
         found = set(hosts_in_command(cmd))
         if not found:

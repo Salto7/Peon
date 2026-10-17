@@ -210,8 +210,25 @@ def _invoke(
         request["arguments"] = arguments or {}
     elif op == "read_resource":
         request["uri"] = uri
+    _emit_mcp(
+        op,
+        rec.mcp_id,
+        tool=tool,
+        uri=uri,
+        reply={"ok": True, "result": {}},
+        arguments=arguments,
+        phase="start",
+    )
     reply = _sock_rpc(session, request)
-    _emit_mcp(op, rec.mcp_id, tool=tool, uri=uri, reply=reply)
+    _emit_mcp(
+        op,
+        rec.mcp_id,
+        tool=tool,
+        uri=uri,
+        reply=reply,
+        arguments=arguments,
+        phase="done",
+    )
     if not reply.get("ok"):
         # Re-materialize next time in case the workspace copy was removed.
         _PREPARED.pop((session.info.name, rec.mcp_id), None)
@@ -252,6 +269,8 @@ def _emit_mcp(
     tool: str = "",
     uri: str = "",
     reply: dict,
+    arguments: dict | None = None,
+    phase: str = "done",
 ) -> None:
     event = _OP_EVENTS.get(op)
     if not event:
@@ -261,9 +280,14 @@ def _emit_mcp(
         "mcp_id": mcp_id,
         "op": op,
         "ok": bool(reply.get("ok")),
+        "phase": phase or "done",
     }
     if tool:
         payload["tool"] = tool
+    if arguments:
+        # What the agent asked for (stage skips, limits, targets) — the audit
+        # trail must answer "why did this call return what it did".
+        payload["arguments"] = arguments
     if uri:
         payload["uri"] = uri
     if isinstance(result, dict) and result.get("artifact"):
@@ -299,6 +323,11 @@ def _format_catalog(mcp_id: str, kind: str, items: list) -> str:
         label = f"{name} — " if name else ""
         lines.append(f"- {label}{uri}" + (f": {desc}" if desc else ""))
     return "\n".join(lines)
+
+
+def bound_mcp_records(role_id: str):
+    """MCP server records bound to ``role_id`` (catalog bindings, score >= 0.5)."""
+    return _bound(role_id)
 
 
 def _bound(role_id: str):
@@ -466,7 +495,9 @@ def _install_python(session, rec, dest: str, install: dict) -> str:
         # A project with a build backend installs as a package (console scripts);
         # a plain dependency list (no [build-system]) cannot be built editable.
         buildable = "[build-system]" in str(files.get(manifest) or "")
-        source = f"-e {shlex.quote(dest)}" if buildable else f"-r {shlex.quote(f'{dest}/{manifest}')}"
+        source = (
+            f"-e {shlex.quote(dest)}" if buildable else f"-r {shlex.quote(f'{dest}/{manifest}')}"
+        )
     elif manifest:
         source = f"-r {shlex.quote(f'{dest}/{manifest}')}"
     else:
@@ -478,9 +509,7 @@ def _install_python(session, rec, dest: str, install: dict) -> str:
         install_cmd = f"uv pip install --python {shlex.quote(python)} {source}"
     else:
         create = f"python3 -m venv {shlex.quote(venv)}"
-        install_cmd = (
-            f"{shlex.quote(python)} -m pip install --disable-pip-version-check {source}"
-        )
+        install_cmd = f"{shlex.quote(python)} -m pip install --disable-pip-version-check {source}"
     script = "\n".join(
         [
             "set -e",
@@ -488,7 +517,7 @@ def _install_python(session, rec, dest: str, install: dict) -> str:
             f"exec 8>{shlex.quote(lock)}",
             "flock -w 600 8",
             f"if [ -x {shlex.quote(python)} ] && "
-            f"[ \"$(cat {shlex.quote(marker)} 2>/dev/null || true)\" = "
+            f'[ "$(cat {shlex.quote(marker)} 2>/dev/null || true)" = '
             f"{shlex.quote(digest)} ]; then exit 0; fi",
             create,
             install_cmd,
@@ -517,7 +546,7 @@ def _install_npm(session, rec, dest: str, install: dict) -> str:
             "mkdir -p /tmp/peon-mcp",
             f"exec 8>{shlex.quote(lock)}",
             "flock -w 600 8",
-            f"if [ \"$(cat {shlex.quote(marker)} 2>/dev/null || true)\" = "
+            f'if [ "$(cat {shlex.quote(marker)} 2>/dev/null || true)" = '
             f"{shlex.quote(digest)} ]; then exit 0; fi",
             "npm install --ignore-scripts --no-audit --no-fund",
             f"printf %s {shlex.quote(digest)} > {shlex.quote(marker)}",
@@ -530,7 +559,70 @@ def _install_npm(session, rec, dest: str, install: dict) -> str:
     return ""
 
 
+def _post_install_commands(rec, install: dict | None) -> tuple[str, ...]:
+    """One-off setup an MCP declares itself (``install.post`` in its manifest).
+
+    The platform has no knowledge of any particular package: what a server
+    needs beyond its dependency install is the server's to declare.
+    """
+    return tuple((install or {}).get("post") or ())
+
+
+def _run_post_install(session, rec, dest: str, install: dict | None) -> None:
+    """Best-effort one-off setup in the MCP's own environment (never fatal).
+
+    Runs once per (manifests + commands) digest. A failure is logged: the MCP
+    still starts, and the affected feature reports its own error.
+    """
+    commands = _post_install_commands(rec, install)
+    if not commands:
+        return
+    files = rec.files or {}
+    digest = hashlib.sha256(
+        "\n".join(
+            [str(files.get(n) or "") for n in ("pyproject.toml", "requirements.txt")]
+            + list(commands)
+        ).encode("utf-8")
+    ).hexdigest()
+    marker = f"{dest}/.peon-post-install"
+    if _marker_current(session, marker, digest):
+        return
+    venv_bin = f"/workspace/.peon/mcp-venvs/{rec.mcp_id}/bin"
+    runner = (
+        f'if [ -x {shlex.quote(venv_bin)}/python ]; then PATH={shlex.quote(venv_bin)}:"$PATH"; '
+        f'run() {{ sh -c "$1"; }}; '
+        f"elif command -v uv >/dev/null 2>&1; then "
+        f'run() {{ uv run --project {shlex.quote(dest)} sh -c "$1"; }}; '
+        f'else run() {{ sh -c "$1"; }}; fi'
+    )
+    script = "\n".join(
+        [
+            "set -e",
+            "mkdir -p /tmp/peon-mcp",
+            f"exec 8>/tmp/peon-mcp/post-install-{rec.mcp_id}.lock",
+            "flock -w 900 8",
+            runner,
+            *(f"run {shlex.quote(c)}" for c in commands),
+            f"printf %s {shlex.quote(digest)} > {shlex.quote(marker)}",
+        ]
+    )
+    done = session.exec(["sh", "-c", script], cwd=dest, timeout=1500)
+    if not done.ok:
+        logger.warning(
+            "post-install failed for %s: %s",
+            rec.mcp_id,
+            (done.stderr or done.stdout or "").strip()[:400],
+        )
+
+
 def _install(session, rec, dest: str, install: dict | None) -> str:
+    error = _install_deps(session, rec, dest, install)
+    if not error:
+        _run_post_install(session, rec, dest, install)
+    return error
+
+
+def _install_deps(session, rec, dest: str, install: dict | None) -> str:
     install = install or {}
     kind = str(install.get("kind") or "")
     if kind not in _INSTALL_KINDS:
@@ -569,8 +661,8 @@ def _supervisor_alive(session, stamp: str) -> bool:
     script = (
         f"pid=$(cat {shlex.quote(_PID)} 2>/dev/null || true); "
         f"have=$(cat {shlex.quote(_STAMP)} 2>/dev/null || true); "
-        f"if [ -n \"$pid\" ] && [ \"$have\" = {shlex.quote(stamp)} ] "
-        f"&& [ -S {shlex.quote(_SOCK)} ] && kill -0 \"$pid\" 2>/dev/null; then "
+        f'if [ -n "$pid" ] && [ "$have" = {shlex.quote(stamp)} ] '
+        f'&& [ -S {shlex.quote(_SOCK)} ] && kill -0 "$pid" 2>/dev/null; then '
         "echo up; else echo down; fi"
     )
     probe = session.exec(["sh", "-c", script], timeout=15)
@@ -604,7 +696,7 @@ def _ensure_mcp_sdk(session) -> tuple[str, str]:
             f"if [ -x {shlex.quote(_IMAGE_PYTHON)} ] && "
             f"{shlex.quote(_IMAGE_PYTHON)} -c {shlex.quote(_MCP_IMPORT)}; then exit 0; fi",
             f"if [ -x {shlex.quote(_FALLBACK_PYTHON)} ] && "
-            f"[ \"$(cat {shlex.quote(_FALLBACK_MARKER)} 2>/dev/null || true)\" = "
+            f'[ "$(cat {shlex.quote(_FALLBACK_MARKER)} 2>/dev/null || true)" = '
             f"{shlex.quote(digest)} ] && "
             f"{shlex.quote(_FALLBACK_PYTHON)} -c {shlex.quote(_MCP_IMPORT)}; then exit 0; fi",
             f"python3 -m venv {shlex.quote(_FALLBACK_VENV)}",
@@ -670,11 +762,11 @@ def _ensure_supervisor(session) -> str:
             "flock -w 20 9 || exit 1",
             f"pid=$(cat {shlex.quote(_PID)} 2>/dev/null || true)",
             f"have=$(cat {shlex.quote(_STAMP)} 2>/dev/null || true)",
-            f"if [ -n \"$pid\" ] && [ \"$have\" = {shlex.quote(stamp)} ] "
-            f"&& [ -S {shlex.quote(_SOCK)} ] && kill -0 \"$pid\" 2>/dev/null; then",
+            f'if [ -n "$pid" ] && [ "$have" = {shlex.quote(stamp)} ] '
+            f'&& [ -S {shlex.quote(_SOCK)} ] && kill -0 "$pid" 2>/dev/null; then',
             "  exit 0",
             "fi",
-            "if [ -n \"$pid\" ]; then kill \"$pid\" 2>/dev/null || true; sleep 0.2; fi",
+            'if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; sleep 0.2; fi',
             f"rm -f {shlex.quote(_SOCK)} {shlex.quote(_PID)}",
             f"printf %s {shlex.quote(stamp)} > {shlex.quote(_STAMP)}",
             f"setsid nohup {shlex.quote(python)} {shlex.quote(script)} "

@@ -22,11 +22,11 @@ from orchestrator.learn.draft import (
     valid_skill_name,
 )
 from orchestrator.skills.provision import SkillLinter
+from orchestrator.utils import llm_usage
 from orchestrator.utils.llm import require_llm, chat_json
 from orchestrator.utils.service import SharedServiceBase
 
-_TOOLS_SUGGESTOR = "tools-suggestor"
-_SKILL_WRITER = "skill-writer"
+from orchestrator.learn.system_skills import skill_writer_skill, tools_suggestor_skill
 
 
 class LearnAuthoring(SharedServiceBase):
@@ -42,12 +42,13 @@ class LearnAuthoring(SharedServiceBase):
         if not text:
             raise ValueError("prompt is required")
         require_llm()
-        return tool_suggestion_from_payload(
-            chat_json(
-                skill_prompt(_TOOLS_SUGGESTOR),
-                tool_suggest_human(text),
+        with llm_usage.purpose("authoring_tool_suggest"):
+            return tool_suggestion_from_payload(
+                chat_json(
+                    skill_prompt(tools_suggestor_skill()),
+                    tool_suggest_human(text),
+                )
             )
-        )
 
     @staticmethod
     def write_skill(
@@ -74,7 +75,7 @@ class LearnAuthoring(SharedServiceBase):
             )
         )
 
-        system = skill_prompt(_SKILL_WRITER)
+        system = skill_prompt(skill_writer_skill())
         human = authoring_prompt(
             text,
             catalog,
@@ -82,7 +83,8 @@ class LearnAuthoring(SharedServiceBase):
             tool_recipes=install_recipes or None,
         )
 
-        payload = chat_json(system, human)
+        with llm_usage.purpose("authoring_skill_write"):
+            payload = chat_json(system, human)
         if not isinstance(payload, dict):
             raise RuntimeError("skill-writer returned non-object JSON")
 
@@ -96,15 +98,16 @@ class LearnAuthoring(SharedServiceBase):
         )
 
         if not lint["compatible"]:
-            repair = chat_json(
-                system,
-                (
-                    f"{human}\n\n"
-                    f"The previous draft failed skills-ref:\n"
-                    f"{yaml.safe_dump(lint['errors'], sort_keys=False)}\n\n"
-                    "Return corrected JSON only for the stated authoring mode."
-                ),
-            )
+            with llm_usage.purpose("authoring_skill_write_repair"):
+                repair = chat_json(
+                    system,
+                    (
+                        f"{human}\n\n"
+                        f"The previous draft failed skills-ref:\n"
+                        f"{yaml.safe_dump(lint['errors'], sort_keys=False)}\n\n"
+                        "Return corrected JSON only for the stated authoring mode."
+                    ),
+                )
             if isinstance(repair, dict):
                 try:
                     name, skill_md, files, suggested, mode, lint = (
@@ -141,17 +144,18 @@ class LearnAuthoring(SharedServiceBase):
     ) -> dict[str, Any]:
         """Revise a tool recipe after a failed learn-lab install test."""
         require_llm()
-        return tool_suggestion_from_payload(
-            chat_json(
-                skill_prompt(_TOOLS_SUGGESTOR),
-                tool_replan_human(
-                    prompt=prompt,
-                    yaml_text=yaml_text,
-                    install_script=install_script,
-                    error=error,
-                    feedback=feedback,
-                ),
-            )
+        with llm_usage.purpose("authoring_tool_replan"):
+            return tool_suggestion_from_payload(
+                chat_json(
+                    skill_prompt(tools_suggestor_skill()),
+                    tool_replan_human(
+                        prompt=prompt,
+                        yaml_text=yaml_text,
+                        install_script=install_script,
+                        error=error,
+                        feedback=feedback,
+                    ),
+                )
         )
 
     @staticmethod

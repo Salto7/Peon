@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from .log import get_logger
 
@@ -66,8 +66,8 @@ class Plugin(ABC):
 
     def __init__(
         self,
-        http: Optional["AsyncHttpClient"] = None,
-        config: Optional["PipelineConfig"] = None,
+        http: AsyncHttpClient | None = None,
+        config: PipelineConfig | None = None,
         **kwargs: Any,
     ) -> None:
         self.http = http
@@ -79,13 +79,13 @@ class Plugin(ABC):
     async def run(self, **kwargs: Any) -> Any:
         """Execute this module and return structured results."""
 
-    def enabled(self, config: Optional["PipelineConfig"] = None) -> bool:
+    def enabled(self, config: PipelineConfig | None = None) -> bool:
         """Return False to skip this module for the given config."""
         return True
 
     async def close(self) -> None:
         """Optional cleanup (browsers, pools)."""
-        return
+        return None
 
 
 class BrowserSupport:

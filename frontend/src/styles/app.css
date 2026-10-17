@@ -100,6 +100,40 @@
   }
 }
 
+/* Home: projects table + collapsible alerts rail. */
+.home-split {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 80rem) {
+  .home-split[data-has-alerts] {
+    grid-template-columns: minmax(0, 1fr) 22rem;
+  }
+  .home-split[data-has-alerts]:has(.alerts-panel[data-collapsed]) {
+    grid-template-columns: minmax(0, 1fr) 3.25rem;
+  }
+  .alerts-panel[data-collapsed] .alerts-hide-collapsed {
+    display: none;
+  }
+  .alerts-panel[data-collapsed] > div:first-child {
+    justify-content: center;
+    padding-inline: 0.5rem;
+    border-bottom: 0;
+  }
+}
+.alerts-panel[data-collapsed] .alerts-body {
+  display: none;
+}
+.alerts-chevron {
+  display: inline-flex;
+  transition: transform 150ms;
+}
+/* Expanded: chevron points right (collapse toward the edge). */
+.alerts-panel[data-collapsed] .alerts-chevron {
+  transform: rotate(180deg);
+}
+
 /* Shell state lives on <html> so it applies before first paint. */
 @custom-variant sidebar-collapsed (&:where([data-sidebar-collapsed] *));
 @custom-variant sidebar-open (&:where([data-sidebar-open] *));

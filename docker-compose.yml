@@ -73,7 +73,7 @@ services:
       - ./mcps:/app/mcps
       - ./skills_imported:/app/skills_imported
       - ${SKILLS_EXTRA_HOST_ROOT:-./skills_imported}:/external-skills:ro
-      - ./tools:/app/tools:ro
+      - ./tools:/app/tools
     # Dev: auto-reload on code edits and on `npm run dev` rebuilds (manifest.json).
     command:
       - uvicorn
@@ -144,7 +144,7 @@ services:
       - ./mcps:/app/mcps
       - ./skills_imported:/app/skills_imported
       - ${SKILLS_EXTRA_HOST_ROOT:-./skills_imported}:/external-skills:ro
-      - ./tools:/app/tools:ro
+      - ./tools:/app/tools
       - /var/run/docker.sock:/var/run/docker.sock
     entrypoint: ["/entrypoint-worker.sh"]
     depends_on:

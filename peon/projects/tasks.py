@@ -27,10 +27,10 @@ from django.conf import settings
 from django.db import close_old_connections
 
 from agent_runtime.registry import RuntimeRegistry
-from peon.projects.models import Job, JobStatus, SandboxRuntime
-from peon.projects.sandbox import ProjectSandbox
 from peon.projects.job_claim import job_slots_available, mark_job_running
 from peon.projects.learn_lab import LearnLab
+from peon.projects.models import Job, JobStatus, SandboxRuntime
+from peon.projects.sandbox import ProjectSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,9 @@ def enqueue_job(job_id: str) -> bool:
     return True
 
 
+_SANDBOX_CLEANUP_DELAY_MS = 5_000
+
+
 @dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
 def cleanup_project_sandbox(project_id: str, runtime_id: str = "") -> None:
     """Remove a project sandbox container on the worker (has docker.sock).
@@ -141,7 +144,9 @@ def enqueue_sandbox_cleanup(project_id: str, *, runtime_id: str = "") -> dict:
         shared=False,
     )
     if _dramatiq_enabled():
-        cleanup_project_sandbox.send(pid, rid)
+        # Delay so the web response + redirect page-load finish before Docker's
+        # interfaces flap (otherwise Chrome aborts with ERR_NETWORK_CHANGED).
+        cleanup_project_sandbox.send_with_options(args=(pid, rid), delay=_SANDBOX_CLEANUP_DELAY_MS)
         return {
             "action": "queued",
             "name": name,
@@ -171,7 +176,7 @@ def cleanup_learn_lab() -> None:
 def enqueue_learn_lab_cleanup() -> dict:
     """Queue Learn-lab removal on the worker, or run inline when Dramatiq is off."""
     lab = LearnLab.shared()
-    name = lab.container_name()
+    name = lab.test_container_name()
     if _dramatiq_enabled():
         cleanup_learn_lab.send()
         return {

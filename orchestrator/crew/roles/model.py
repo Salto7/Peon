@@ -77,6 +77,7 @@ def build_crew_agent(
     reasoning_effort: str | None = None,
     reasoning_max_attempts: int | None = None,
     collaborate: bool = False,
+    dispatch_only: bool = False,
 ) -> Any:
     """Instantiate a CrewAI ``Agent`` for ``role`` (lazy crewai import).
 
@@ -131,6 +132,18 @@ def build_crew_agent(
             if collaborate
             else ""
         )
+        solo_rule = (
+            ""
+            if dispatch_only
+            else (
+                "Solo in-process `bash` is only for a single host/URL or a quick "
+                "verify — **never** for a CIDR/subnet, a host or target list, or "
+                "anything you'd otherwise describe as a sweep/enumeration; those "
+                "always go through `spawn_work` (slice the range across children) "
+                "even when one tool invocation could cover the whole range in a "
+                "single command. "
+            )
+        )
         backstory = (
             f"{backstory}\n\n## Collaboration\n"
             f"{coworker_hint}"
@@ -144,12 +157,8 @@ def build_crew_agent(
             "already in your skill group. You are a specialized PM: your job is "
             "to make sure in-lane objectives are fulfilled, mainly by spawning "
             "and directing workers, not by running the scan/probe yourself. "
-            "Solo in-process `bash` is only for a single host/URL or a quick "
-            "verify — **never** for a CIDR/subnet, a host or target list, or "
-            "anything you'd otherwise describe as a sweep/enumeration; those "
-            "always go through `spawn_work` (slice the range across children) "
-            "even when one tool invocation could cover the whole range in a "
-            "single command. Out-of-lane work, unknown roles, "
+            f"{solo_rule}"
+            "Out-of-lane work, unknown roles, "
             "or RoE ambiguity: `list_roles` then spawn another catalog role, or "
             "`ask_operator`. Never invent role or skill ids."
             "\n\n## Working with the other agents\n"
@@ -173,6 +182,24 @@ def build_crew_agent(
             "`platform`, with no targets/IPs/emails/URLs), and the reason "
             "behind decisions. Operator feedback overrides your own "
             "preference. Retire notes you find wrong with `forget_memory`."
+        ).strip()
+    if dispatch_only and tools is None:
+        backstory = (
+            f"{backstory}\n\n## Dispatch mode\n"
+            "You are the lane supervisor for this objective: you do **not** "
+            "execute commands, scripts or tool calls yourself — those tools are "
+            "not available to you. Break the objective into focused units and "
+            "`spawn_work` a worker for each (leave `role_id` empty to reuse this "
+            "role) with the `skill_ids` that unit needs and a precise brief "
+            "(targets, expected output path). Then `go_idle`; each worker's "
+            "result wakes you. Inspect results with `list_findings`, "
+            "`list_workspace_artifacts` and `read_workspace_artifact`, verify "
+            "the objective's acceptance criteria, spawn follow-ups only for "
+            "real gaps, and persist your lane's deliverable yourself with "
+            "`write_workspace_artifact` (never spawn a job just to write or "
+            "merge a file). Workers stay in this objective's skills. Close "
+            "with a concise synthesis; the objective completes when you end "
+            "your turn."
         ).strip()
     if role.is_manager:
         backstory = (
@@ -207,6 +234,10 @@ def build_crew_agent(
         for extra in progressive_tool_names(selected, role_id=role.id):
             if extra not in names:
                 names.append(extra)
+        if dispatch_only:
+            from orchestrator.crew.tools.catalog import for_dispatch_only
+
+            names = list(for_dispatch_only(names))
         agent_tools = build_tools(names)
     kwargs: dict[str, Any] = {
         "role": role.crew_role,

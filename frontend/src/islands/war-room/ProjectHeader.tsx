@@ -1,20 +1,26 @@
-import { ChevronRight, Ellipsis, ExternalLink, Pause, Play, SkipForward, Trash2 } from "lucide-react";
+import { ChevronRight, Ellipsis, ExternalLink, SkipForward } from "lucide-react";
 import { StatusBadge, ToneBadge } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { requestConfirm } from "@/lib/behaviors";
 import { useProjectControl } from "./actions";
 import { useLiveProject, useOps } from "./live";
 import type { Ops, ProjectContext } from "./types";
 
-export default function ProjectHeader({ ctx, ops: initial }: { ctx: ProjectContext; ops: Ops }) {
+export default function ProjectHeader({
+  ctx,
+  ops: initial,
+  actions,
+}: {
+  ctx: ProjectContext;
+  ops: Ops;
+  actions?: string | null;
+}) {
   const live = useLiveProject(ctx.pk);
   const { data: ops } = useOps(ctx.pk, initial);
   const control = useProjectControl(ctx.pk);
@@ -32,9 +38,9 @@ export default function ProjectHeader({ ctx, ops: initial }: { ctx: ProjectConte
         <ChevronRight className="size-3" aria-hidden />
         <span className="truncate">{ctx.title}</span>
       </nav>
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2">
+      <div className="space-y-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h1 className="truncate text-xl font-semibold tracking-tight">{ctx.title}</h1>
             <StatusBadge value={status} />
             <ToneBadge>{ctx.kind === "durable" ? "Durable" : "Timed"}</ToneBadge>
@@ -48,9 +54,13 @@ export default function ProjectHeader({ ctx, ops: initial }: { ctx: ProjectConte
               <TooltipContent>{live ? "Receiving live updates" : "Reconnecting to the live stream"}</TooltipContent>
             </Tooltip>
           </div>
-          {ctx.summary && <p className="max-w-3xl text-sm text-muted-foreground">{ctx.summary}</p>}
-        </div>
-        <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+          {actions ? (
+            <div
+              className="flex flex-wrap items-center gap-2"
+              dangerouslySetInnerHTML={{ __html: actions }}
+            />
+          ) : null}
           {!inactive && (
             <Button
               variant="outline"
@@ -59,16 +69,6 @@ export default function ProjectHeader({ ctx, ops: initial }: { ctx: ProjectConte
               onClick={() => control.mutate("run_next")}
             >
               <SkipForward /> Run next
-            </Button>
-          )}
-          {status === "active" && (
-            <Button variant="outline" disabled={busy} onClick={() => control.mutate("pause")}>
-              <Pause /> Pause
-            </Button>
-          )}
-          {status === "paused" && (
-            <Button disabled={busy} onClick={() => control.mutate("resume")}>
-              <Play /> Resume
             </Button>
           )}
           <DropdownMenu>
@@ -90,22 +90,11 @@ export default function ProjectHeader({ ctx, ops: initial }: { ctx: ProjectConte
                   <ExternalLink /> Reports
                 </a>
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={() =>
-                  requestConfirm({
-                    title: "Delete project?",
-                    message: `“${ctx.title}” and its Docker sandbox will be permanently removed.`,
-                    onConfirm: () => control.mutate("delete"),
-                  })
-                }
-              >
-                <Trash2 /> Delete project
-              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
         </div>
+        {ctx.summary && <p className="max-w-3xl text-sm text-muted-foreground">{ctx.summary}</p>}
       </div>
 
       <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">

@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import urlparse
 
 from orchestrator.utils.commands import catalog_cli_in_command
@@ -32,6 +33,10 @@ EVENT_LIST_MCP_TOOLS = "list_mcp_tools"
 EVENT_CALL_MCP_TOOL = "call_mcp_tool"
 EVENT_LIST_MCP_RESOURCES = "list_mcp_resources"
 EVENT_READ_MCP_RESOURCE = "read_mcp_resource"
+EVENT_REPORT_NOTE = "report_note"
+EVENT_READ_ARTIFACT = "read_artifact"
+EVENT_WRITE_ARTIFACT = "write_artifact"
+EVENT_RECORD_FINDING = "record_finding"
 
 _HOST_TOKEN_RE = re.compile(
     r"(?:https?://[^\s\"']+|"
@@ -113,7 +118,7 @@ def hosts_in_command(text: str) -> list[str]:
         if not token:
             continue
         lower = token.lower()
-        is_url = lower.startswith("http://") or lower.startswith("https://")
+        is_url = lower.startswith(("http://", "https://"))
         # Filesystem paths are local args, not network targets.
         if not is_url and ("/" in token or "\\" in token):
             continue
@@ -156,7 +161,7 @@ def _normalize_host_token(token: str) -> str:
     if not raw:
         return ""
     lower = raw.lower()
-    if lower.startswith("http://") or lower.startswith("https://"):
+    if lower.startswith(("http://", "https://")):
         try:
             host = (urlparse(raw).hostname or "").strip().lower()
         except Exception:

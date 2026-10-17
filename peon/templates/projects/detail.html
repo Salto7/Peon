@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load static ui %}
+{% load static ui project_actions %}
 {% block title %}{{ project.title }} · Peon{% endblock %}
 {% block main_class %}mx-auto w-full max-w-[1680px] flex-1 px-4 py-6 md:px-6{% endblock %}
 
@@ -15,7 +15,7 @@
   <c-nav-item href="#attack" icon="network" label="Attack surface" data-war-nav="attack" />
   <c-nav-item href="#memory" icon="brain" label="Memory" data-war-nav="memory" />
   <c-nav-item href="#reports" icon="scroll-text" label="Reports & files" data-war-nav="reports" />
-  <c-nav-item href="#settings" icon="settings" label="Project settings" data-war-nav="settings" />
+  <c-nav-item href="#settings" icon="plug" label="MCP configuration" data-war-nav="settings" />
 </c-nav-section>
 {% endblock %}
 
@@ -24,16 +24,26 @@
 {{ ops|json_script:"console-ops" }}
 
 <div id="war-layout" class="space-y-6">
-  <div data-island="project-header" data-props-ctx="console-ctx" data-props-ops="console-ops"></div>
+  {% project_actions project=project mode="toolbar" as project_actions_html %}
+  {{ project_actions_html|json_script:"project-actions-html" }}
+  <div data-island="project-header" data-props-ctx="console-ctx" data-props-ops="console-ops" data-props-actions="project-actions-html"></div>
 
   {# ── Overview ─────────────────────────────────────────────── #}
   <div data-war-pane="dashboard" class="space-y-4">
     <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_26rem]">
       <div class="min-w-0 space-y-4">
-        <section class="overflow-hidden rounded-xl border bg-card shadow-sm" aria-labelledby="agents-heading">
-          <div class="flex items-center justify-between border-b px-4 py-3">
+        <section id="agents-card" class="maximizable overflow-hidden rounded-xl border bg-card shadow-sm" aria-labelledby="agents-heading">
+          <div class="flex items-center justify-between gap-2 border-b px-4 py-3">
             <h2 id="agents-heading" class="text-sm font-semibold">Agents</h2>
-            <span class="text-xs text-muted-foreground">Click an agent for context · right-click for actions</span>
+            <div class="flex items-center gap-2">
+              <span class="hidden text-xs text-muted-foreground sm:inline">Click an agent for context · right-click for actions</span>
+              <button type="button" data-maximize-toggle="agents-card" aria-pressed="false"
+                      class="inline-flex size-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      title="Maximise graph" aria-label="Maximise graph">
+                <span class="maximize-icon-on">{% icon "maximize-2" %}</span>
+                <span class="maximize-icon-off">{% icon "minimize-2" %}</span>
+              </button>
+            </div>
           </div>
           <div id="agents-list" class="agent-tree h-[26rem]" data-project-pk="{{ project.pk }}">
             <p class="agents-empty">Loading agents…</p>
@@ -250,9 +260,9 @@
     </c-card>
   </div>
 
-  {# ── Project settings (MCP env) ───────────────────────────── #}
+  {# ── MCP configuration (per-project server settings) ───────── #}
   <div data-war-pane="settings" hidden>
-    <c-card title="MCP servers" description="Servers run inside this project's sandbox. The catalog declares env names; set the values here. Reach host services via host.docker.internal." id="project-mcp">
+    <c-card title="MCP server configuration" description="Servers run inside this project's sandbox. Each one declares what it needs — secrets, toggles, choices, or plain config — set the values here. Reach host services via host.docker.internal." id="project-mcp">
       <c-slot name="actions"><c-button variant="outline" size="sm" href="{% url 'catalog' %}#mcp">Manage catalog</c-button></c-slot>
       {% if mcp_configs %}
       <form method="post" action="{% url 'project_mcp' project.pk %}" class="space-y-3">
@@ -264,7 +274,7 @@
             <code class="font-mono text-[13px] font-medium">{{ mcp.mcp_id }}</code>
             {% if mcp.ready %}<c-badge tone="success">Ready</c-badge>
             {% elif mcp.fields %}<c-badge tone="warning">Missing {{ mcp.missing|join:", " }}</c-badge>
-            {% else %}<c-badge>No env required</c-badge>{% endif %}
+            {% else %}<c-badge>No settings required</c-badge>{% endif %}
           </summary>
           <div class="space-y-4 border-t px-4 py-4">
             <input type="hidden" name="mcp_id" value="{{ mcp.mcp_id }}">
@@ -274,27 +284,47 @@
               {% if mcp.roles %}<span class="ml-1">Roles: {{ mcp.roles|join:", " }}</span>{% endif %}
             </p>
             {% for field in mcp.fields %}
-            <div class="grid gap-2 md:grid-cols-[14rem_1fr] md:items-center">
-              <label class="font-mono text-xs" for="env-{{ mcp.mcp_id }}-{{ field.name }}">{{ field.name }}{% if field.required %} <span class="text-destructive">*</span>{% endif %}</label>
+            <div class="grid gap-2 md:grid-cols-[14rem_1fr] md:items-start">
+              <label class="font-mono text-xs pt-2" for="env-{{ mcp.mcp_id }}-{{ field.name }}">{{ field.name }}{% if field.required %} <span class="text-destructive">*</span>{% endif %}</label>
               <div class="space-y-1.5">
+                {% if field.type == "boolean" %}
+                <input type="hidden" name="env__{{ mcp.mcp_id }}__{{ field.name }}" value="false">
+                <label class="flex items-center gap-2 text-xs">
+                  <input type="checkbox" class="ui-checkbox" id="env-{{ mcp.mcp_id }}-{{ field.name }}"
+                         name="env__{{ mcp.mcp_id }}__{{ field.name }}" value="true" {% if field.value == "true" %}checked{% endif %}>
+                  Enabled
+                </label>
+                {% elif field.type == "choice" %}
+                <select id="env-{{ mcp.mcp_id }}-{{ field.name }}" name="env__{{ mcp.mcp_id }}__{{ field.name }}" class="ui-select font-mono">
+                  <option value="">{% if field.default %}(default: {{ field.default }}){% else %}—{% endif %}</option>
+                  {% for choice in field.choices %}
+                  <option value="{{ choice }}" {% if field.value == choice %}selected{% endif %}>{{ choice }}</option>
+                  {% endfor %}
+                </select>
+                {% elif field.type == "number" %}
+                <input id="env-{{ mcp.mcp_id }}-{{ field.name }}" name="env__{{ mcp.mcp_id }}__{{ field.name }}" class="ui-input font-mono"
+                       type="number" value="{{ field.value }}" placeholder="{{ field.default }}" autocomplete="off">
+                {% else %}
                 <input id="env-{{ mcp.mcp_id }}-{{ field.name }}" name="env__{{ mcp.mcp_id }}__{{ field.name }}" class="ui-input font-mono"
                        type="{% if field.secret %}password{% else %}text{% endif %}" value="{{ field.value }}" autocomplete="off"
-                       {% if field.secret %}placeholder="{% if field.is_set %}Set — leave blank to keep{% else %}Not set{% endif %}"{% endif %}>
+                       placeholder="{% if field.secret %}{% if field.is_set %}Set — leave blank to keep{% else %}Not set{% endif %}{% else %}{{ field.default }}{% endif %}">
                 {% if field.secret and field.is_set %}
                 <label class="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" class="ui-checkbox" name="clear__{{ mcp.mcp_id }}__{{ field.name }}"> Clear stored value</label>
                 {% endif %}
+                {% endif %}
+                {% if field.description %}<p class="text-xs text-muted-foreground">{{ field.description }}</p>{% endif %}
               </div>
             </div>
             {% empty %}
-            <p class="text-xs text-muted-foreground">This server declares no env schema — bind it to a technical role in the catalog and call it from a job.</p>
+            <p class="text-xs text-muted-foreground">This server declares no settings — bind it to a technical role in the catalog and call it from a job.</p>
             {% endfor %}
           </div>
         </details>
         {% endfor %}
-        <div class="flex justify-end"><c-button type="submit">Save MCP env</c-button></div>
+        <div class="flex justify-end"><c-button type="submit">Save MCP settings</c-button></div>
       </form>
       {% else %}
-      <c-empty icon="server" title="No MCP servers in the catalog">Add one under Catalog → MCP, bind it to a technical role, then set env values here.</c-empty>
+      <c-empty icon="server" title="No MCP servers in the catalog">Add one under Catalog → MCP, bind it to a technical role, then configure it here.</c-empty>
       {% endif %}
     </c-card>
   </div>

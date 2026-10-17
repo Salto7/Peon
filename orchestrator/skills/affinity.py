@@ -242,7 +242,10 @@ def classify_text_affinity(
         f"Catalog roles:\n{yaml.safe_dump(briefs, sort_keys=False)}"
     )
     try:
-        data = chat_json(_CLASSIFY_SYSTEM, human)
+        from orchestrator.utils import llm_usage
+
+        with llm_usage.purpose("skill_affinity"):
+            data = chat_json(_CLASSIFY_SYSTEM, human)
     except Exception as exc:
         logger.warning("affinity classify failed for %s: %s", owner_id, exc)
         return SkillAffinity()

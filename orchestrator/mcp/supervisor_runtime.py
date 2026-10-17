@@ -172,15 +172,44 @@ def _resource_uris(payload: Any) -> list[str]:
     return list(dict.fromkeys(u for u in uris if u))
 
 
+def _structured_body(payload: Any) -> str | None:
+    """The JSON document a tool result carries, or None when it is not one.
+
+    MCP wraps results as ``{"content": [{"type": "text", "text": "<json>"}]}``.
+    Persisting that envelope forces every consumer (agents, report builders,
+    ``jq``) to unwrap a JSON string inside JSON. When the result is a single
+    successful text block that is itself a JSON document, the artifact stores
+    the document directly. Anything else keeps the full envelope.
+    """
+    if not isinstance(payload, dict) or payload.get("isError"):
+        return None
+    content = payload.get("content")
+    if not isinstance(content, list) or len(content) != 1:
+        return None
+    block = content[0]
+    if not isinstance(block, dict) or block.get("type") != "text":
+        return None
+    text = block.get("text")
+    if not isinstance(text, str) or not text.lstrip().startswith(("{", "[")):
+        return None
+    try:
+        json.loads(text)
+    except ValueError:
+        return None
+    return text
+
+
 def _maybe_spill(mcp_id: str, kind: str, name: str, payload: Any) -> Any:
     """Persist large payloads; return envelope with workspace-relative path."""
     raw = json.dumps(payload, ensure_ascii=False, default=str)
     if len(raw) <= SPILL_CHARS:
         return payload
+    structured = _structured_body(payload)
     dest_dir = ARTIFACT_ROOT / _safe_token(mcp_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     path = dest_dir / f"{_safe_token(name, kind)}-{uuid.uuid4().hex[:12]}.json"
-    path.write_text(raw, encoding="utf-8")
+    body = structured if structured is not None else raw
+    path.write_text(body, encoding="utf-8")
     try:
         rel = str(path.relative_to("/workspace"))
     except ValueError:
@@ -191,7 +220,8 @@ def _maybe_spill(mcp_id: str, kind: str, name: str, payload: Any) -> Any:
         "kind": kind,
         "name": name,
         "artifact": rel,
-        "bytes": len(raw.encode("utf-8")),
+        "format": "json" if structured is not None else "mcp-result",
+        "bytes": len(body.encode("utf-8")),
         "preview": _text_preview(payload, PREVIEW_CHARS),
         "resources": _resource_uris(payload),
     }

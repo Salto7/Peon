@@ -6,14 +6,14 @@ import asyncio
 import json
 import re
 import shutil
-from typing import Any, Optional
+from typing import Any
 
 from ..plugin import Plugin
 
 RDAP_URL = "https://rdap.org/domain/{domain}"
 
 
-def _vcard_get(entity: dict[str, Any], key: str) -> Optional[str]:
+def _vcard_get(entity: dict[str, Any], key: str) -> str | None:
     vcard = entity.get("vcardArray")
     if not isinstance(vcard, list) or len(vcard) < 2:
         return None

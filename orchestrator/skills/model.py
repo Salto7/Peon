@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from orchestrator.skills.common import render_prompt_block
 from orchestrator.skills.manifest import (
     ParseProfile,
     SkillManifest,
@@ -35,13 +36,9 @@ class SkillSpec:
     raw_frontmatter: dict | None = None
 
     def prompt_block(self, *, body_limit: int = 8000) -> str:
-        body = (self.instructions or "").strip()
-        if len(body) > body_limit:
-            body = body[:body_limit].rstrip() + "\n…"
-        head = f"### Skill `{self.id}`"
-        if self.description:
-            head = f"{head}\n{self.description.strip()}"
-        return f"{head}\n\n{body}".strip() if body else head
+        return render_prompt_block(
+            self.id, self.description, self.instructions, body_limit=body_limit
+        )
 
 
 def skill_spec_from_manifest(manifest: SkillManifest) -> SkillSpec:

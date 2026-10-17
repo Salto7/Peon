@@ -4,38 +4,40 @@
 Host supplies reasoning; corp-OSINT runs public-source tools via
 ``corp_osint.runtime``. Protocol / tool schemas stay here.
 
-Start::
+Start (any MCP host, stdio transport; cwd does not matter)::
 
-    .venv/bin/python mcp_server.py
+    uv --directory /path/to/corp-osint run corp-osint-mcp
+    # or, once installed:  corp-osint-mcp
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
-import os
 import sys
-from pathlib import Path
 from typing import Any
 
-_ROOT = Path(__file__).resolve().parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-os.chdir(_ROOT)
-
 # Keep import-time chatter off the MCP stdout stream.
-with contextlib.redirect_stdout(sys.stderr):
-    import anyio
-    from mcp.server import Server
-    from mcp.server.stdio import stdio_server
-    import mcp.types as types
+try:
+    with contextlib.redirect_stdout(sys.stderr):
+        import anyio
+        import mcp.types as types
+        from mcp.server import Server
+        from mcp.server.stdio import stdio_server
 
-    from corp_osint.config import STAGE_NAMES
-    from corp_osint.log import setup_logging
-    from corp_osint.plugins import PLUGIN_REGISTRY, list_plugins
-    from corp_osint.runtime import run_pipeline, run_plugin
+        from corp_osint.config import STAGE_NAMES
+        from corp_osint.log import setup_logging
+        from corp_osint.plugins import PLUGIN_REGISTRY, list_plugins
+        from corp_osint.runtime import run_pipeline, run_plugin
 
-    setup_logging(verbosity=0)
+        setup_logging(verbosity=0)
+except ImportError as exc:  # missing dependency: say how to fix it, not a bare traceback
+    sys.stderr.write(
+        f"corp-osint MCP: missing dependency ({exc}).\n"
+        "Run `uv sync` (or `pip install -r requirements.txt`) from the repo root, "
+        "then `uv run playwright install chromium`.\n"
+    )
+    raise SystemExit(1) from exc
 
 
 # Session defaults for this MCP process (set via set_target).
@@ -56,8 +58,9 @@ _SET_TARGET = types.Tool(
     name="set_target",
     description=(
         "Set the corporate OSINT target defaults for this MCP session. "
-        "Call this once before run_pipeline or plugin tools; later calls may "
-        "override any default. Public-source research only."
+        "Call this before run_pipeline or plugin tools. Each call replaces the "
+        "previous target; per-call tool arguments still override these defaults. "
+        "Public-source research only."
     ),
     inputSchema=_schema(
         {
@@ -68,6 +71,10 @@ _SET_TARGET = types.Tool(
                 "description": "Stock market ticker symbol, such as MSFT",
             },
             "cik": {"type": "string", "description": "SEC CIK"},
+            "tenant_id": {
+                "type": "string",
+                "description": "Known Microsoft Entra tenant GUID (used by tenant/dangling plugins)",
+            },
             "proxy": {
                 "type": "string",
                 "description": "Optional HTTP/HTTPS/SOCKS proxy URL",
@@ -193,9 +200,9 @@ PLUGIN_SCHEMAS: dict[str, dict[str, Any]] = {
 def _context(arguments: dict[str, Any] | None) -> dict[str, Any]:
     """Merge per-call inputs over session TARGET defaults."""
     merged = dict(TARGET)
-    for key, value in (arguments or {}).items():
-        if value is not None:
-            merged[key] = value
+    merged.update(
+        {k: v for k, v in (arguments or {}).items() if v is not None and v != ""}
+    )
     return merged
 
 
@@ -203,17 +210,24 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
+_TARGET_KEYS = frozenset(
+    {"company", "domain", "ticker", "cik", "tenant_id", "proxy", "direct", "no_proxy"}
+)
+
+
 def _set_target(arguments: dict[str, Any]) -> str:
     company = str(arguments.get("company") or "").strip()
     if not company:
-        return "set_target rejected: company is required; session unchanged."
-    global TARGET
-    TARGET = {
-        key: value
-        for key, value in arguments.items()
-        if value is not None
-        and key in {"company", "domain", "ticker", "cik", "proxy", "direct", "no_proxy"}
-    }
+        raise ValueError("set_target: company is required; session target unchanged")
+    TARGET.clear()
+    TARGET.update(
+        {
+            key: value
+            for key, value in arguments.items()
+            if key in _TARGET_KEYS and value is not None and value != ""
+        }
+    )
+    TARGET["company"] = company
     return (
         f"Target set: {TARGET.get('company')}"
         f" (domain={TARGET.get('domain') or 'unset'}, "
@@ -222,7 +236,7 @@ def _set_target(arguments: dict[str, Any]) -> str:
     )
 
 
-async def _list_tools() -> list[types.Tool]:
+def _build_tools() -> list[types.Tool]:
     tools = [
         _SET_TARGET,
         types.Tool(
@@ -249,17 +263,24 @@ async def _list_tools() -> list[types.Tool]:
     return tools
 
 
+_TOOLS = _build_tools()
+
+
+async def _list_tools() -> list[types.Tool]:
+    return _TOOLS
+
+
 async def _call_tool(name: str, arguments: dict[str, Any] | None):
     args = arguments or {}
     if name == "set_target":
         return [types.TextContent(type="text", text=_set_target(args))]
+    if name != "run_pipeline" and name not in PLUGIN_REGISTRY:
+        raise ValueError(f"Unknown tool: {name}")
     values = _context(args)
     if name == "run_pipeline":
         result = await run_pipeline(values)
-    elif name in PLUGIN_REGISTRY:
-        result = await run_plugin(name, values)
     else:
-        return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+        result = await run_plugin(name, values)
     return [types.TextContent(type="text", text=_json_text(result))]
 
 

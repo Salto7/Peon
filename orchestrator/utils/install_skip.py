@@ -45,9 +45,7 @@ def skip_dir_name(name: str, *, skip_hidden: bool = False) -> bool:
     text = str(name or "")
     if is_junk_dir_name(text):
         return True
-    if skip_hidden and is_hidden_name(text):
-        return True
-    return False
+    return bool(skip_hidden and is_hidden_name(text))
 
 
 def skip_file_name(name: str, *, skip_hidden: bool = False) -> bool:
@@ -55,9 +53,7 @@ def skip_file_name(name: str, *, skip_hidden: bool = False) -> bool:
     text = str(name or "")
     if text.endswith((".pyc", ".pyo")):
         return True
-    if skip_hidden and is_hidden_name(text):
-        return True
-    return False
+    return bool(skip_hidden and is_hidden_name(text))
 
 
 def skip_rel_path(rel: str, *, skip_hidden: bool = False) -> bool:

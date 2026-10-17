@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from orchestrator.config import get_config
+from orchestrator.tools.install_step_base import InstallStepBase
 from orchestrator.tools.install_steps import (
     AptInstallStep,
     CustomInstallStep,
@@ -24,11 +25,6 @@ from orchestrator.utils.commands import clear_command_caches
 from orchestrator.utils.service import SharedServiceBase
 
 logger = logging.getLogger(__name__)
-
-
-_TRANSITIVE: dict[str, list[str]] = {
-    "ai-osint-subsidiaries": ["domain-enum"],
-}
 
 
 def normalize_verify(raw: Any) -> list[dict[str, Any]]:
@@ -68,6 +64,8 @@ class CatalogTool:
     verify: list[dict[str, Any]] = field(default_factory=list)
     roles: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+    # Other catalog tools this one needs (declared in its yaml ``requires:``).
+    requires: list[str] = field(default_factory=list)
 
     @property
     def is_image_tier(self) -> bool:
@@ -108,10 +106,13 @@ class ProvisionResult:
 class ToolCatalog(SharedServiceBase):
     """Cached view of ``tools/catalog/*.yaml``."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, root: Path | None = None) -> None:
         self._cache: dict[str, CatalogTool] | None = None
+        self._root = Path(root).resolve() if root is not None else None
 
     def catalog_dir(self) -> Path:
+        if self._root is not None:
+            return self._root
         raw = (os.environ.get("TOOLS_CATALOG_DIR") or "").strip()
         if raw:
             return Path(raw).resolve()
@@ -172,9 +173,7 @@ class ToolCatalog(SharedServiceBase):
             diff["removed"].append({"id": tid, "description": before_desc[tid]})
         for tid in sorted(set(before) & set(after)):
             if before[tid] != self._fingerprint(after[tid]):
-                diff["modified"].append(
-                    {"id": tid, "description": after[tid].description}
-                )
+                diff["modified"].append({"id": tid, "description": after[tid].description})
         return diff
 
     def all(self) -> dict[str, CatalogTool]:
@@ -241,7 +240,8 @@ class ToolCatalog(SharedServiceBase):
                 return
             seen.add(name)
             expanded.append(name)
-            for dep in _TRANSITIVE.get(name, []):
+            tool = self.lookup(name)
+            for dep in tool.requires if tool is not None else ():
                 add(dep)
 
         for raw in keys or []:
@@ -278,11 +278,7 @@ class ToolCatalog(SharedServiceBase):
         if not cid or cid.startswith("_"):
             return None
         binary = str(raw.get("binary") or raw.get("name") or cid).strip()
-        binaries = [
-            str(b).strip()
-            for b in (raw.get("binaries") or [])
-            if str(b).strip()
-        ]
+        binaries = [str(b).strip() for b in (raw.get("binaries") or []) if str(b).strip()]
         if binary and binary not in binaries:
             binaries = [binary, *binaries]
         return CatalogTool(
@@ -292,13 +288,14 @@ class ToolCatalog(SharedServiceBase):
             tier=str(raw.get("tier") or "catalog").strip(),
             binary=binary,
             binaries=binaries,
-            install=list(raw.get("install") or [])
-            if isinstance(raw.get("install"), list)
-            else [],
+            install=list(raw.get("install") or []) if isinstance(raw.get("install"), list) else [],
             verify=normalize_verify(raw.get("verify")),
             # Roles bind skills through inferred affinity, not tool YAML.
             roles=[],
             tags=[str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()],
+            requires=[str(t).strip() for t in (raw.get("requires") or []) if str(t).strip()]
+            if isinstance(raw.get("requires"), list)
+            else [],
         )
 
 
@@ -308,9 +305,7 @@ class CatalogProvisioner(SharedServiceBase):
     def __init__(self, *, catalog: ToolCatalog | None = None) -> None:
         self._catalog = catalog or ToolCatalog.shared()
 
-    def provision(
-        self, keys: list[str], *, workspace: Path | None = None
-    ) -> ProvisionResult:
+    def provision(self, keys: list[str], *, workspace: Path | None = None) -> ProvisionResult:
         result = ProvisionResult()
         tools = self._catalog.for_keys(keys)
         result.cli_ids = [t.id for t in tools]
@@ -347,6 +342,16 @@ class CatalogProvisioner(SharedServiceBase):
             return True, f"installed {tool.id}"
         return False, "; ".join(result.errors) or "verify failed"
 
+    def _apply_step(self, step: InstallStepBase, *, binary: str, tool_id: str) -> tuple[bool, str]:
+        """Run one step. Custom scripts resolve beside this provisioner's catalog."""
+        if isinstance(step, CustomInstallStep):
+            return step.apply(
+                binary=binary,
+                tool_id=tool_id,
+                catalog_dir=self._catalog.catalog_dir(),
+            )
+        return step.apply(binary=binary, tool_id=tool_id)
+
     def _apply_custom_steps(self, tool: CatalogTool, result: ProvisionResult) -> bool:
         """Run ``type: custom`` install steps first. Soft-fail → fall through."""
         if self._verified(tool):
@@ -357,7 +362,7 @@ class CatalogProvisioner(SharedServiceBase):
             if not isinstance(step, CustomInstallStep):
                 continue
             ran = True
-            ok, msg = step.apply(binary=binary, tool_id=tool.id)
+            ok, msg = self._apply_step(step, binary=binary, tool_id=tool.id)
             if ok:
                 if msg and msg not in result.installed:
                     result.installed.append(msg)
@@ -369,21 +374,15 @@ class CatalogProvisioner(SharedServiceBase):
                     tool.id,
                     msg,
                 )
-        if ran and self._verified(tool):
-            return True
-        return False
+        return bool(ran and self._verified(tool))
 
     def _provision_tool(
         self, tool: CatalogTool, result: ProvisionResult, *, skip_apt: bool
     ) -> None:
         if self._verified(tool):
             return
-        steps = [
-            s for s in _steps(tool.install) if not isinstance(s, CustomInstallStep)
-        ]
-        if not steps and not any(
-            isinstance(s, CustomInstallStep) for s in _steps(tool.install)
-        ):
+        steps = [s for s in _steps(tool.install) if not isinstance(s, CustomInstallStep)]
+        if not steps and not any(isinstance(s, CustomInstallStep) for s in _steps(tool.install)):
             result.errors.append(f"{tool.id}: no install steps in catalog")
             return
         if not steps:
@@ -398,15 +397,13 @@ class CatalogProvisioner(SharedServiceBase):
             (s for s in steps if not isinstance(s, AptInstallStep)),
             key=_fallback_rank,
         ):
-            ok, msg = step.apply(binary=binary, tool_id=tool.id)
+            ok, msg = self._apply_step(step, binary=binary, tool_id=tool.id)
             if not ok:
                 result.errors.append(f"{tool.id}: {msg}")
                 return
             if msg and msg not in result.installed:
                 result.installed.append(msg)
-        if not self._verified(tool) and not any(
-            e.startswith(f"{tool.id}:") for e in result.errors
-        ):
+        if not self._verified(tool) and not any(e.startswith(f"{tool.id}:") for e in result.errors):
             result.errors.append(f"{tool.id}: verify failed after install")
 
     @staticmethod
@@ -499,19 +496,14 @@ class CatalogProvisioner(SharedServiceBase):
         (result.installed if ok else result.errors).append(msg)
 
     @staticmethod
-    def _write_manifest(
-        workspace: Path | None, keys: list[str], result: ProvisionResult
-    ) -> None:
+    def _write_manifest(workspace: Path | None, keys: list[str], result: ProvisionResult) -> None:
         if workspace is None:
             return
         try:
             path = Path(workspace) / ".sandbox-cli-manifest.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
-                json.dumps(
-                    {"cli_keys": list(keys or []), **result.to_dict()}, indent=2
-                )
-                + "\n",
+                json.dumps({"cli_keys": list(keys or []), **result.to_dict()}, indent=2) + "\n",
                 encoding="utf-8",
             )
         except OSError:

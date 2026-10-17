@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load ui %}
+{% load ui project_actions %}
 {% block title %}Projects · Peon{% endblock %}
 {% block content %}
 <c-page-header title="Projects" description="Open an engagement or start a new one.">
@@ -8,17 +8,8 @@
 
 <c-card flush>
   {% if projects %}
-  <form id="projects-bulk" data-bulk method="post" action="{% url 'projects_bulk' %}"
-        class="flex min-h-12 flex-wrap items-center gap-2 border-b px-4 py-2">
-    {% csrf_token %}
-    <span class="mr-auto text-xs text-muted-foreground" data-bulk-count>0 selected</span>
-    <c-button variant="outline" size="sm" type="submit" name="action" value="pause" data-bulk-btn disabled>{% icon "pause" %} Pause</c-button>
-    <c-button variant="outline" size="sm" type="submit" name="action" value="resume" data-bulk-btn disabled>{% icon "play" %} Resume</c-button>
-    <c-button variant="outline" size="sm" type="submit" name="action" value="delete" data-bulk-btn disabled
-              class="text-destructive hover:text-destructive"
-              data-confirm="The selected projects and their Docker sandboxes will be permanently removed."
-              data-confirm-title="Delete selected projects?">{% icon "trash-2" %} Delete</c-button>
-  </form>
+  {% url 'project_list' as projects_url %}
+  {% include "includes/project_bulk_bar.html" with form_id="projects-bulk" %}
   <div class="ui-table-wrap">
     <table class="ui-table">
       <thead>
@@ -42,26 +33,8 @@
           <td class="text-right">
             <c-menu label="Actions for {{ p.title }}">
               <a class="ui-menu-item" href="{% url 'project_detail' p.pk %}">{% icon "external-link" %} Open</a>
-              {% if p.status == "paused" or p.status == "active" %}
-              <form method="post" action="{% url 'project_control' p.pk %}">
-                {% csrf_token %}
-                {% if p.status == "paused" %}
-                <input type="hidden" name="action" value="resume">
-                <button type="submit" class="ui-menu-item">{% icon "play" %} Resume</button>
-                {% else %}
-                <input type="hidden" name="action" value="pause">
-                <button type="submit" class="ui-menu-item">{% icon "pause" %} Pause</button>
-                {% endif %}
-              </form>
-              {% endif %}
               <div class="ui-menu-sep"></div>
-              <form method="post" action="{% url 'project_control' p.pk %}"
-                    data-confirm="“{{ p.title }}” and its Docker sandbox will be permanently removed."
-                    data-confirm-title="Delete project?">
-                {% csrf_token %}
-                <input type="hidden" name="action" value="delete">
-                <button type="submit" class="ui-menu-item" data-variant="destructive">{% icon "trash-2" %} Delete</button>
-              </form>
+              {% project_actions project=p mode="menu" next=projects_url %}
             </c-menu>
           </td>
         </tr>

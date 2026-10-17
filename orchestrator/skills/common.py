@@ -11,10 +11,20 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-# --- catalog rules -----------------------------------------------------------
+def render_prompt_block(
+    skill_id: str, description: str, instructions: str, *, body_limit: int = 8000
+) -> str:
+    """Prompt section for one skill: heading, description, clipped body."""
+    body = (instructions or "").strip()
+    if len(body) > body_limit:
+        body = body[:body_limit].rstrip() + "\n…"
+    head = f"### Skill `{skill_id}`"
+    if description:
+        head = f"{head}\n{description.strip()}"
+    return f"{head}\n\n{body}".strip() if body else head
 
-# Always-protected platform skill ids (also set metadata.protected on the skill).
-CORE_SKILLS = frozenset({"project-manager", "analyzer"})
+
+# --- catalog rules -----------------------------------------------------------
 
 # agentskills.io skill name / category slug shape.
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -61,11 +71,6 @@ def normalize_category(value: object) -> str:
         return text
     # Legacy domain categories (recon, web, …) collapse to custom.
     return "custom"
-
-
-def is_protected(*, name: str = "", protected: bool = False) -> bool:
-    """True when the skill sets protected or is a known core id."""
-    return bool(protected or (name or "").strip() in CORE_SKILLS)
 
 
 @dataclass(frozen=True)
@@ -127,6 +132,72 @@ def parse_frontmatter_yaml(text: str) -> tuple[dict[str, Any], str] | None:
     except Exception:
         return None
     return (data, split[1])
+
+
+def namespaced_slug(name: str, namespace: str = "") -> str:
+    """kebab-safe ``name``, prefixed with ``namespace`` when both are set.
+
+    Two differently-sourced packs (e.g. two imported plugin bundles) can ship
+    a skill with the same leaf name; without a namespace prefix, whichever
+    imports second silently overwrites the first in the catalog.
+    """
+    slug = str(name or "").strip().lower()
+    ns = re.sub(r"[^a-z0-9]+", "-", str(namespace or "").strip().lower()).strip("-")
+    if ns and ns != slug:
+        return f"{ns}-{slug}"
+    return slug
+
+
+def apply_skill_namespace(skill_md: str, namespace: str) -> str:
+    """Rewrite SKILL.md's frontmatter ``name:`` to a namespaced slug.
+
+    Used when a pack was discovered under a nested ``<namespace>/skills/``
+    directory (a plugin bundle), so its catalog id carries the namespace and
+    can't collide with another bundle's same-named skill. A no-op when
+    ``namespace`` is empty or the frontmatter can't be parsed — callers that
+    need a hard guarantee should check the id landed as expected afterward.
+    """
+    import yaml
+
+    ns = str(namespace or "").strip()
+    if not ns:
+        return skill_md
+    split = split_frontmatter(skill_md)
+    if not split:
+        return skill_md
+    fm_raw, body = split
+    try:
+        data = yaml.safe_load(fm_raw) or {}
+    except yaml.YAMLError:
+        return skill_md
+    if not isinstance(data, dict):
+        return skill_md
+    current = str(data.get("name") or "").strip().lower()
+    if not current:
+        return skill_md
+    data = dict(data)
+    data["name"] = namespaced_slug(current, ns)
+    return dump_skill_md(data, (body or "").strip() + "\n")
+
+
+def apply_candidate_namespace(candidate: Any) -> None:
+    """Rewrite one discovered pack's SKILL.md in place for its namespace.
+
+    Shared by every installer that discovers packs via
+    ``discover_skill_candidates`` (disk bootstrap, drag-drop/zip, openskills)
+    so the namespace-disambiguation rewrite lives in exactly one place.
+    ``candidate`` is a ``SkillCandidate`` (duck-typed here to avoid a circular
+    import — ``registry_scan`` already imports from this module).
+    """
+    if not candidate.namespace:
+        return
+    try:
+        text = candidate.manifest.read_text(encoding="utf-8")
+    except OSError:
+        return
+    candidate.manifest.write_text(
+        apply_skill_namespace(text, candidate.namespace), encoding="utf-8"
+    )
 
 
 def dump_skill_md(data: dict[str, Any], body: str) -> str:

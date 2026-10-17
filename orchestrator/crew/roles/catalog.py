@@ -146,10 +146,9 @@ def seed_role_text(role_id: str, kind: str) -> tuple[str, str]:
     for role in DEFAULT_ROLES:
         if role.id == rid:
             return role.goal, role.backstory
-    if kind == "engagement-pm":
-        return DEFAULT_ROLES[0].goal, DEFAULT_ROLES[0].backstory
-    if kind == "analyzer":
-        return DEFAULT_ROLES[1].goal, DEFAULT_ROLES[1].backstory
+    for role in DEFAULT_ROLES:
+        if role.kind == kind and kind in BOOKEND_KINDS:
+            return role.goal, role.backstory
     return (
         f"Lead authorized work for `{rid or 'this role'}` using the skills bound to it.",
         "You are a technical expert. Stay inside the rules of engagement.",

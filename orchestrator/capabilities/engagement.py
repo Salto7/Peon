@@ -54,12 +54,20 @@ class EngagementTools:
         return get_job().bridge.forget_memory(name, scope)
 
     @staticmethod
-    def send_message(to: str, content: str, kind: str = "inform") -> str:
-        return get_job().bridge.send_message(to, content, kind=kind)
+    def send_message(
+        to: str, content: str, kind: str = "inform", reply_to: str = ""
+    ) -> str:
+        return get_job().bridge.send_message(
+            to, content, kind=kind, reply_to=reply_to
+        )
 
     @staticmethod
     def check_inbox() -> str:
         return get_job().bridge.check_inbox()
+
+    @staticmethod
+    def message_status(limit: int = 10) -> str:
+        return get_job().bridge.message_status(limit)
 
     @staticmethod
     def go_idle(reason: str = "") -> str:

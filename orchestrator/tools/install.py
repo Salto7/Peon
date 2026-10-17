@@ -84,10 +84,13 @@ class InstallResolver(SharedServiceBase):
         try:
             if not llm_config().api_key:
                 return None
-            payload = chat_json(
-                PLANNER_INSTALL_SYSTEM,
-                f"binary={binary!r} prior_error={prior_error!r}",
-            )
+            from orchestrator.utils import llm_usage
+
+            with llm_usage.purpose("install_resolver"):
+                payload = chat_json(
+                    PLANNER_INSTALL_SYSTEM,
+                    f"binary={binary!r} prior_error={prior_error!r}",
+                )
         except Exception as exc:
             logger.info("planner install resolve failed for %s: %s", binary, exc)
             return None

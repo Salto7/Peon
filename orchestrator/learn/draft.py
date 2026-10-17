@@ -8,13 +8,13 @@ from typing import Any
 
 import yaml
 
-from orchestrator.skills.common import parse_frontmatter_yaml, valid_skill_name
 from orchestrator.skills.author import (
     SCRIPT_SH,
     lint_claude_files,
     shape_files,
     shape_skill_md,
 )
+from orchestrator.skills.common import parse_frontmatter_yaml, valid_skill_name
 from orchestrator.tools.catalog import ToolCatalog
 from orchestrator.tools.install_docs import has_install_fence
 from orchestrator.utils.strings import as_str_list, unique
@@ -99,9 +99,7 @@ def resolve_catalog_keys(keys: list[str]) -> CatalogResolution:
 
 def prompt_catalog_hits(prompt: str) -> list[dict[str, str]]:
     """Catalog tools named in free text (match-only; ignores unknown tokens)."""
-    return resolve_catalog_keys(
-        [t.lower() for t in _TOKEN_RE.findall(prompt or "")]
-    ).matched
+    return resolve_catalog_keys([t.lower() for t in _TOKEN_RE.findall(prompt or "")]).matched
 
 
 def proposed_tool_match(suggestion: dict[str, Any]) -> dict[str, str]:
@@ -125,9 +123,7 @@ def skill_prompt(skill_name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def tool_suggestion_from_payload(
-    payload: dict[str, Any], *, author: str = ""
-) -> dict[str, Any]:
+def tool_suggestion_from_payload(payload: dict[str, Any], *, author: str = "") -> dict[str, Any]:
     """Normalize tools-suggestor / OpenCode JSON into a recipe dict."""
     if not isinstance(payload, dict):
         raise RuntimeError("tools-suggestor returned non-object JSON")
@@ -165,8 +161,11 @@ def install_recipe_from_suggestion(suggestion: dict[str, Any]) -> dict[str, Any]
 
 
 def tool_suggest_human(prompt: str) -> str:
+    from orchestrator.prompts import CATALOG_INSTALL_PREFER
+
     return (
         f"Operator request:\n{prompt}\n\n"
+        f"Target image: the Peon sandbox (Kali). {CATALOG_INSTALL_PREFER}\n\n"
         f"Existing catalog tools (avoid duplicate ids):\n"
         f"{yaml.safe_dump(catalog_summaries(), sort_keys=False)}"
     )
@@ -193,8 +192,8 @@ def tool_replan_human(
     if fix:
         parts.append(f"Operator fix guidance:\n{fix}")
     parts.append(
-        "Produce a revised catalog YAML that is more likely to install on "
-        "debian:bookworm-slim. Keep the same tool intent as the operator "
+        "Produce a revised catalog YAML that is more likely to install in the "
+        "Peon sandbox (Kali). Keep the same tool intent as the operator "
         "request; fix install/verify based on the error"
         + (" and fix guidance." if fix else ".")
         + f" {CATALOG_INSTALL_PREFER}\n"
@@ -203,9 +202,7 @@ def tool_replan_human(
     return "\n\n".join(parts)
 
 
-def filter_catalog(
-    catalog: list[dict[str, str]], tools: list[str] | None
-) -> list[dict[str, str]]:
+def filter_catalog(catalog: list[dict[str, str]], tools: list[str] | None) -> list[dict[str, str]]:
     if not tools:
         return catalog
     wanted = {t.strip().lower() for t in tools if str(t).strip()}
@@ -284,9 +281,7 @@ def skill_result_dict(
     return result
 
 
-def install_guide_markdown(
-    *, yaml_text: str = "", notes: str = "", binary: str = ""
-) -> str:
+def install_guide_markdown(*, yaml_text: str = "", notes: str = "", binary: str = "") -> str:
     """Portable ``references/INSTALL.md`` for a CLI that is not already on PATH."""
     block: dict[str, Any] = {}
     text = (yaml_text or "").strip()
@@ -335,9 +330,7 @@ def _clis_from_frontmatter(data: dict[str, Any]) -> list[str]:
     return clis
 
 
-def _merge_matched(
-    primary: CatalogResolution, extra: CatalogResolution
-) -> CatalogResolution:
+def _merge_matched(primary: CatalogResolution, extra: CatalogResolution) -> CatalogResolution:
     """Union matched tools; keep ``missing`` only from ``primary`` (declared CLIs)."""
     seen = {m["id"] for m in primary.matched}
     matched = list(primary.matched)
@@ -493,16 +486,8 @@ def parse_skill_payload(
     name = str(payload.get("name") or "").strip().lower()
     skill_md = str(payload.get("skill_md") or "").strip()
     files_raw = payload.get("files") or {}
-    files = (
-        {str(k): str(v) for k, v in files_raw.items()}
-        if isinstance(files_raw, dict)
-        else {}
-    )
-    suggested = [
-        str(t).strip()
-        for t in (payload.get("suggested_tools") or [])
-        if str(t).strip()
-    ]
+    files = {str(k): str(v) for k, v in files_raw.items()} if isinstance(files_raw, dict) else {}
+    suggested = [str(t).strip() for t in (payload.get("suggested_tools") or []) if str(t).strip()]
     if not valid_skill_name(name):
         raise RuntimeError(f"invalid skill name {name!r}")
     if not skill_md:
@@ -529,19 +514,21 @@ def authoring_prompt(
     install_types = ", ".join(CATALOG_INSTALL_TYPES)
     lines = [
         f"Operator request:\n{prompt}\n",
-        f"Catalog tools matched on disk:\n"
-        f"{yaml.safe_dump(on_disk or ['(none)'], sort_keys=False)}",
+        f"Catalog tools matched on disk:\n{yaml.safe_dump(on_disk or ['(none)'], sort_keys=False)}",
         f"Authoring mode: {mode}",
         "Default allowed-tools: Bash Read",
-        "Write a Claude Agent Skill. It must pass skills-ref and run under Claude's Bash tool.",
-        "Do not use Peon-only helpers (skill_entry / run_binary). Prefer Bash Read and a shebang script.",
+        "Write a Claude Agent Skill. It must pass skills-ref.",
+        "The script stays a shebang that execs the CLI. The Run section calls "
+        'run_skill_script("<name>", "scripts/run.sh", args=\'["<args>"]\').',
+        "Do not use skill_entry or run_binary. Do not document a bare bash invocation.",
     ]
     if tool_recipes:
         lines.append(
             "CLI is NOT in tools/catalog yet. Host drafted install recipe(s) via "
             f"tools-suggestor (types: {install_types}).\n"
-            f"- files[\"{SCRIPT_SH}\"] is a bash script: `exec <binary> \"$@\"`\n"
-            f"- REQUIRED files[\"{INSTALL_GUIDE}\"] with a ```yaml fence "
+            f'- files["{SCRIPT_SH}"] is a bash script: `exec <binary> "$@"`\n'
+            "- The Run section calls run_skill_script, not bash.\n"
+            f'- REQUIRED files["{INSTALL_GUIDE}"] with a ```yaml fence '
             "starting with `install:` (same steps as the recipe).\n"
             f"- Link {INSTALL_GUIDE} from SKILL.md. Do not put apt/git/pip steps in the body.\n"
             f"{yaml.safe_dump(tool_recipes, sort_keys=False)}"

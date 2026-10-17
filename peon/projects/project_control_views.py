@@ -15,68 +15,74 @@ from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_http_methods
 
+from orchestrator.utils.llm import llm_configured
+from peon.projects.console import http_handle_console_chat
+from peon.projects.crew_control import (
+    pause_project,
+    replan_project,
+    reprompt_manager,
+    restart_project,
+    resume_project,
+    stop_project,
+)
 from peon.projects.findings import FindingStore
 from peon.projects.http_helpers import (
+    flash_json,
     parse_json_body,
     request_value,
     scoped_get_or_404,
     with_project_context,
-    flash_json,
-    wants_json as request_wants_json,
 )
-from peon.projects.project_status import ProjectOpsPayload
-from peon.projects.streaming import (
-    anchor_job,
-    emit_job_stream,
-    project_message_dicts,
-    stream_meta,
+from peon.projects.http_helpers import (
+    wants_json as request_wants_json,
 )
 from peon.projects.lifecycle import (
     apply_directive,
     bulk_delete_jobs,
     bulk_delete_projects,
     bulk_pause_projects,
+    bulk_restart_projects,
     bulk_resume_projects,
     bulk_steer_jobs,
+    bulk_stop_projects,
     delete_job,
     delete_project,
     project_accepts_work,
     rerun_job,
 )
-from orchestrator.utils.llm import llm_configured
+from peon.projects.mcp_ops import save_project_mcp_from_post
 from peon.projects.models import (
+    INACTIVE_PROJECT_STATUSES,
     Finding,
     FindingSeverity,
     FindingStatus,
-    INACTIVE_PROJECT_STATUSES,
     Job,
     JobStatus,
     Project,
     ProjectStatus,
 )
 from peon.projects.objectives import ObjectiveScheduler
-from peon.projects.mcp_ops import save_project_mcp_from_post
+from peon.projects.project_pages import PROJECT_JOBS_LIMIT, STREAM_POLL_LIMIT
+from peon.projects.project_status import ProjectOpsPayload
 from peon.projects.roe_ops import (
-    roe_add_path,
-    roe_remove_path,
     add_candidates,
     get_or_create_roe,
     promote_candidates,
     provision_project_roe,
+    roe_add_path,
+    roe_remove_path,
+)
+from peon.projects.streaming import (
+    anchor_job,
+    emit_job_stream,
+    project_message_dicts,
+    stream_meta,
 )
 from peon.projects.target_shapes import (
     format_targets,
     parse_target_lines,
 )
 from peon.projects.workspaces import delete_project_input, list_project_inputs, save_project_input
-from peon.projects.console import http_handle_console_chat
-from peon.projects.project_pages import PROJECT_JOBS_LIMIT, STREAM_POLL_LIMIT
-from peon.projects.crew_control import (
-    pause_project,
-    replan_project,
-    reprompt_manager,
-    resume_project,
-)
 
 
 @require_http_methods(["POST"])
@@ -119,9 +125,7 @@ def project_finding_triage(request: HttpRequest, pk, finding_id) -> HttpResponse
                     "counts": counts,
                 }
             )
-        messages.success(
-            request, f"FIND-{finding.seq} → {updated.status} / {updated.severity}"
-        )
+        messages.success(request, f"FIND-{finding.seq} → {updated.status} / {updated.severity}")
     status_q = (request.POST.get("finding_status") or "open").strip()
     severity_q = (request.POST.get("finding_severity") or "all").strip()
     url = reverse("project_detail", kwargs={"pk": project.pk})
@@ -142,6 +146,7 @@ def project_findings_json(request: HttpRequest, pk) -> JsonResponse:
             "severities": list(FindingSeverity.choices),
         }
     )
+
 
 @require_http_methods(["POST"])
 @with_project_context
@@ -269,9 +274,7 @@ def project_mcp(request: HttpRequest, pk) -> HttpResponse:
         if wants_json:
             return JsonResponse({"ok": False, "error": str(exc)}, status=400)
         messages.error(request, str(exc))
-        return redirect(
-            reverse("project_detail", kwargs={"pk": project.pk}) + "#settings"
-        )
+        return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#settings")
     if wants_json:
         return JsonResponse({"ok": True, "updated": n})
     if n:
@@ -339,8 +342,7 @@ def project_roe(request: HttpRequest, pk) -> HttpResponseRedirect:
         if deduced:
             messages.info(
                 request,
-                "Rules of Engagement deduced: "
-                + ", ".join(format_targets(project.roe.in_scope)),
+                "Rules of Engagement deduced: " + ", ".join(format_targets(project.roe.in_scope)),
             )
         else:
             messages.warning(
@@ -350,6 +352,27 @@ def project_roe(request: HttpRequest, pk) -> HttpResponseRedirect:
                 "ip:/person: are optional hints).",
             )
     return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#assets")
+
+
+def _safe_next(request: HttpRequest) -> str:
+    from django.utils.http import url_has_allowed_host_and_scheme
+
+    target = (request.POST.get("next") or "").strip()
+    ok = url_has_allowed_host_and_scheme(
+        target, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    )
+    return target if target and ok else ""
+
+
+def _after_control(
+    request: HttpRequest, project: Project, *, deleted: bool = False
+) -> HttpResponseRedirect:
+    nxt = _safe_next(request)
+    if nxt:
+        return redirect(nxt)
+    if deleted:
+        return redirect("project_list")
+    return redirect("project_detail", pk=project.pk)
 
 
 @require_http_methods(["GET", "POST"])
@@ -366,6 +389,12 @@ def projects_bulk(request: HttpRequest) -> HttpResponseRedirect:
     elif action == "resume":
         n = bulk_resume_projects(ids)
         messages.success(request, f"Resumed {n} project(s)")
+    elif action == "stop":
+        n = bulk_stop_projects(ids)
+        messages.success(request, f"Stopped {n} project(s)")
+    elif action == "restart":
+        n = bulk_restart_projects(ids)
+        messages.success(request, f"Restarted {n} project(s)")
     elif action in {"delete", "remove"}:
         n = bulk_delete_projects(ids)
         messages.success(
@@ -374,7 +403,7 @@ def projects_bulk(request: HttpRequest) -> HttpResponseRedirect:
         )
     else:
         messages.error(request, f"Unknown bulk action: {action or '(empty)'}")
-    return redirect("project_list")
+    return redirect(_safe_next(request) or "project_list")
 
 
 @require_http_methods(["POST"])
@@ -385,9 +414,7 @@ def jobs_bulk(request: HttpRequest, pk) -> HttpResponseRedirect:
     ids = request.POST.getlist("job_ids")
     if action in {"pause", "resume", "kill", "queue"}:
         if action in {"resume", "queue"} and not project_accepts_work(project):
-            messages.error(
-                request, f"Project is {project.status} — resume the project first"
-            )
+            messages.error(request, f"Project is {project.status} — resume the project first")
             return redirect("project_detail", pk=project.pk)
         n = bulk_steer_jobs(project, ids, action)
         label = {"queue": "Queued"}.get(action, f"{action.title()}d")
@@ -407,16 +434,35 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
     project = get_object_or_404(Project, pk=pk)
     action = (request.POST.get("action") or "").strip().lower()
     if action == "pause":
-
+        if project.status != ProjectStatus.ACTIVE:
+            messages.error(request, "Pause applies to a running project")
+            return _after_control(request, project)
         pause_project(project)
         messages.success(request, f"Paused project {project.title}")
-        return redirect("project_detail", pk=project.pk)
+        return _after_control(request, project)
     if action == "resume":
-
+        if project.status != ProjectStatus.PAUSED:
+            messages.error(request, "Resume applies to a paused project")
+            return _after_control(request, project)
         steer = (request.POST.get("description") or request.POST.get("steer") or "").strip()
         resume_project(project, steer=steer)
         messages.success(request, f"Resumed project {project.title}")
-        return redirect("project_detail", pk=project.pk)
+        return _after_control(request, project)
+    if action == "stop":
+        if project.status not in {ProjectStatus.ACTIVE, ProjectStatus.PAUSED}:
+            messages.error(request, "Stop applies to a running or paused project")
+            return _after_control(request, project)
+        stop_project(project)
+        messages.success(request, f"Stopped project {project.title}")
+        return _after_control(request, project)
+    if action == "restart":
+        try:
+            restart_project(project)
+        except (RuntimeError, ValueError) as exc:
+            messages.error(request, f"Restart failed: {exc}")
+            return _after_control(request, project)
+        messages.success(request, f"Restarted project {project.title}")
+        return _after_control(request, project)
     if action == "run_next":
         if project.status in INACTIVE_PROJECT_STATUSES:
             messages.error(request, f"Project is {project.status}")
@@ -474,9 +520,10 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
             )
             return redirect("project_list")
         messages.success(request, f"Deleted project {title}{extra}")
-        return redirect("project_list")
+        return _after_control(request, project, deleted=True)
     messages.error(request, f"Unknown project action: {action or '(empty)'}")
     return redirect("project_detail", pk=project.pk)
+
 
 @require_http_methods(["POST"])
 @with_project_context
@@ -527,9 +574,7 @@ def job_steer(request: HttpRequest, pk, job_id) -> HttpResponseRedirect:
     job = scoped_get_or_404(Job, project, pk=job_id)
     action = (request.POST.get("action") or "").strip().lower()
     if action == "resume" and not project_accepts_work(project):
-        messages.error(
-            request, f"Project is {project.status} — resume the project first"
-        )
+        messages.error(request, f"Project is {project.status} — resume the project first")
         return redirect("project_detail", pk=project.pk)
     apply_directive(job, action)
     job.refresh_from_db()
@@ -538,7 +583,6 @@ def job_steer(request: HttpRequest, pk, job_id) -> HttpResponseRedirect:
     if next_url == "project":
         return redirect("project_detail", pk=project.pk)
     return redirect("job_live", pk=project.pk, job_id=job.pk)
-
 
 
 @require_GET
@@ -558,10 +602,27 @@ def project_messages_json(request: HttpRequest, pk) -> JsonResponse:
     except (TypeError, ValueError):
         after_id = 0
     return JsonResponse(
+        {"messages": project_message_dicts(project, after_id=after_id, limit=STREAM_POLL_LIMIT)}
+    )
+
+
+@require_GET
+@with_project_context
+def job_messages_json(request: HttpRequest, pk, job_id) -> JsonResponse:
+    """One agent's own stream history (the project feed only bootstraps recent lines)."""
+    from peon.projects.streaming import job_message_dicts
+
+    project = get_object_or_404(Project, pk=pk)
+    job = scoped_get_or_404(Job, project, pk=job_id)
+    try:
+        before = int(request.GET.get("before") or 0)
+        limit = int(request.GET.get("limit") or 200)
+    except (TypeError, ValueError):
+        before, limit = 0, 200
+    return JsonResponse(
         {
-            "messages": project_message_dicts(
-                project, after_id=after_id, limit=STREAM_POLL_LIMIT
-            )
+            "job_id": str(job.pk),
+            "messages": job_message_dicts(project, str(job.pk), before_id=before, limit=limit),
         }
     )
 
@@ -598,9 +659,7 @@ def project_plan_api(request: HttpRequest, pk) -> JsonResponse:
         if action == "save":
             agents = body.get("agents") or []
             if not isinstance(agents, list):
-                return JsonResponse(
-                    {"ok": False, "error": "agents must be a list"}, status=400
-                )
+                return JsonResponse({"ok": False, "error": "agents must be a list"}, status=400)
             save_plan_agents(project, agents)
             return JsonResponse({"ok": True, **plan_graph_payload(project)})
         if action == "accept":
@@ -621,9 +680,7 @@ def project_plan_api(request: HttpRequest, pk) -> JsonResponse:
                 from peon.projects.db import qs_using
 
                 objective = (
-                    qs_using(Objective, project.id)
-                    .filter(project_id=project.id, pk=obj_id)
-                    .first()
+                    qs_using(Objective, project.id).filter(project_id=project.id, pk=obj_id).first()
                 )
             if sid:
                 row = scoped_get_or_404(ProjectSchedule, project, pk=sid)
@@ -636,9 +693,7 @@ def project_plan_api(request: HttpRequest, pk) -> JsonResponse:
                     body.get("interval_seconds") or row.interval_seconds or 0
                 )
                 row.enabled = bool(body.get("enabled", row.enabled))
-                row.skip_if_running = bool(
-                    body.get("skip_if_running", row.skip_if_running)
-                )
+                row.skip_if_running = bool(body.get("skip_if_running", row.skip_if_running))
                 if objective is not None:
                     row.objective = objective
                 row.save()
@@ -665,9 +720,7 @@ def project_plan_api(request: HttpRequest, pk) -> JsonResponse:
                 return JsonResponse({"ok": False, "error": "id required"}, status=400)
             from peon.projects.db import qs_using
 
-            qs_using(ProjectSchedule, project.id).filter(
-                pk=sid, project_id=project.id
-            ).delete()
+            qs_using(ProjectSchedule, project.id).filter(pk=sid, project_id=project.id).delete()
             return JsonResponse({"ok": True, **plan_graph_payload(project)})
         return JsonResponse({"ok": False, "error": f"unknown action {action}"}, status=400)
     except Exception as exc:
@@ -763,11 +816,15 @@ def pending_input_decide(request: HttpRequest) -> JsonResponse:
         text = reply or "DENIED by operator"
     elif decision == "edit":
         if not reply:
-            return JsonResponse(
-                {"ok": False, "error": "edit requires reply text"}, status=400
-            )
+            return JsonResponse({"ok": False, "error": "edit requires reply text"}, status=400)
         text = reply
     else:
+        if not reply and list(prompt.options or []):
+            # A bare "approve" cannot answer a multiple-choice question.
+            return JsonResponse(
+                {"ok": False, "error": "choose one of the options or type an answer"},
+                status=400,
+            )
         text = reply or "APPROVED by operator"
     try:
         resolve_operator_prompt(prompt, text)
@@ -778,7 +835,6 @@ def pending_input_decide(request: HttpRequest) -> JsonResponse:
             "ok": True,
             "id": str(prompt.id),
             "decision": decision,
-            "href": reverse("project_detail", kwargs={"pk": prompt.project_id})
-            + "#war-chat",
+            "href": reverse("project_detail", kwargs={"pk": prompt.project_id}) + "#war-chat",
         }
     )

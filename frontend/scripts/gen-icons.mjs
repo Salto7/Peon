@@ -6,12 +6,12 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 const ICONS = [
-  "activity", "bot", "brain", "chevron-down", "chevron-right", "circle-alert", "circle-check",
+  "activity", "bot", "brain", "chevron-down", "chevron-right", "maximize-2", "minimize-2", "circle-alert", "circle-check",
   "crosshair", "ellipsis", "external-link", "file-text", "flask-conical", "folder-kanban",
   "folder-open", "hammer", "house", "inbox", "layout-dashboard", "library", "list-checks",
-  "menu", "message-square", "moon", "network", "panel-left", "pause", "play", "plus",
+  "menu", "message-square", "moon", "network", "panel-left", "pause", "play", "plug", "plus", "rotate-ccw",
   "refresh-cw", "scroll-text", "search", "server", "settings", "shield", "sparkles",
-  "square-terminal", "sun", "target", "trash-2", "triangle-alert", "upload", "wrench", "x",
+  "square", "square-terminal", "sun", "target", "trash-2", "triangle-alert", "upload", "wrench", "x",
 ];
 
 const require = createRequire(import.meta.url);

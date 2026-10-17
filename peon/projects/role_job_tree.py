@@ -59,13 +59,33 @@ class RoleJobTree:
             "capabilities": list(role.capabilities or [])[:12],
         }
 
+    @staticmethod
+    def _is_governance(job: Job) -> bool:
+        from peon.projects.a2a import GOVERNANCE_PROFILE
+
+        return job.profile == GOVERNANCE_PROFILE
+
+    @staticmethod
+    def _created_stamp(job: Job) -> float:
+        created = job.created_at
+        return created.timestamp() if created is not None else 0.0
+
     @classmethod
     def jobs_by_role(cls, jobs: list[Job]) -> dict[str, Job]:
-        """Latest job per primary role id (first seen wins when newest-first)."""
+        """Latest engagement job per primary role.
+
+        A governance-profile job shares the manager role id but is a watcher,
+        not the role incumbent. Input order does not matter.
+        """
         by_role: dict[str, Job] = {}
         for job in jobs:
+            if cls._is_governance(job):
+                continue
             rid = cls.primary_role_id(job)
-            if rid and rid not in by_role:
+            if not rid:
+                continue
+            current = by_role.get(rid)
+            if current is None or cls._created_stamp(job) >= cls._created_stamp(current):
                 by_role[rid] = job
         return by_role
 
@@ -83,14 +103,16 @@ class RoleJobTree:
 
         ``Job.parent`` is the execution tree (spawn_work). ``reports_to`` only
         places root objective Jobs under their catalog supervisor.
+        Governance-profile jobs are watchers and are not crew nodes.
         """
-        by_id = {str(j.id): j for j in jobs}
-        by_role = cls.jobs_by_role(jobs)
-        children: dict[str, list[Job]] = {str(j.id): [] for j in jobs}
+        crew = [job for job in jobs if not cls._is_governance(job)]
+        by_id = {str(j.id): j for j in crew}
+        by_role = cls.jobs_by_role(crew)
+        children: dict[str, list[Job]] = {str(j.id): [] for j in crew}
         roots: list[Job] = []
         attached: set[str] = set()
 
-        for job in jobs:
+        for job in crew:
             jid = str(job.id)
             # Execution parent wins over org-chart reports_to.
             if job.parent_id and str(job.parent_id) in by_id:

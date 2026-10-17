@@ -1,19 +1,21 @@
 """War-room ops console JSON (agents, roles, progress)."""
 
-
 from __future__ import annotations
 
-from django.db.models import Count
+from typing import Any
 
+from django.db.models import Count, Max
+
+from orchestrator.utils.agent_activity import describe_activity
 from orchestrator.utils.commands import (
     capability_names_payload,
     cli_names_payload,
     pick_agent_command,
 )
-from orchestrator.utils.stream_events import display_command
+from orchestrator.utils.stream_events import display_command, event_of, payload_of
 from peon.projects.catalog_cards.role import RoleCards
-from peon.projects.hitl import pending_operator_prompts
 from peon.projects.findings import FindingStore
+from peon.projects.hitl import pending_operator_prompts
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
     Job,
@@ -56,13 +58,26 @@ def _idle_fields(job: Job) -> dict:
     if obj is not None and job.idle_reason == "dependencies":
         try:
             out["waiting_on"] = [
-                d.seq
-                for d in obj.depends_on.all()
-                if d.status != ObjectiveStatus.COMPLETED
+                d.seq for d in obj.depends_on.all() if d.status != ObjectiveStatus.COMPLETED
             ]
         except Exception:  # noqa: BLE001 — display-only
             out["waiting_on"] = []
     return out
+
+
+_GRAPH_TERMINAL = frozenset({"completed", "failed", "cancelled"})
+
+
+def _active_descendants(agent: dict) -> int:
+    """Non-terminal agents under ``agent``, including direct children."""
+    count = 0
+    for kid in agent.get("subagents") or []:
+        if not isinstance(kid, dict):
+            continue
+        if str(kid.get("status") or "").strip().lower() not in _GRAPH_TERMINAL:
+            count += 1
+        count += _active_descendants(kid)
+    return count
 
 
 class ProjectOpsPayload:
@@ -109,7 +124,8 @@ class ProjectOpsPayload:
 
         obj = getattr(job, "objective", None)
         obj_cmds = [
-            str(c).strip() for c in ((obj.commands if obj is not None else None) or [])
+            str(c).strip()
+            for c in ((obj.commands if obj is not None else None) or [])
             if str(c).strip()
         ]
         description = (job.description or "").strip()
@@ -118,15 +134,11 @@ class ProjectOpsPayload:
         primary = RoleJobTree.primary_role_id(job)
         meta = RoleJobTree.role_meta(primary)
         skill_ids = [
-            str(s).strip()
-            for s in (getattr(job, "skill_ids", None) or [])
-            if str(s).strip()
+            str(s).strip() for s in (getattr(job, "skill_ids", None) or []) if str(s).strip()
         ]
         if not skill_ids and obj is not None:
             skill_ids = [
-                str(s).strip()
-                for s in (getattr(obj, "skill_ids", None) or [])
-                if str(s).strip()
+                str(s).strip() for s in (getattr(obj, "skill_ids", None) or []) if str(s).strip()
             ]
         is_spawn = bool(job.parent_id)
         lane = cls._agent_lane(primary, is_spawn=is_spawn)
@@ -279,7 +291,15 @@ class ProjectOpsPayload:
 
         ids = [str(j) for j in job_ids if j]
         empty: dict[str, dict] = {
-            jid: {"commands": [], "last_command": "", "tool_calls": 0} for jid in ids
+            jid: {
+                "commands": [],
+                "last_command": "",
+                "tool_calls": 0,
+                "event": "",
+                "payload": {},
+                "last_activity_at": "",
+            }
+            for jid in ids
         }
         if not ids:
             return empty
@@ -298,7 +318,7 @@ class ProjectOpsPayload:
             msg_qs = StreamMessage.objects.using("default")
             ctx = nullcontext()
 
-        tool_counts: dict[str, int] = {jid: 0 for jid in ids}
+        tool_counts: dict[str, int] = dict.fromkeys(ids, 0)
         with ctx:
             for row in (
                 msg_qs.filter(job_id__in=ids, message_type=StreamMessageType.TOOL)
@@ -314,6 +334,59 @@ class ProjectOpsPayload:
                     : max(80, per_job * len(ids) * 4)
                 ]
             )
+            latest_ids = [
+                row["latest"]
+                for row in (
+                    msg_qs.filter(job_id__in=ids, metadata__has_key="event")
+                    .exclude(metadata__has_key="mirrored")
+                    .order_by()
+                    .values("job_id")
+                    .annotate(latest=Max("id"))
+                )
+                if row.get("latest")
+            ]
+            latest_rows = (
+                list(
+                    msg_qs.filter(id__in=latest_ids).values(
+                        "job_id", "metadata", "created_at"
+                    )
+                )
+                if latest_ids
+                else []
+            )
+            # Independent of the structured-event rows above: the single
+            # newest stream line for this job, of *any* type — the plain
+            # "has this agent done anything at all recently" signal, used to
+            # flag a RUNNING agent that has gone quiet.
+            last_seen_ids = [
+                row["latest"]
+                for row in (
+                    msg_qs.filter(job_id__in=ids)
+                    .exclude(metadata__has_key="mirrored")
+                    .order_by()
+                    .values("job_id")
+                    .annotate(latest=Max("id"))
+                )
+                if row.get("latest")
+            ]
+            last_seen_rows = (
+                list(msg_qs.filter(id__in=last_seen_ids).values("job_id", "created_at"))
+                if last_seen_ids
+                else []
+            )
+        latest_event: dict[str, dict] = {}
+        for row in latest_rows:
+            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            name = event_of(meta)
+            if not name:
+                continue
+            latest_event[str(row["job_id"])] = {
+                "event": name,
+                "payload": payload_of(meta),
+            }
+        last_seen_at: dict[str, Any] = {
+            str(row["job_id"]): row["created_at"] for row in last_seen_rows
+        }
         buckets: dict[str, list[str]] = {jid: [] for jid in ids}
         for row in rows:
             jid = str(row["job_id"])
@@ -345,10 +418,15 @@ class ProjectOpsPayload:
                     continue
                 seen.add(key)
                 uniq.append(c)
+            phase = latest_event.get(jid) or {}
+            seen_at = last_seen_at.get(jid)
             out[jid] = {
                 "commands": uniq[:per_job],
                 "last_command": uniq[0] if uniq else "",
                 "tool_calls": tool_counts.get(jid, 0),
+                "event": str(phase.get("event") or ""),
+                "payload": phase.get("payload") if isinstance(phase.get("payload"), dict) else {},
+                "last_activity_at": seen_at.isoformat() if seen_at else "",
             }
         return out
 
@@ -364,18 +442,33 @@ class ProjectOpsPayload:
             agent["commands"] = stream_cmds or prior_cmds
             agent["last_command"] = last
             agent["tool_calls"] = int(info.get("tool_calls") or 0)
+            # Fall back to the job's own updated_at (claim time) when it has
+            # never emitted a stream line yet — still a meaningful "since when".
+            agent["last_activity_at"] = (
+                str(info.get("last_activity_at") or "") or str(agent.get("updated_at") or "")
+            )
             agent["operator_command"] = pick_agent_command(
                 last,
                 *stream_cmds,
                 *prior_cmds,
                 str(agent.get("operator_command") or ""),
             )
+            payload = info.get("payload") if isinstance(info.get("payload"), dict) else {}
+            agent["activity"] = describe_activity(
+                status=str(agent.get("status") or ""),
+                event=str(info.get("event") or ""),
+                payload=payload,
+                idle_reason=str(agent.get("idle_reason") or ""),
+                waiting_on=list(agent.get("waiting_on") or []),
+                children_active=_active_descendants(agent),
+            )
             kids = agent.get("subagents") or []
             if kids:
                 cls._annotate_activity(kids, activity)
 
     @classmethod
-    def project_status_payload(cls, 
+    def project_status_payload(
+        cls,
         project: Project,
         *,
         objectives: list[Objective] | None = None,
@@ -385,9 +478,7 @@ class ProjectOpsPayload:
         job_list = jobs if jobs is not None else list(project.jobs.all())
         return {
             "status": project.status,
-            "completed_at": (
-                project.completed_at.isoformat() if project.completed_at else ""
-            ),
+            "completed_at": (project.completed_at.isoformat() if project.completed_at else ""),
             "sandbox": cls.sandbox_payload(project),
             "progress": cls.progress_payload(objectives=objs, jobs=job_list),
             "phase": cls.active_phase(objs),
@@ -397,9 +488,7 @@ class ProjectOpsPayload:
     def for_project(cls, project: Project, *, jobs_limit: int) -> dict:
         from peon.projects.asset_graph import AssetGraphEngine
 
-        jobs = list(
-            project.jobs.select_related("parent", "objective").all()[:jobs_limit]
-        )
+        jobs = list(project.jobs.select_related("parent", "objective").all()[:jobs_limit])
         objectives = list(project.objectives.all())
         agents = cls.agents_tree(jobs)
         activity = cls.recent_activity_by_job(

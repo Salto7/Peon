@@ -1,15 +1,15 @@
-"""Project / Job operator lifecycle: pause, resume, delete, steer, bulk."""
+"""Project / Job operator lifecycle: stop, pause, restart, resume, delete, steer, bulk."""
 
 from __future__ import annotations
 
 import logging
-
 from collections.abc import Iterable
 
 from django.db import transaction
 from django.utils import timezone as dj_tz
 
 from orchestrator.utils.commands import as_shell_cli, looks_like_agent_command
+from peon.projects.job_claim import emit
 from peon.projects.models import (
     FINISHED_PROJECT_STATUSES,
     INACTIVE_PROJECT_STATUSES,
@@ -25,7 +25,6 @@ from peon.projects.models import (
 )
 from peon.projects.objectives import ObjectiveScheduler
 from peon.projects.planning import replan_project
-from peon.projects.job_claim import emit
 from peon.projects.streaming import record_stream_message
 from peon.projects.tasks import enqueue_job, enqueue_sandbox_cleanup
 from peon.projects.workspaces import release_project_handles, remove_project_workspace
@@ -38,8 +37,7 @@ _OPEN_OBJECTIVE = frozenset(
 _PROJECT_PAUSE_NOTE = "Paused with project"
 
 
-def cancel_open_objectives_for_roles(project: Project | None, role_ids: Iterable[str]
-) -> int:
+def cancel_open_objectives_for_roles(project: Project | None, role_ids: Iterable[str]) -> int:
     """Mark still-open objectives for the given roles as cancelled."""
     if project is None:
         return 0
@@ -47,9 +45,7 @@ def cancel_open_objectives_for_roles(project: Project | None, role_ids: Iterable
     if not names:
         return 0
     n = 0
-    for obj in project.objectives.filter(
-        role_id__in=names, status__in=_OPEN_OBJECTIVE
-    ):
+    for obj in project.objectives.filter(role_id__in=names, status__in=_OPEN_OBJECTIVE):
         obj.status = ObjectiveStatus.CANCELLED
         obj.save(update_fields=["status", "updated_at"])
         n += 1
@@ -81,13 +77,10 @@ def reconcile_project_status(project: Project | None) -> Project | None:
     # IDLE agents are standby, not work in flight: they keep the project open
     # only while something can still wake them (a running/queued agent, a ready
     # objective, or an operator prompt awaiting an answer).
-    active_now = any(
-        s not in TERMINAL_JOB_STATUSES and s != JobStatus.IDLE for s in statuses
-    )
+    active_now = any(s not in TERMINAL_JOB_STATUSES and s != JobStatus.IDLE for s in statuses)
     has_idle = any(s == JobStatus.IDLE for s in statuses)
     jobs_busy = bool(
-        active_now
-        or (has_idle and (has_ready or int(registry.open_prompts or 0) > 0))
+        active_now or (has_idle and (has_ready or int(registry.open_prompts or 0) > 0))
     )
     objs_busy = any(
         s in {ObjectiveStatus.PENDING, ObjectiveStatus.IN_PROGRESS} for s in obj_statuses
@@ -105,8 +98,10 @@ def reconcile_project_status(project: Project | None) -> Project | None:
         registry.save(using="default", update_fields=fields)
         return registry
 
-    if jobs_busy or has_ready or (
-        objs_busy and any(s == ObjectiveStatus.IN_PROGRESS for s in obj_statuses)
+    if (
+        jobs_busy
+        or has_ready
+        or (objs_busy and any(s == ObjectiveStatus.IN_PROGRESS for s in obj_statuses))
     ):
         if registry.status != ProjectStatus.ACTIVE:
             return _save_registry(status=ProjectStatus.ACTIVE, clear_completed=True)
@@ -149,9 +144,7 @@ def reconcile_project_status(project: Project | None) -> Project | None:
             logger.warning("rearm_completed_for_schedules failed: %s", exc, exc_info=True)
         return registry
 
-    newly_terminal = (
-        registry.status != next_status and next_status in TERMINAL_PROJECT_STATUSES
-    )
+    newly_terminal = registry.status != next_status and next_status in TERMINAL_PROJECT_STATUSES
     if registry.status != next_status or (
         next_status in TERMINAL_PROJECT_STATUSES and registry.completed_at is None
     ):
@@ -221,8 +214,29 @@ def cascade_steer_children(job: Job, action: str, *, note: str = "") -> int:
     return n
 
 
+def reopen_objective_for_rerun(job: Job) -> None:
+    """Operator re-run: put a finished/cancelled objective back to PENDING.
+
+    ``run_job`` refuses to execute a job whose objective is COMPLETED or
+    CANCELLED (stale-run guard), so an explicit re-run would be cancelled on
+    pickup unless the objective is reopened first.
+    """
+    obj = getattr(job, "objective", None) if job.objective_id else None
+    if obj is None or obj.status not in {
+        ObjectiveStatus.COMPLETED,
+        ObjectiveStatus.CANCELLED,
+    }:
+        return
+    sched = ObjectiveScheduler()
+    sched.mark(obj, ObjectiveStatus.PENDING, reason="operator re-run")
+    if obj.completed_at is not None:
+        obj.completed_at = None
+        obj.save(update_fields=["completed_at", "updated_at"])
+
+
 def queue_job(job: Job) -> Job:
     """Reset a job to PENDING, enqueue worker, and reopen project if finished."""
+    reopen_objective_for_rerun(job)
     job.status = JobStatus.PENDING
     job.error = ""
     job.result = ""
@@ -253,9 +267,7 @@ def _push_objective_command(job: Job, command: str) -> None:
     if not cmd:
         return
     prior = [
-        str(c).strip()
-        for c in (obj.commands or [])
-        if str(c).strip() and str(c).strip() != cmd
+        str(c).strip() for c in (obj.commands or []) if str(c).strip() and str(c).strip() != cmd
     ]
     obj.commands = [cmd, *prior][:20]
     obj.save(update_fields=["commands", "updated_at"])
@@ -319,9 +331,7 @@ def enqueue_job_directive(
         if job.project_id
         else project_alias_or_default(None)
     )
-    return JobDirective.objects.using(alias).create(
-        job=job, kind=k, content=text
-    )
+    return JobDirective.objects.using(alias).create(job=job, kind=k, content=text)
 
 
 def route_operator_instruction(
@@ -368,11 +378,7 @@ def route_operator_instruction(
         targets = [selected]
         # Also steer non-terminal children of the selected agent.
         targets.extend(
-            list(
-                selected.children.exclude(status__in=TERMINAL_JOB_STATUSES).order_by(
-                    "created_at"
-                )
-            )
+            list(selected.children.exclude(status__in=TERMINAL_JOB_STATUSES).order_by("created_at"))
         )
         mode = "instruct_selected"
     else:
@@ -417,9 +423,9 @@ def route_operator_instruction(
             for root in targets:
                 extra.extend(
                     list(
-                        root.children.exclude(
-                            status__in=TERMINAL_JOB_STATUSES
-                        ).order_by("created_at")
+                        root.children.exclude(status__in=TERMINAL_JOB_STATUSES).order_by(
+                            "created_at"
+                        )
                     )
                 )
             # Dedupe while preserving order.
@@ -487,10 +493,7 @@ def _jobs_for_project(project: Project, ids: Iterable[str]) -> list[Job]:
     wanted = [str(x).strip() for x in ids if str(x).strip()]
     if not wanted:
         return []
-    by_id = {
-        str(j.id): j
-        for j in project.jobs.filter(pk__in=wanted)
-    }
+    by_id = {str(j.id): j for j in project.jobs.filter(pk__in=wanted)}
     return [by_id[i] for i in wanted if i in by_id]
 
 
@@ -535,6 +538,74 @@ def bulk_delete_jobs(project: Project, ids: Iterable[str]) -> int:
     return n
 
 
+def abandon_open_attempts(project: Project, *, reuse: Job | None = None) -> int:
+    """Stop in-flight attempts. Objectives are left unchanged.
+
+    A cancelled job is a stopped attempt. Withdrawing the plan item is
+    ``apply_directive(job, "kill")``. ``reuse``, when it is still open, is
+    paused so its worker returns without ``finish_job`` and the same row can
+    be queued again.
+    """
+    now = dj_tz.now()
+    reuse_id = str(reuse.pk) if reuse is not None else ""
+    jobs = list(project.jobs.exclude(status__in=TERMINAL_JOB_STATUSES))
+    cancel_ids = [job.pk for job in jobs if str(job.pk) != reuse_id]
+    n = 0
+    if reuse_id and any(str(job.pk) == reuse_id for job in jobs):
+        project.jobs.filter(pk=reuse.pk).update(
+            status=JobStatus.PAUSED,
+            error="Restarted by operator",
+            updated_at=now,
+        )
+        reuse.status = JobStatus.PAUSED
+        emit(reuse, "status", "Paused for restart")
+        n += 1
+    if cancel_ids:
+        project.jobs.filter(pk__in=cancel_ids).update(
+            status=JobStatus.CANCELLED,
+            error="Restarted by operator",
+            completed_at=now,
+            idle_reason="",
+            updated_at=now,
+        )
+        for job in jobs:
+            if job.pk not in cancel_ids:
+                continue
+            job.status = JobStatus.CANCELLED
+            emit(job, "status", "Stopped for restart")
+        n += len(cancel_ids)
+    return n
+
+
+def cancel_open_jobs(project: Project) -> int:
+    """Cancel in-flight jobs and withdraw their objectives (operator stop).
+
+    Governance jobs are marked cancelled directly. ``apply_directive`` on a
+    governor with no objective would cancel every open objective for its role.
+    """
+    from peon.projects.a2a import GOVERNANCE_PROFILE
+
+    jobs = list(project.jobs.exclude(status__in=TERMINAL_JOB_STATUSES))
+    n = 0
+    for job in jobs:
+        if job.profile == GOVERNANCE_PROFILE:
+            continue
+        apply_directive(job, "kill")
+        n += 1
+    now = dj_tz.now()
+    gov_ids = [job.id for job in jobs if job.profile == GOVERNANCE_PROFILE]
+    if gov_ids:
+        project.jobs.filter(pk__in=gov_ids).update(
+            status=JobStatus.CANCELLED,
+            error="Stopped with project",
+            completed_at=now,
+            idle_reason="",
+            updated_at=now,
+        )
+        n += len(gov_ids)
+    return n
+
+
 def pause_project(project: Project) -> Project:
     """Pause project and all non-terminal jobs."""
     project.status = ProjectStatus.PAUSED
@@ -572,9 +643,7 @@ def delete_project(project: Project) -> dict:
     release_project_handles(pid)
     disk = remove_project_workspace(pid)
     if disk.get("action") == "error":
-        raise RuntimeError(
-            f"Project workspace cleanup failed: {disk.get('error') or disk}"
-        )
+        raise RuntimeError(f"Project workspace cleanup failed: {disk.get('error') or disk}")
     with transaction.atomic():
         Project.objects.filter(pk=pid).delete()
     sandbox = enqueue_sandbox_cleanup(pid, runtime_id=runtime_id)
@@ -635,6 +704,31 @@ def bulk_resume_projects(ids: Iterable[str]) -> int:
     return n
 
 
+def bulk_stop_projects(ids: Iterable[str]) -> int:
+    from peon.projects.crew_control import stop_project
+
+    n = 0
+    for project in _projects(ids):
+        if project.status in {ProjectStatus.ACTIVE, ProjectStatus.PAUSED}:
+            stop_project(project)
+            n += 1
+    return n
+
+
+def bulk_restart_projects(ids: Iterable[str]) -> int:
+    from peon.projects.crew_control import restart_project
+
+    n = 0
+    for project in _projects(ids):
+        try:
+            restart_project(project)
+        except (RuntimeError, ValueError) as exc:
+            logger.warning("restart %s failed: %s", project.pk, exc)
+            continue
+        n += 1
+    return n
+
+
 def bulk_delete_projects(ids: Iterable[str]) -> int:
     n = 0
     for project in _projects(ids):
@@ -662,9 +756,7 @@ def apply_directive(job: Job, action: str, *, cascade: bool = True) -> Job:
             except Exception as exc:
                 logger.warning("write_job_checkpoint failed: %s", exc, exc_info=True)
             if cascade:
-                cascade_steer_children(
-                    job, "pause", note="Paused with parent job"
-                )
+                cascade_steer_children(job, "pause", note="Paused with parent job")
     elif action == "resume":
         if job.status == JobStatus.PAUSED:
             job.status = JobStatus.PENDING
@@ -682,29 +774,18 @@ def apply_directive(job: Job, action: str, *, cascade: bool = True) -> Job:
             )
             emit(job, "status", "Resumed → pending (checkpoint)")
             enqueue_job(str(job.id))
-    elif action == "kill":
-        if job.status not in TERMINAL_JOB_STATUSES:
-            job.status = JobStatus.CANCELLED
-            job.error = "Cancelled by operator"
-            job.completed_at = dj_tz.now()
-            job.save(update_fields=["status", "error", "completed_at", "updated_at"])
-            emit(job, "status", "Cancelled by operator")
-            if cascade:
-                cascade_steer_children(
-                    job, "kill", note="Cancelled with parent job"
-                )
-            if job.project_id:
-                if job.objective_id and job.objective is not None:
-                    ObjectiveScheduler().mark(
-                        job.objective, ObjectiveStatus.CANCELLED
-                    )
-                else:
-                    cancel_open_objectives_for_roles(
-                        job.project, job.role_ids or []
-                    )
-                reconcile_project_status(job.project)
+    elif action == "kill" and job.status not in TERMINAL_JOB_STATUSES:
+        job.status = JobStatus.CANCELLED
+        job.error = "Cancelled by operator"
+        job.completed_at = dj_tz.now()
+        job.save(update_fields=["status", "error", "completed_at", "updated_at"])
+        emit(job, "status", "Cancelled by operator")
+        if cascade:
+            cascade_steer_children(job, "kill", note="Cancelled with parent job")
+        if job.project_id:
+            if job.objective_id and job.objective is not None:
+                ObjectiveScheduler().mark(job.objective, ObjectiveStatus.CANCELLED)
+            else:
+                cancel_open_objectives_for_roles(job.project, job.role_ids or [])
+            reconcile_project_status(job.project)
     return job
-
-
-
-

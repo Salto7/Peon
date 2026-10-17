@@ -108,15 +108,19 @@ def _project_brief(project: Project) -> str:
         .filter(project_id=project.id)
         .order_by("-updated_at")[:15]
     )
-    jobs_live = project.jobs.filter(
-        parent__isnull=True,
-        status__in={
-            JobStatus.RUNNING,
-            JobStatus.PENDING,
-            JobStatus.PAUSED,
-            JobStatus.IDLE,
-        },
-    ).count()
+    jobs_live = (
+        project.jobs.filter(
+            parent__isnull=True,
+            status__in={
+                JobStatus.RUNNING,
+                JobStatus.PENDING,
+                JobStatus.PAUSED,
+                JobStatus.IDLE,
+            },
+        )
+        .exclude(profile="governance")
+        .count()
+    )
     lines = [
         f"Project: {project.title}",
         f"Status: {project.status}",

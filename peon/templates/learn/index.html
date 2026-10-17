@@ -2,7 +2,7 @@
 {% load static ui %}
 {% block title %}Toolsmith · Lab · Peon{% endblock %}
 {% block content %}
-<c-page-header title="Toolsmith" description="Author catalog tools and skills with OpenCode, edit the draft, then save.">
+<c-page-header title="Toolsmith" description="Draft a catalog tool or a skill for the Kali sandbox, test the install, then save.">
   <c-slot name="crumbs"><a class="hover:text-foreground" href="{% url 'lab' %}">Lab</a>{% icon "chevron-right" "size-3" %}<span>Toolsmith</span></c-slot>
 </c-page-header>
 
@@ -71,7 +71,7 @@
       </form>
     </c-card>
 
-    <c-card title="Tool draft" description="Edit the YAML (and optional install script) before testing or saving." id="tool-result" class="learn-tool-only" hidden>
+    <c-card title="Tool draft" description="Catalog YAML for the Kali sandbox. Prefer apt, then a GitHub release, a clone, or pip. Test the install before saving." id="tool-result" class="learn-tool-only" hidden>
       <div class="space-y-4">
         <c-field label="Catalog YAML" for="tool-yaml">
           <textarea id="tool-yaml" rows="16" spellcheck="false" class="ui-textarea font-mono"></textarea>
@@ -110,7 +110,7 @@
       </div>
     </c-card>
 
-    <c-card title="Skill draft" description="Edit SKILL.md and companion files, then lint or save. Type and role bindings are inferred." id="skill-result" class="learn-skill-only" hidden>
+    <c-card title="Skill draft" description="SKILL.md plus a normal script. Agents call it with run_skill_script. Role bindings are inferred when the pack is saved." id="skill-result" class="learn-skill-only" hidden>
       <div class="space-y-4">
         <c-field label="Skill name" for="skill-name">
           <input id="skill-name" type="text" autocomplete="off" spellcheck="false" class="ui-input font-mono">
@@ -132,19 +132,22 @@
   <aside id="docs" aria-labelledby="docs-heading" class="space-y-3 xl:sticky xl:top-8 xl:self-start">
     <c-card title="Catalog format">
       <div class="space-y-3 text-xs text-muted-foreground">
-        <p>Full reference in <code class="ui-code">tools/CATALOG.md</code>. Install priority: custom → apt → github_release → pip / git_clone.</p>
-        <p>Install tests run in a minimal isolated container (<code class="ui-code">{{ lab.image }}</code>), not project sandboxes.</p>
-        <pre class="overflow-x-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground">{% verbatim %}install:
-  - type: custom
-    command: oddtool.sh
+        <p>Full reference in <code class="ui-code">tools/CATALOG.md</code>. Prefer apt on Kali, then a GitHub release, then git clone, then pip. A custom script is a last resort; if one is present, install tries it first and falls through when verify fails.</p>
+        <p>Install tests run in a clean throwaway container of <code class="ui-code">{{ lab.image }}</code>, the same image project sandboxes use.</p>
+        <pre class="overflow-x-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground">{% verbatim %}id: example-cli
+description: What the CLI does.
+binary: example-cli
+install:
   - type: apt
-    packages: [curl]
-  - type: github_release
-    repo: org/oddtool
-    binary: oddtool
-    asset_substr: linux_amd64
+    packages: [example-cli]
 verify:
-  - command: "oddtool --version"{% endverbatim %}</pre>
+  - command: example-cli --version{% endverbatim %}</pre>
+      </div>
+    </c-card>
+    <c-card title="Skill pack">
+      <div class="space-y-3 text-xs text-muted-foreground">
+        <p><code class="ui-code">scripts/run.sh</code> is a shebang that execs the CLI. The body tells the agent to call <code class="ui-code">run_skill_script</code>.</p>
+        <p>Saved packs land in <code class="ui-code">skills/</code>. Role affinity is inferred from the text; collaboration and memory tools come from the role, not the pack.</p>
       </div>
     </c-card>
   </aside>

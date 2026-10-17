@@ -87,7 +87,6 @@ def resolve_job_workspace(job) -> Path:
 
 
 _DELETING_PREFIX = ".deleting-"
-_BRIEF_SKIP_ROLES = frozenset({"project-manager", "manager", "watchdog"})
 
 
 def _rmtree_force(path: Path) -> None:
@@ -511,9 +510,23 @@ def format_workspace_artifact_index(workspace: Path, *, limit: int = 80) -> str:
     return "\n".join(lines)
 
 
+def _is_manager_role(role_id: str) -> bool:
+    """Managers dispatch; they do not need the prior-artifact index."""
+    rid = (role_id or "").strip()
+    if not rid:
+        return False
+    try:
+        from orchestrator.crew.roles.registry import RoleRegistry
+
+        role = RoleRegistry.shared().get(rid)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(role is not None and role.is_manager)
+
+
 def brief_artifact_section(project_id: str, *, role_id: str = "", limit: int = 80) -> str:
     """Artifact index block for objective briefs (skipped for manager roles)."""
-    if (role_id or "").strip() in _BRIEF_SKIP_ROLES:
+    if _is_manager_role(role_id):
         return ""
     try:
         ws = project_workspace_dir(str(project_id), create=False)

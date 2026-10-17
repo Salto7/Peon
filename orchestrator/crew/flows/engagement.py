@@ -93,15 +93,19 @@ def build_engagement_crew(
             "artifacts (list_workspace_artifacts + read_workspace_artifact) and "
             "list_findings. Inventory every concrete observation in those files. "
             "Do not run new probes. Do not report objective/job status. "
-            "Use write_report_note for each of exactly three top-level sections, "
-            "in order: 'Executive summary'; 'Findings and observations' (with "
-            "the sub-sections 'Steps taken and commands executed' and "
-            "'Findings and their technical details'); 'Recommendations'."
+            "Write a penetration-test report with write_report_note, one call "
+            "per top-level section, in order: '1. Executive summary' (with "
+            "overall risk rating); '2. Scope and methodology'; '3. Findings "
+            "summary' (ID/severity/asset table); '4. Detailed findings' (one "
+            "F-nn block per finding: description, evidence, impact, "
+            "remediation); '5. Recommendations' (prioritized); 'Appendix A. "
+            "Steps taken and commands executed'; 'Appendix B. Limitations'."
         ),
         expected_output=(
-            "A report with exactly those three sections: executive summary; "
-            "findings and observations (steps/commands executed, then findings "
-            "with technical detail); recommendations — no process narrative."
+            "A pentest report with exactly those sections: executive summary "
+            "and risk rating, scope/methodology, findings table, detailed "
+            "findings with evidence and remediation, prioritized "
+            "recommendations, and appendices — no process narrative."
         ),
         agent=analyzer,
         context=[engagement_task],

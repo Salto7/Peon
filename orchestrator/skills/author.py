@@ -58,11 +58,7 @@ def portable_cli_script(binary: str) -> str:
     cli = (binary or "").strip()
     if not cli or any(ch in cli for ch in "\n\r\x00"):
         raise ValueError("binary name is required")
-    return (
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        f"exec {shlex.quote(cli)} \"$@\"\n"
-    )
+    return f'#!/usr/bin/env bash\nset -euo pipefail\nexec {shlex.quote(cli)} "$@"\n'
 
 
 def _tool_tokens(raw: Any) -> list[str]:
@@ -103,9 +99,7 @@ def shape_skill_md(
             clean[key] = value
     meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
     portable_meta = {
-        key: value
-        for key, value in meta.items()
-        if key not in _PEON_META and value is not None
+        key: value for key, value in meta.items() if key not in _PEON_META and value is not None
     }
     if portable_meta:
         clean["metadata"] = portable_meta
@@ -122,13 +116,12 @@ def shape_skill_md(
     elif isinstance(compat, str):
         clean["compatibility"] = truncate_compat(compat)
     script = (entry or "").strip()
-    if script and script not in body:
+    if script and "run_skill_script(" not in body:
         body = (
             f"{body.rstrip()}\n\n"
             "## Run\n"
-            "From this skill directory:\n\n"
-            "```bash\n"
-            f"bash {script} <args>\n"
+            "```\n"
+            f'run_skill_script("{name}", "{script}", args=\'["<args>"]\')\n'
             "```\n"
         )
     return dump_skill_md(clean, body.strip() + "\n")
@@ -141,15 +134,9 @@ def shape_files(
 ) -> dict[str, str]:
     """Drop Peon-only ``skill_entry`` wrappers. Add a bash entry when a CLI is known."""
     out = {
-        str(key): str(value)
-        for key, value in (files or {}).items()
-        if normalize_rel_path(str(key))
+        str(key): str(value) for key, value in (files or {}).items() if normalize_rel_path(str(key))
     }
-    peon_only = [
-        rel
-        for rel, body in out.items()
-        if "skill_entry" in body or "run_binary(" in body
-    ]
+    peon_only = [rel for rel, body in out.items() if "skill_entry" in body or "run_binary(" in body]
     for rel in peon_only:
         out.pop(rel, None)
     cli = (binary or "").strip()
@@ -182,9 +169,7 @@ def lint_claude_files(
     known = set(file_map)
     for ref in extract_file_refs(skill_md):
         if ref not in known and not ref.startswith("http"):
-            issues.append(
-                LintIssue("error", "broken_ref", f"File reference `{ref}` not found.")
-            )
+            issues.append(LintIssue("error", "broken_ref", f"File reference `{ref}` not found."))
     spec_errors: list[str] = []
     if not any(issue.level == "error" for issue in issues):
         spec_errors = _skills_ref_errors(name, skill_md, file_map)
@@ -203,13 +188,17 @@ def _skills_ref_errors(name: str, skill_md: str, files: dict[str, str]) -> list[
     with tempfile.TemporaryDirectory(prefix=f"peon-claude-{name}-") as tmp:
         root = Path(tmp) / name
         root.mkdir()
-        (root / "SKILL.md").write_text(skill_md if skill_md.endswith("\n") else skill_md + "\n", encoding="utf-8")
+        (root / "SKILL.md").write_text(
+            skill_md if skill_md.endswith("\n") else skill_md + "\n", encoding="utf-8"
+        )
         for rel, body in files.items():
             path = safe_join(root, rel)
             if path is None:
                 return [f"unsafe path {rel!r}"]
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(body if str(body).endswith("\n") else str(body) + "\n", encoding="utf-8")
+            path.write_text(
+                body if str(body).endswith("\n") else str(body) + "\n", encoding="utf-8"
+            )
         try:
             return validate_pack(root)
         except RuntimeError as exc:
@@ -227,9 +216,7 @@ def prepare_claude_skill(
     skill_name = (name or "").strip().lower()
     shaped_files = shape_files(files or {}, binary=binary)
     entry = SCRIPT_SH if SCRIPT_SH in shaped_files else ""
-    shaped_md = shape_skill_md(
-        skill_md, name=skill_name, binary=binary, entry=entry
-    )
+    shaped_md = shape_skill_md(skill_md, name=skill_name, binary=binary, entry=entry)
     return {
         "name": skill_name,
         "skill_md": shaped_md,
@@ -247,9 +234,7 @@ def save_claude_skill(
     binary: str = "",
 ) -> dict[str, Any]:
     """Validate and install a new pack on the Claude lane."""
-    prepared = prepare_claude_skill(
-        name=name, skill_md=skill_md, files=files, binary=binary
-    )
+    prepared = prepare_claude_skill(name=name, skill_md=skill_md, files=files, binary=binary)
     skill_name = str(prepared["name"])
     shaped_md = str(prepared["skill_md"])
     shaped_files = dict(prepared["files"])
@@ -273,7 +258,9 @@ def save_claude_skill(
             if path is None:
                 raise ValueError(f"unsafe file path {rel!r}")
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(body if str(body).endswith("\n") else str(body) + "\n", encoding="utf-8")
+            path.write_text(
+                body if str(body).endswith("\n") else str(body) + "\n", encoding="utf-8"
+            )
             written.append(rel)
         placed = place_pack(root, source=source)
     return {

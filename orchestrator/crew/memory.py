@@ -140,24 +140,38 @@ def recall_for_new_project(
     """Recall peon-wide lessons to bootstrap a newly created project."""
     if not peon_memory_enabled():
         return ""
-    bits = [str(title or "").strip(), str(summary or "").strip()]
-    for hint in scope_hints or []:
-        h = str(hint or "").strip()
-        if h:
-            bits.append(h)
-    query = " ".join(bits).strip() or "engagement lessons methods failures replans"
-    result = CogneeBackend.shared().recall(
-        query,
-        datasets=["peon"],
-        top_k=top_k,
-    )
-    if not result.get("ok") or result.get("build_failed"):
+    # Lessons are retrieved by the *shape of the task* (title/summary). Target
+    # identifiers are deliberately not part of the query: they only pull in
+    # target-specific text, and gists are target-agnostic by construction.
+    del scope_hints
+    query = " ".join(
+        b for b in (str(title or "").strip(), str(summary or "").strip()) if b
+    ) or "engagement lessons methods failures replans"
+    parts: list[str] = []
+    try:
+        from peon.projects import memory_store
+
+        hits = [
+            (e, s)
+            for e, s in memory_store.search(None, query, limit=top_k, mark=False)
+            if s > 0 and e.kind == "lesson"
+        ]
+        parts += [
+            f"- {e.name} — {e.description}\n  {(e.body or '').strip()}" for e, _ in hits
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("local lesson search failed: %s", exc)
+    result = CogneeBackend.shared().recall(query, datasets=["peon"], top_k=top_k)
+    if result.get("ok") and not result.get("build_failed"):
+        text = str(result.get("text") or "").strip()
+        if text:
+            parts.append(text)
+    else:
         logger.warning(
             "peon memory bootstrap recall skipped: %s",
             (result.get("error") or "unavailable")[:300],
         )
-        return ""
-    return str(result.get("text") or "").strip()
+    return "\n".join(parts).strip()
 
 
 def bootstrap_path(project_id: str) -> Path | None:

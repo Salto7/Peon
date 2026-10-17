@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 
+from ..http import AsyncHttpClient
+from ..plugin import Plugin
+from ..util import normalize_domain
 from .entra import (
     azure_tenant_from_oidc,
     fetch_oidc,
     fetch_user_realm,
     verify_domains_against_tenant,
 )
-from ..http import AsyncHttpClient
-from ..plugin import Plugin
-from ..util import normalize_domain
 
 
 class AzureTenantLookup(Plugin):
@@ -66,7 +67,7 @@ class AzureTenantLookup(Plugin):
         *,
         concurrency: int = 10,
         max_domains: int = 200,
-        skip: Optional[set[str]] = None,
+        skip: set[str] | None = None,
     ) -> dict[str, Any]:
         """OIDC-verify domains against a known company Entra tenant ID."""
         assert self.http is not None

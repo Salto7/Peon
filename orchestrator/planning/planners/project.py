@@ -54,9 +54,16 @@ You produce the shared project plan (objectives + dependencies) for CrewAI roles
   never instruct CIDR/host-list subdivision into parallel workers unless the
   operator asked for that. Prefer plan-level depends_on over mid-job waits when
   ordering is known at plan time
-- skill_ids on a middle objective: the **single lead skill** for that expert
-  (usually matching role_id). Do NOT dump the full role skill armory onto the
-  objective — follow-ons are spawned at runtime
+- skill_ids on a middle objective: the **single lead skill** for that expert.
+  Choose it by reading what each skill does in the Role catalog (its
+  description), not by its name; the skill must be one the role lists. Do NOT
+  dump the full role skill armory onto the objective — follow-ons are spawned
+  at runtime
+- The Role catalog also lists MCP servers bound to a role. When a skill or MCP
+  server already implements the work (e.g. a pipeline for the whole task),
+  plan the objective around it instead of rebuilding it from shell CLIs, and
+  say so in the description. Restrictions that apply to shell probing do not
+  silently apply to a skill/MCP step — state any limit explicitly
 - No ethics lectures, no prose outside JSON
 
 ## Quality bar for each objective
@@ -67,9 +74,10 @@ You produce the shared project plan (objectives + dependencies) for CrewAI roles
 - acceptance_criteria: observable done condition
 - mitre: technique ids when known; else []
 - role_id: REQUIRED catalog role id
-- skill_ids: optional; one lead skill id for technical experts
-- commands: 1–3 **plain shell CLIs** for the role (catalog binary first token),
+- skill_ids: one lead skill id for technical experts (from the role's skills)
+- commands: 0–3 **plain shell CLIs** for the role (catalog binary first token),
   e.g. `nmap -sT --top-ports 100 -oG workspace/scan.gnmap <host>`.
+  Leave empty when a skill / MCP server does the work.
   Do NOT wrap in `bash(...)` / `provision_cli(...)` / other tool-call syntax.
   Scope checks and provisioning are role workflow, not command strings.
 
@@ -87,6 +95,7 @@ Return ONLY a JSON object:
       "mitre": ["T1046"],
       "depends_on": [1],
       "role_id": "<catalog role id — required>",
+      "skill_ids": ["<lead skill id from that role's skills>"],
       "commands": ["nmap -sT --top-ports 100 -oG workspace/scan.gnmap <host>"]
     }
   ]
@@ -219,16 +228,19 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
             "Build findings/report.md covering security discoveries only "
             "(open ports, services, vulnerabilities, assets). Cite evidence; "
             "do not collect new evidence or invent discoveries. Do not report "
-            "objective/job status. Use exactly three top-level sections, in "
-            "order: Executive summary; Findings and observations (with "
-            "sub-sections Steps taken and commands executed, and Findings and "
-            "their technical details); Recommendations."
+            "objective/job status. Write a penetration-test report with these "
+            "top-level sections, in order: Executive summary; Scope and "
+            "methodology; Findings summary (ID/severity/asset table); "
+            "Detailed findings (one block per finding: description, evidence, "
+            "impact, remediation); Recommendations (prioritized); Appendix A "
+            "Steps taken and commands executed; Appendix B Limitations."
         ),
         "acceptance_criteria": (
-            "findings/report.md has Executive summary, Findings and "
-            "observations (Steps taken and commands executed; Findings and "
-            "their technical details), and Recommendations, with evidence "
-            "citations"
+            "findings/report.md has Executive summary with overall risk "
+            "rating, Scope and methodology, a Findings summary table, "
+            "Detailed findings with evidence/impact/remediation per finding, "
+            "prioritized Recommendations, and Appendix A listing every "
+            "command executed"
         ),
         "mitre": [],
         "depends_on": analyzer_deps,
@@ -236,9 +248,13 @@ def bookend_project_objectives(objectives: list[dict[str, Any]]) -> list[dict[st
         "skill_ids": registry.objective_skill_ids(end),
         "commands": [
             "list_findings()",
-            "write_report_note(\"Executive summary\", \"…\")",
-            "write_report_note(\"Findings and observations\", \"### Steps taken and commands executed\\n…\\n\\n### Findings and their technical details\\n…\")",
-            "write_report_note(\"Recommendations\", \"…\")",
+            "write_report_note(\"1. Executive summary\", \"…\")",
+            "write_report_note(\"2. Scope and methodology\", \"…\")",
+            "write_report_note(\"3. Findings summary\", \"| ID | Severity | Finding | Affected asset |\\n…\")",
+            "write_report_note(\"4. Detailed findings\", \"### F-01 — …\\n…\")",
+            "write_report_note(\"5. Recommendations\", \"…\")",
+            "write_report_note(\"Appendix A. Steps taken and commands executed\", \"…\")",
+            "write_report_note(\"Appendix B. Limitations\", \"…\")",
         ],
     }
     return [manager, *middle, analyzer]

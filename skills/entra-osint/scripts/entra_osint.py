@@ -40,8 +40,7 @@ def _normalize_domain(token: str) -> str:
     t = (token or "").strip().lower()
     t = t.removeprefix("https://").removeprefix("http://")
     t = t.split("/")[0].split(":")[0].lstrip(".")
-    t = t.removeprefix("*.")
-    return t
+    return t.removeprefix("*.")
 
 
 def _valid_domain(domain: str) -> bool:

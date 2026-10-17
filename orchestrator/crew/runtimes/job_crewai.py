@@ -11,6 +11,7 @@ from orchestrator.agent.runtime_base import (
 from orchestrator.crew.roles.model import build_crew_agent
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtimes.project_crewai import run_project_crew_from_scope
+from orchestrator.utils import llm_usage
 from orchestrator.utils.stream_events import envelope
 
 
@@ -114,6 +115,7 @@ class CrewAIJobRuntime(AgentRuntimeBase):
                 max_iterations=request.config.max_iterations,
                 reasoning_effort=request.config.crew_reasoning_effort,
                 reasoning_max_attempts=request.config.crew_reasoning_max_attempts,
+                dispatch_only=bool(scope.extras.get("dispatch_only")),
             )
         except Exception as exc:
             scope.bridge.emit("error", f"crew agent build failed: {exc}")
@@ -128,7 +130,10 @@ class CrewAIJobRuntime(AgentRuntimeBase):
             ),
         )
 
-        with bind_job(scope, request.config):
+        loop_purpose = (
+            "agent_loop_dispatch" if scope.extras.get("dispatch_only") else "agent_loop"
+        )
+        with bind_job(scope, request.config), llm_usage.purpose(loop_purpose):
             try:
                 result = agent.kickoff(brief[:8000])
             except Exception as exc:

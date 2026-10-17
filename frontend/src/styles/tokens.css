@@ -10,20 +10,20 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --background: oklch(0.145 0.004 265);
+  --background: oklch(0.180 0.0024 265);
   --foreground: oklch(0.965 0.003 265);
-  --card: oklch(0.178 0.005 265);
+  --card: oklch(0.213 0.0030 265);
   --card-foreground: var(--foreground);
-  --popover: oklch(0.195 0.006 265);
+  --popover: oklch(0.230 0.0036 265);
   --popover-foreground: var(--foreground);
-  --muted: oklch(0.225 0.006 265);
+  --muted: oklch(0.260 0.0036 265);
   --muted-foreground: oklch(0.71 0.012 265);
-  --secondary: oklch(0.245 0.007 265);
+  --secondary: oklch(0.280 0.0042 265);
   --secondary-foreground: var(--foreground);
-  --accent: oklch(0.255 0.008 265); /* hover / selected surface */
+  --accent: oklch(0.290 0.0048 265); /* hover / selected surface */
   --accent-foreground: var(--foreground);
-  --border: oklch(0.275 0.007 265);
-  --input: oklch(0.31 0.008 265);
+  --border: oklch(0.310 0.0042 265);
+  --input: oklch(0.345 0.0048 265);
   --ring: oklch(0.68 0.16 268);
 
   --primary: oklch(0.585 0.2 268);
@@ -36,7 +36,7 @@
   --destructive-foreground: oklch(0.985 0 0);
   --info: oklch(0.74 0.12 230);
 
-  --sidebar: oklch(0.16 0.005 265);
+  --sidebar: oklch(0.195 0.0030 265);
   --sidebar-foreground: var(--foreground);
   --sidebar-border: var(--border);
   --sidebar-accent: var(--accent);

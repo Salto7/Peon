@@ -1,4 +1,5 @@
 """Custom shell / tool script install step."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,14 +37,22 @@ class CustomInstallStep(InstallStepBase, step_type="custom"):
         except (TypeError, ValueError):
             self.timeout = 600
 
-    def apply(self, *, binary: str = "", tool_id: str = "") -> tuple[bool, str]:
+    def apply(
+        self,
+        *,
+        binary: str = "",
+        tool_id: str = "",
+        catalog_dir: Path | None = None,
+    ) -> tuple[bool, str]:
         del binary
         tid = (tool_id or "").strip()
-        # circular: catalog → install_steps.custom
-        from orchestrator.tools.catalog.catalog import ToolCatalog
+        root = catalog_dir
+        if root is None:
+            # circular: catalog → install_steps.custom
+            from orchestrator.tools.catalog.catalog import ToolCatalog
 
-        catalog_dir = ToolCatalog.shared().catalog_dir()
-        payload, label = self._resolve_payload(tid, catalog_dir)
+            root = ToolCatalog.shared().catalog_dir()
+        payload, label = self._resolve_payload(tid, Path(root))
         if not payload:
             return False, label or "empty custom install"
         code, out, err = _iu._run(["bash", "-lc", payload], timeout=self.timeout)
@@ -68,9 +77,7 @@ class CustomInstallStep(InstallStepBase, step_type="custom"):
                 or Path(norm).name == script_name
             )
 
-        if script_path is not None and (
-            not raw or _is_script_ref(raw)
-        ):
+        if script_path is not None and (not raw or _is_script_ref(raw)):
             if script_path.is_file() and _under_catalog(catalog_dir, script_path):
                 try:
                     body = script_path.read_text(encoding="utf-8")

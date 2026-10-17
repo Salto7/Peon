@@ -58,6 +58,31 @@ def wants_json(request: HttpRequest) -> bool:
     )
 
 
+def json_errors(view: _V) -> _V:
+    """Map common exceptions to the JSON-API error envelope used across views.
+
+    ``KeyError`` -> 404 "not found", ``ValueError`` -> 400 ``str(exc)``,
+    anything else -> 500 ``str(exc)``; always ``{"ok": False, "error": ...}``.
+    This is the exact try/except block most JSON views already repeat by
+    hand — use it only where that's the whole thing a view needs. A view
+    that must return a different status/shape for one of these, or that
+    only wraps part of its body, should keep handling that case itself.
+    """
+
+    @wraps(view)
+    def _wrapped(request: HttpRequest, *args: Any, **kwargs: Any):
+        try:
+            return view(request, *args, **kwargs)
+        except KeyError:
+            return JsonResponse({"ok": False, "error": "not found"}, status=404)
+        except ValueError as exc:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+        except Exception as exc:  # noqa: BLE001 — turned into the view's own JSON error
+            return JsonResponse({"ok": False, "error": str(exc)}, status=500)
+
+    return _wrapped  # type: ignore[return-value]
+
+
 def flash_json(view: _V) -> _V:
     """Let a flash-and-redirect view answer XHR callers with JSON.
 

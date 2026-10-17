@@ -6,10 +6,10 @@ import html as html_lib
 import json
 import re
 from html.parser import HTMLParser
-from typing import Any, Optional
+from typing import Any
 
-from ..plugin import Plugin
 from ..http import AsyncHttpClient
+from ..plugin import Plugin
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik10}.json"
@@ -48,7 +48,7 @@ class _TextExtractor(HTMLParser):
         self._chunks: list[str] = []
         self._skip = False
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in {"script", "style"}:
             self._skip = True
         if tag in {"br", "p", "tr", "div", "li", "td"}:
@@ -96,9 +96,9 @@ class EdgarLookup(Plugin):
 
     async def resolve(
         self,
-        company: Optional[str] = None,
-        ticker: Optional[str] = None,
-        cik: Optional[str] = None,
+        company: str | None = None,
+        ticker: str | None = None,
+        cik: str | None = None,
     ) -> dict[str, Any]:
         """Resolve a company using its name, stock market ticker symbol, or CIK."""
         if cik:

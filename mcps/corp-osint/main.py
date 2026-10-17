@@ -3,9 +3,9 @@
 corp-OSINT — CLI entrypoint.
 
 Examples:
-  uv run python -m corp_osint "Example Corp" --domain example.com --out report.json
-  uv run python -m corp_osint --list-plugins
-  uv run python -m corp_osint --plugin azure_tenant --domain microsoft.com
+  uv run python main.py "Example Corp" --domain example.com --out report.json
+  uv run python main.py --list-plugins
+  uv run python main.py --plugin azure_tenant --domain microsoft.com
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .config import STAGE_NAMES
-from .log import emit, get_logger, setup_logging
-from .plugins import list_plugins
-from .plugins.pipeline import CorpOsintPipeline
-from .report import ensure_summary
-from .runtime import run_pipeline, run_plugin
+from corp_osint.config import STAGE_NAMES
+from corp_osint.log import emit, get_logger, setup_logging
+from corp_osint.plugins import list_plugins
+from corp_osint.plugins.pipeline import CorpOsintPipeline
+from corp_osint.report import ensure_summary
+from corp_osint.runtime import run_pipeline, run_plugin
 
 log = get_logger("cli")
 _STAGE_HELP = ", ".join(STAGE_NAMES)

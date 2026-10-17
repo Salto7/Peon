@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-
 import json
+import logging
 from pathlib import Path
 
 from django.conf import settings
@@ -19,7 +18,7 @@ from peon.projects.agent_bridge import JobAgentBridge, agent_run_config
 from peon.projects.crew_control import replan_project, set_crew_status
 from peon.projects.findings import ingest_workspace_findings
 from peon.projects.job_claim import claim_next_job, emit
-from peon.projects.lifecycle import cancel_open_objectives_for_roles, cascade_steer_children, reconcile_project_status
+from peon.projects.lifecycle import cascade_steer_children, reconcile_project_status
 from peon.projects.models import (
     INACTIVE_PROJECT_STATUSES,
     Job,
@@ -74,9 +73,7 @@ def finish_job(job: Job, *, status: str, error: str = "", result: str | None = N
         job.result = result
     job.completed_at = dj_tz.now()
     with using_project(job.project_id):
-        job.save(
-            update_fields=["status", "error", "result", "completed_at", "updated_at"]
-        )
+        job.save(update_fields=["status", "error", "result", "completed_at", "updated_at"])
     if job.project_id:
         try:
             refresh_project_kpis(job.project_id)
@@ -100,8 +97,7 @@ def finish_job(job: Job, *, status: str, error: str = "", result: str | None = N
             if (
                 status == JobStatus.FAILED
                 and job.parent_id is None
-                and obj.status
-                in {ObjectiveStatus.PENDING, ObjectiveStatus.IN_PROGRESS}
+                and obj.status in {ObjectiveStatus.PENDING, ObjectiveStatus.IN_PROGRESS}
             ):
                 sched.mark(
                     obj,
@@ -110,8 +106,6 @@ def finish_job(job: Job, *, status: str, error: str = "", result: str | None = N
                 )
                 recovery_replan = _enqueue_failure_replan(job, error)
             sched.settle(obj)
-    elif job.project_id and status == JobStatus.CANCELLED:
-        cancel_open_objectives_for_roles(job.project, job.role_ids or [])
 
     # Structured transcript for finish.
     try:
@@ -122,8 +116,7 @@ def finish_job(job: Job, *, status: str, error: str = "", result: str | None = N
         bridge.append_transcript(
             record_from_event(
                 category="error" if status == JobStatus.FAILED else "outcome",
-                summary=f"job → {status}"
-                + (f": {(error or '')[:400]}" if error else ""),
+                summary=f"job → {status}" + (f": {(error or '')[:400]}" if error else ""),
                 project_id=str(job.project_id or ""),
                 objective_id=str(job.objective_id or ""),
                 job_id=str(job.id),
@@ -192,9 +185,7 @@ def finish_job(job: Job, *, status: str, error: str = "", result: str | None = N
     # Spawn fan-out: COMPLETED parents leave children running (claim allows that).
     # FAILED / CANCELLED still cascade-kill so the tree cannot orphan forever.
     if status in {JobStatus.FAILED, JobStatus.CANCELLED} and job.children.exists():
-        cascade_steer_children(
-            job, "kill", note=f"Orphaned: parent job → {status}"
-        )
+        cascade_steer_children(job, "kill", note=f"Orphaned: parent job → {status}")
     return job
 
 
@@ -260,6 +251,7 @@ def _enqueue_failure_replan(job: Job, error: str) -> bool:
             logger.warning("failure_exhausted_prompt failed: %s", exc, exc_info=True)
         return False
 
+
 def _steer_stop(job: Job, lines: list[str]) -> Job | None:
     """If operator cancelled/paused mid-run, persist and return the job; else None."""
     job.refresh_from_db()
@@ -286,9 +278,7 @@ def _bind_job_env(job: Job, ws: Path):
         "ORCHESTRATOR_JOB_ID": str(job.id),
         "ORCHESTRATOR_WORKSPACE": str(ws),
         "PROJECT_WORKSPACES_DIR": root,
-        "ORCHESTRATOR_STREAM_SOCKET": str(
-            getattr(settings, "STREAM_SOCKET_PATH", "") or ""
-        ),
+        "ORCHESTRATOR_STREAM_SOCKET": str(getattr(settings, "STREAM_SOCKET_PATH", "") or ""),
         "SKILLS_DIR": str(settings.SKILLS_DIR),
         "TOOLS_CATALOG_DIR": str(settings.TOOLS_CATALOG_DIR),
         "ORCHESTRATOR_IN_SCOPE": scope_json,
@@ -297,6 +287,8 @@ def _bind_job_env(job: Job, ws: Path):
     }
     if job.project_id:
         env["ORCHESTRATOR_PROJECT_ID"] = str(job.project_id)
+    if job.role_ids:
+        env["ORCHESTRATOR_ROLE_ID"] = str(job.role_ids[0])
     brief = (job.description or job.title or "").strip()
     if brief:
         env["ORCHESTRATOR_JOB_BRIEF"] = brief
@@ -306,14 +298,11 @@ def _bind_job_env(job: Job, ws: Path):
 def _manager_needs_llm(job: Job) -> bool:
     """True when the manager bookend must run as an LLM (replan / steer)."""
     from peon.projects.db import project_alias_or_default
-
     from peon.projects.models import AgentMessage
 
     alias = project_alias_or_default(job.project_id)
     return (
-        JobDirective.objects.using(alias)
-        .filter(job_id=job.id, consumed_at__isnull=True)
-        .exists()
+        JobDirective.objects.using(alias).filter(job_id=job.id, consumed_at__isnull=True).exists()
         or AgentMessage.objects.using(alias)
         .filter(to_job_id=job.id, delivered_at__isnull=True)
         .exists()
@@ -330,11 +319,7 @@ def _run_manager_dispatch(job: Job, *, role_id: str = "") -> Job:
     stopped = _steer_stop(job, [])
     if stopped is not None:
         return stopped
-    rid = (
-        (role_id or "").strip()
-        or RoleRegistry.shared().engagement_bookends()[0]
-        or "project-manager"
-    )
+    rid = (role_id or "").strip() or RoleRegistry.shared().engagement_bookends()[0] or "manager"
     note = "Manager bookend: dispatch next ready objective (deterministic, no LLM)"
     emit(job, "status", note, role_id=rid)
     emit(job, "result", note, role_id=rid)
@@ -347,11 +332,7 @@ def _run_manager_dispatch(job: Job, *, role_id: str = "") -> Job:
 
 
 def _job_skill_ids(job: Job) -> list[str]:
-    skills = [
-        str(s).strip()
-        for s in (getattr(job, "skill_ids", None) or [])
-        if str(s).strip()
-    ]
+    skills = [str(s).strip() for s in (getattr(job, "skill_ids", None) or []) if str(s).strip()]
     if not skills and job.objective_id and job.objective is not None:
         skills = [
             str(s).strip()
@@ -428,6 +409,13 @@ def _defer_for_objective_dependencies(job: Job) -> Job:
 
 def run_job(job: Job) -> Job:
     """Provision sandbox, then run the Job agent (single executor)."""
+    # Skills edited on disk since the last run must reach this job's sandbox.
+    try:
+        from peon.projects.platform_catalog import PlatformCatalog
+
+        PlatformCatalog.shared().refresh_stale_skills()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("skill refresh failed: %s", exc, exc_info=True)
     names = [str(n).strip() for n in (job.role_ids or []) if str(n).strip()]
     if not names and job.objective_id and job.objective:
         names = ObjectiveScheduler().roles_for(job.objective)
@@ -497,11 +485,7 @@ def run_job(job: Job) -> Job:
                     job,
                     "log",
                     f"sandbox {sb.mode}:{sb.name} ({sb.action})"
-                    + (
-                        f" base_cmds={len(sb.base_commands)}"
-                        if sb.base_commands
-                        else ""
-                    ),
+                    + (f" base_cmds={len(sb.base_commands)}" if sb.base_commands else ""),
                 )
                 cli_names: list[str] = []
                 reg = RoleRegistry.shared()
@@ -513,9 +497,7 @@ def run_job(job: Job) -> Job:
                         if cli not in cli_names:
                             cli_names.append(cli)
                 if cli_names:
-                    provision = CatalogProvisioner.shared().provision(
-                        cli_names, workspace=ws
-                    )
+                    provision = CatalogProvisioner.shared().provision(cli_names, workspace=ws)
                     if provision.installed:
                         emit(
                             job,
@@ -543,9 +525,7 @@ def run_job(job: Job) -> Job:
         if stopped is not None:
             return stopped
 
-        return run_job_via_agent(
-            job, role_ids=names, workspace=str(ws), resume=resume
-        )
+        return run_job_via_agent(job, role_ids=names, workspace=str(ws), resume=resume)
     finally:
         JobEnv.reset(token)
         Session.reset()
@@ -580,6 +560,29 @@ def _park_after_run(job: Job, bridge: JobAgentBridge, output: str) -> Job | None
         a2a.wake_job(job, reason="message arrived while going idle")
         job.refresh_from_db()
     return job
+
+
+def _is_dispatch_supervisor(job: Job, role_ids: list[str]) -> bool:
+    """True when this job must delegate execution to spawned workers.
+
+    A specialist (technical role) job that is not itself a spawned worker owns
+    the lane: it plans, spawns skill-bound workers and verifies. Spawned
+    children, the PM/analyzer bookends and the resident governor keep their
+    normal tools.
+    """
+    from peon.projects.a2a import GOVERNANCE_PROFILE
+    from peon.projects.runtime_settings import PeonSettings
+
+    if job.parent_id or job.profile == GOVERNANCE_PROFILE:
+        return False
+    if not PeonSettings.get_bool("AGENT_DISPATCH_ONLY", True):
+        return False
+    if PeonSettings.get_int("AGENT_MAX_SUBAGENTS", 8) <= 0:
+        return False  # nothing could be spawned
+    role = RoleRegistry.shared().get(role_ids[0]) if role_ids else None
+    return bool(
+        role is not None and role.is_technical and not role.is_manager and not role.is_analyzer
+    )
 
 
 def run_job_via_agent(
@@ -620,6 +623,8 @@ def run_job_via_agent(
             and job.profile != GOVERNANCE_PROFILE  # resident governor runs solo
         ):
             extras["crew_mode"] = "project"
+
+    extras["dispatch_only"] = _is_dispatch_supervisor(job, names)
 
     bridge = JobAgentBridge(job)
     steer_bits = bridge.drain_operator_guidance()

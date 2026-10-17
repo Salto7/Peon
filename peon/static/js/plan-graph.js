@@ -409,7 +409,7 @@
             roles()[0] ||
             {}
           ).id ||
-          "recon-specialist";
+          "";
         var nextSeq =
           agents().reduce(function (m, a) {
             return Math.max(m, Number(a.seq) || 0);
@@ -546,7 +546,7 @@
     var addSched = el("plan-add-schedule");
     if (addSched) {
       addSched.addEventListener("click", function () {
-        var role = (roles()[0] && roles()[0].id) || "recon-specialist";
+        var role = (roles()[0] && roles()[0].id) || "";
         var first = agents()[0];
         postSchedule("schedule_upsert", {
           title: "Recurring " + role,

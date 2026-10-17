@@ -6,11 +6,11 @@ import asyncio
 import json
 import os
 import re
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlparse
 
-from ..plugin import Plugin
 from ..http import AsyncHttpClient, RateLimitedError, incremental_sleep
+from ..plugin import Plugin
 from ..util import normalize_domain
 
 SEARCH = "https://urlscan.io/api/v1/search/"
@@ -23,7 +23,7 @@ _NOISE = re.compile(
 class UrlscanLookup(Plugin):
     name = "urlscan"
 
-    def __init__(self, http: AsyncHttpClient, config=None, api_key: Optional[str] = None, **kwargs) -> None:
+    def __init__(self, http: AsyncHttpClient, config=None, api_key: str | None = None, **kwargs) -> None:
         super().__init__(http, config=config, **kwargs)
         self.api_key = api_key or os.environ.get("URLSCAN_API_KEY")
 
@@ -65,8 +65,8 @@ class UrlscanLookup(Plugin):
 
     async def run(
         self,
-        domain: Optional[str] = None,
-        company: Optional[str] = None,
+        domain: str | None = None,
+        company: str | None = None,
         size: int = 40,
         **kwargs: Any,
     ) -> dict[str, Any]:

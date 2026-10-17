@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from orchestrator.skills.common import SKILL_NAME_RE
@@ -26,6 +26,13 @@ _SECRET_KEYS = frozenset(
     }
 )
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ENV_TYPES = frozenset({"string", "secret", "boolean", "number", "choice"})
+_ENV_FIELD_KEYS = frozenset({"name", "required", "type", "description", "default", "choices"})
+
+
+def _looks_secret(name: str) -> bool:
+    low = name.lower()
+    return any(key in low for key in _SECRET_KEYS)
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,11 @@ class McpSpec:
     cwd: str
     install: dict[str, Any] | None
     env_schema: tuple[tuple[str, bool], ...]
+    reference_hosts: tuple[str, ...] = ()
+    # Full per-field metadata (type/description/default/choices); env_schema
+    # above stays a plain (name, required) tuple so every existing call site
+    # that destructures it keeps working untouched.
+    env_schema_full: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
 class McpParseError(ValueError):
@@ -101,6 +113,7 @@ def _one(raw: dict[str, Any]) -> McpSpec:
     if len(description) > 4000:
         raise McpParseError("description is too long")
     install = _install(raw.get("install"))
+    env_fields = _env_schema(raw.get("env_schema") or raw.get("env"))
     return McpSpec(
         mcp_id=name,
         description=description,
@@ -109,7 +122,9 @@ def _one(raw: dict[str, Any]) -> McpSpec:
         args=args,
         cwd=_cwd(raw.get("cwd")),
         install=install,
-        env_schema=_env_schema(raw.get("env_schema") or raw.get("env")),
+        env_schema=tuple((f["name"], bool(f["required"])) for f in env_fields),
+        env_schema_full=tuple(env_fields),
+        reference_hosts=_reference_hosts(raw.get("reference_hosts")),
     )
 
 
@@ -147,7 +162,7 @@ def _cwd(raw: Any) -> str:
     if raw in (None, "", "."):
         return ""
     text = str(raw).strip().replace("\\", "/")
-    if text.startswith("/") or text.startswith("~"):
+    if text.startswith(("/", "~")):
         raise McpParseError("cwd must be a relative path inside the server directory")
     parts = [part for part in text.split("/") if part not in {"", "."}]
     if not parts or any(part == ".." for part in parts):
@@ -175,13 +190,54 @@ def _install(raw: Any) -> dict[str, Any] | None:
     manifest = str(raw.get("manifest") or "").strip() or default_manifest
     if ".." in manifest.split("/") or manifest.startswith("/"):
         raise McpParseError("install.manifest must be a relative file name")
-    return {"kind": kind, "manifest": manifest}
+    spec: dict[str, Any] = {"kind": kind, "manifest": manifest}
+    post = _post_install(raw.get("post"))
+    if post:
+        spec["post"] = post
+    return spec
 
 
-def _env_schema(raw: Any) -> tuple[tuple[str, bool], ...]:
-    """Names only. A mapping may declare names, but its values are never kept."""
+def _post_install(raw: Any) -> list[str]:
+    """Optional one-off setup commands run in the MCP's environment after install.
+
+    For assets a package manager cannot fetch itself (e.g. a browser binary,
+    model weights). Each entry is a single-line shell command.
+    """
+    if raw in (None, "", []):
+        return []
+    if not isinstance(raw, list) or not all(isinstance(c, str) for c in raw):
+        raise McpParseError("install.post must be a list of command strings")
+    cmds = [c.strip() for c in raw if c.strip()]
+    if len(cmds) > 8 or any(len(c) > 500 or "\n" in c or "\x00" in c for c in cmds):
+        raise McpParseError("install.post: up to 8 single-line commands (<=500 chars)")
+    return cmds
+
+
+def _reference_hosts(raw: Any) -> tuple[str, ...]:
+    """Hostnames the server queries as reference infrastructure (not targets)."""
     if raw in (None, "", []):
         return ()
+    if not isinstance(raw, list) or not all(isinstance(h, str) for h in raw):
+        raise McpParseError("reference_hosts must be a list of hostnames")
+    hosts = []
+    for h in raw:
+        host = h.strip().lower().rstrip(".")
+        if not host or "/" in host or " " in host or len(host) > 253:
+            raise McpParseError(f"invalid reference host {h!r}")
+        hosts.append(host)
+    return tuple(dict.fromkeys(hosts))
+
+
+def _env_schema(raw: Any) -> list[dict[str, Any]]:
+    """Per-field env metadata: name/required, plus optional type/description/default/choices.
+
+    Values themselves are never stored in the catalog — only the declaration.
+    ``type`` defaults to "secret" for names that look like credentials, else
+    "string"; "boolean"/"number"/"choice" let the per-project settings UI
+    render a checkbox/number input/select instead of a bare text box.
+    """
+    if raw in (None, "", []):
+        return []
     if isinstance(raw, dict):
         filled = [
             str(key)
@@ -196,25 +252,57 @@ def _env_schema(raw: Any) -> tuple[tuple[str, bool], ...]:
         raw = list(raw.keys())
     if not isinstance(raw, list):
         raise McpParseError("env_schema must be a list")
-    out: list[tuple[str, bool]] = []
+    out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in raw:
         if isinstance(item, str):
-            name, required = item.strip(), True
+            entry: dict[str, Any] = {"name": item.strip(), "required": True}
         elif isinstance(item, dict):
-            name = str(item.get("name") or "").strip()
-            required = bool(item.get("required", True))
-            if any(k for k in item if k not in {"name", "required"}):
-                raise McpParseError("env_schema entries only allow name and required")
+            entry = dict(item)
         else:
             raise McpParseError("env_schema entries must be strings or objects")
+        extra = set(entry) - _ENV_FIELD_KEYS
+        if extra:
+            raise McpParseError(f"env_schema entries only allow {', '.join(sorted(_ENV_FIELD_KEYS))}")
+        name = str(entry.get("name") or "").strip()
         if not _ENV_NAME.match(name):
             raise McpParseError(f"invalid env name {name!r}")
         if name in seen:
             raise McpParseError(f"duplicate env name {name!r}")
         seen.add(name)
-        out.append((name, required))
-    return tuple(out)
+        required = bool(entry.get("required", True))
+        etype = str(entry.get("type") or "").strip().lower()
+        if not etype:
+            etype = "secret" if _looks_secret(name) else "string"
+        if etype not in _ENV_TYPES:
+            raise McpParseError(
+                f"env_schema[{name}].type must be one of {', '.join(sorted(_ENV_TYPES))}"
+            )
+        description = str(entry.get("description") or "").strip()
+        if len(description) > 500:
+            raise McpParseError(f"env_schema[{name}].description is too long")
+        default = entry.get("default")
+        default = "" if default is None else str(default)
+        choices_raw = entry.get("choices") or []
+        if etype == "choice":
+            if not isinstance(choices_raw, list) or not choices_raw:
+                raise McpParseError(f"env_schema[{name}]: type=choice needs a non-empty choices list")
+            choices = [str(c) for c in choices_raw]
+        elif choices_raw:
+            raise McpParseError(f"env_schema[{name}]: choices only applies to type=choice")
+        else:
+            choices = []
+        out.append(
+            {
+                "name": name,
+                "required": required,
+                "type": etype,
+                "description": description,
+                "default": default,
+                "choices": choices,
+            }
+        )
+    return out
 
 
 def _reject_secrets(value: Any, path: str = "") -> None:

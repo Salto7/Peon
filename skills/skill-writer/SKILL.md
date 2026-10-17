@@ -9,9 +9,10 @@ Produce a **skills-ref-clean** Claude Agent Skill under `workspace/learn/skill/<
 
 - SKILL.md — Agent Skills frontmatter (name, description, allowed-tools Bash and Read)
 - a bash entry with a shebang that execs the required CLI
+- a Run section that calls `run_skill_script`, not `bash scripts/run.sh`
 - optional reference docs when the body links them
 
-Do not emit Peon-only helpers or `metadata.jobable`.
+Do not emit Peon-only helpers or `metadata.jobable`. Role backstory already injects collaboration and memory tools.
 
 **Collaboration & memory are runtime, not authored.** Peon injects the A2A
 (`send_message`/`check_inbox`/`go_idle`) and memory (`recall_memory`/`save_memory`)

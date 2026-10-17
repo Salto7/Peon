@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from email.utils import parsedate_to_datetime
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
@@ -145,8 +145,8 @@ class AsyncHttpClient:
 
     def __init__(
         self,
-        http: Optional[HttpConfig] = None,
-        throttle: Optional[ThrottleConfig] = None,
+        http: HttpConfig | None = None,
+        throttle: ThrottleConfig | None = None,
     ) -> None:
         self.http = http or HttpConfig()
         self.throttle = throttle or ThrottleConfig()
@@ -160,7 +160,7 @@ class AsyncHttpClient:
         self._cooldowns: dict[str, float] = {}  # host key → monotonic deadline
         self._global_sem = asyncio.Semaphore(self.throttle.max_concurrent)
 
-    async def __aenter__(self) -> "AsyncHttpClient":
+    async def __aenter__(self) -> AsyncHttpClient:
         timeout = aiohttp.ClientTimeout(total=self.http.timeout_sec)
         headers = {"User-Agent": self.http.user_agent, "Accept": "*/*"}
         proxy = self.http.proxy
@@ -229,11 +229,9 @@ class AsyncHttpClient:
         bypass = host_matches_no_proxy(host, self.http.no_proxy)
         if bypass and self._direct is not None:
             return self._direct, None
-        if bypass and not self._proxy_via_connector:
+        if bypass or self._proxy_via_connector:
             return self._session, None
-        if self._proxy_via_connector:
-            return self._session, None
-        return self._session, None if bypass else self._request_proxy
+        return self._session, self._request_proxy
 
     def mark_cooldown(self, url_or_host: str, seconds: float) -> None:
         """Force a host to wait before the next request (e.g. after 429)."""
@@ -263,11 +261,11 @@ class AsyncHttpClient:
         method: str,
         url: str,
         *,
-        headers: Optional[dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         data: Any = None,
         json_body: Any = None,
-        timeout: Optional[float] = None,
-        attempts: Optional[int] = None,
+        timeout: float | None = None,
+        attempts: int | None = None,
         retry_on_client_error: bool = True,
     ) -> tuple[int, bytes, dict[str, str]]:
         if not self._session:
@@ -341,11 +339,12 @@ class AsyncHttpClient:
                                 attempt_box["n"],
                                 sleep_for,
                             )
-                            await incremental_sleep(
-                                sleep_for,
-                                reason=f"429:{key}",
-                                logger=log,
-                            )
+                            if attempt_box["n"] < max_attempts:  # skip sleep on last try
+                                await incremental_sleep(
+                                    sleep_for,
+                                    reason=f"429:{key}",
+                                    logger=log,
+                                )
                             raise RateLimitedError(
                                 f"429 {url} (retry_after={sleep_for:.1f}s)",
                                 retry_after=sleep_for,
@@ -364,11 +363,12 @@ class AsyncHttpClient:
                                 attempt_box["n"],
                                 sleep_for,
                             )
-                            await incremental_sleep(
-                                sleep_for,
-                                reason=f"{resp.status}:{key}",
-                                logger=log,
-                            )
+                            if attempt_box["n"] < max_attempts:  # skip sleep on last try
+                                await incremental_sleep(
+                                    sleep_for,
+                                    reason=f"{resp.status}:{key}",
+                                    logger=log,
+                                )
                             raise TransientHttpError(
                                 f"{resp.status} {url}",
                                 already_slept=True,
@@ -383,11 +383,12 @@ class AsyncHttpClient:
                             min_wait=self.http.retry_min_wait,
                             max_wait=self.http.retry_max_wait,
                         )
-                        await incremental_sleep(
-                            sleep_for,
-                            reason=f"client:{key}",
-                            logger=log,
-                        )
+                        if attempt_box["n"] < max_attempts:  # skip sleep on last try
+                            await incremental_sleep(
+                                sleep_for,
+                                reason=f"client:{key}",
+                                logger=log,
+                            )
                         raise TransientHttpError(str(e), already_slept=True) from e
                     raise
 

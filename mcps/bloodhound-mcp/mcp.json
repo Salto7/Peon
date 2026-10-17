@@ -1,0 +1,14 @@
+{
+  "name": "bloodhound-mcp",
+  "description": "stdio MCP (main.py)",
+  "transport": "stdio",
+  "command": "python",
+  "args": [
+    "main.py"
+  ],
+  "env_schema": [],
+  "install": {
+    "kind": "uv",
+    "manifest": "pyproject.toml"
+  }
+}

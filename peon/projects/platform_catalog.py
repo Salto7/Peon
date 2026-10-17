@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 OWNER_SKILL = "skill"
 OWNER_MCP = "mcp"
 _AFFINITY_THRESHOLD = 0.5
+_SKILLS_FINGERPRINT = ""  # last on-disk skill state reconciled by this process
 _revision: float = 0.0
 
 
@@ -64,6 +65,10 @@ class McpRecord:
     enabled: bool
     files: dict[str, str] = field(default_factory=dict)
     bindings: tuple[Binding, ...] = ()
+    reference_hosts: tuple[str, ...] = ()
+    # Full per-field metadata (type/description/default/choices) behind
+    # env_schema's plain (name, required) pairs — see orchestrator/mcp/parse.py.
+    env_schema_full: tuple[dict[str, Any], ...] = ()
 
 
 def _bump() -> float:
@@ -604,7 +609,16 @@ class PlatformCatalog:
         provider: str = "peon",
         bindings: list[dict[str, Any]] | None = None,
         keep_bindings: bool = False,
+        from_disk: bool = False,
+        only_if_pristine: bool = False,
     ) -> SkillRecord:
+        """Create/update one catalog skill.
+
+        ``from_disk`` stamps the row with the digest it was imported at
+        (``manifest["_imported_hash"]``). A row without that stamp, or whose
+        content has moved on from it, was authored/edited in the catalog.
+        ``only_if_pristine`` makes a disk refresh leave such rows alone.
+        """
         from orchestrator.skills.manifest import ParseProfile, SkillParseError, parse_skill_manifest
         from orchestrator.skills.providers.base import PEON_PROVIDER, SkillId
 
@@ -661,8 +675,32 @@ class PlatformCatalog:
         payload = _manifest_payload(manifest)
         payload["_source"] = md if md.endswith("\n") else md + "\n"
         setup = _setup_from_files(file_map)
+        post = _setup_post(manifest.metadata)
+        if setup is not None and post:
+            setup = {**setup, "post": post}
         digest = _hash_payload({"md": md, "files": file_map, "provider": prov})
-        existed = CatalogSkill.objects.filter(skill_id=public).exists()
+        current = CatalogSkill.objects.filter(skill_id=public).first()
+        existed = current is not None
+        if only_if_pristine and current is not None:
+            if current.content_hash == digest:
+                if from_disk and not (current.manifest or {}).get("_imported_hash"):
+                    # Adopt: identical to disk, so it is a pristine import.
+                    current.manifest = {
+                        **(current.manifest or {}),
+                        "_imported_hash": digest,
+                    }
+                    current.save(update_fields=["manifest"])
+                return self.get_skill(public)  # already current
+            stamp = (current.manifest or {}).get("_imported_hash")
+            if not stamp or stamp != current.content_hash:
+                logger.warning(
+                    "skill %s differs from disk but was edited in the catalog; "
+                    "not overwriting (use 'sync from disk' to force)",
+                    public,
+                )
+                return self.get_skill(public)
+        if from_disk:
+            payload["_imported_hash"] = digest
         with transaction.atomic():
             CatalogSkill.objects.update_or_create(
                 skill_id=public,
@@ -806,11 +844,12 @@ class PlatformCatalog:
                 "args": list(spec.args),
                 "cwd": spec.cwd,
                 "install": spec.install,
-                "env_schema": spec.env_schema,
+                "env_schema": spec.env_schema_full,
+                "reference_hosts": list(spec.reference_hosts),
                 "files": file_map,
             }
         )
-        schema = [{"name": name, "required": required} for name, required in spec.env_schema]
+        schema = list(spec.env_schema_full)
         with transaction.atomic():
             CatalogMcp.objects.update_or_create(
                 mcp_id=spec.mcp_id,
@@ -822,6 +861,7 @@ class PlatformCatalog:
                     "cwd": spec.cwd,
                     "install": spec.install,
                     "env_schema": schema,
+                    "reference_hosts": list(spec.reference_hosts),
                     "enabled": keep_enabled,
                     "content_hash": digest,
                 },
@@ -906,10 +946,7 @@ class PlatformCatalog:
                 "command": spec.command,
                 "args": list(spec.args),
                 "cwd": spec.cwd,
-                "env_schema": [
-                    {"name": name, "required": required}
-                    for name, required in spec.env_schema
-                ],
+                "env_schema": list(spec.env_schema_full),
             }
             if spec.install:
                 body["install"] = spec.install
@@ -994,6 +1031,85 @@ class PlatformCatalog:
         # Disk is additive: catalog-only skills (UI-authored) are not removed.
         return {"added": added, "removed": [], "modified": modified}
 
+    def _skills_disk_fingerprint(self) -> str:
+        """Cheap change detector for the on-disk skill trees (path/mtime/size)."""
+        h = hashlib.sha256()
+        for root, mode in self._skill_disk_roots():
+            h.update(f"{root}:{mode}".encode())
+            for path in sorted(root.rglob("*")):
+                try:
+                    if path.is_file() and not any(
+                        part.startswith(".") or part == "__pycache__"
+                        for part in path.relative_to(root).parts
+                    ):
+                        st = path.stat()
+                        h.update(
+                            f"{path.relative_to(root).as_posix()}:{st.st_mtime_ns}:{st.st_size}".encode()
+                        )
+                except OSError:
+                    continue
+        return h.hexdigest()
+
+    def refresh_stale_skills(self, *, force: bool = False) -> dict[str, list[str]]:
+        """Bring catalog skills up to date with ``skills/`` before work runs.
+
+        Only rows that are pristine imports are refreshed; skills edited in the
+        catalog (UI) or authored there are never overwritten. A fingerprint of
+        the disk trees makes the common no-change case a cheap stat walk.
+        """
+        global _SKILLS_FINGERPRINT
+        try:
+            fingerprint = self._skills_disk_fingerprint()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("skill fingerprint failed: %s", exc)
+            return {"added": [], "removed": [], "modified": []}
+        if not force and fingerprint == _SKILLS_FINGERPRINT:
+            return {"added": [], "removed": [], "modified": []}
+        from peon.projects.models import CatalogSkill
+
+        before = {
+            str(r.skill_id): str(r.content_hash or "")
+            for r in CatalogSkill.objects.all()
+        }
+        seen: set[str] = set()
+        for root, mode in self._skill_disk_roots():
+            seen.update(
+                self._import_skill_root(
+                    root, mode, keep_bindings=True, only_if_pristine=True
+                )
+            )
+        after = {
+            str(r.skill_id): str(r.content_hash or "")
+            for r in CatalogSkill.objects.filter(skill_id__in=seen)
+        }
+        _SKILLS_FINGERPRINT = fingerprint
+        added = sorted(sid for sid in seen if sid not in before)
+        modified = sorted(
+            sid for sid in seen if sid in before and before[sid] != after.get(sid, "")
+        )
+        if added or modified:
+            logger.info("skills refreshed from disk: added=%s modified=%s", added, modified)
+            _invalidate()
+        return {"added": added, "removed": [], "modified": modified}
+
+    def reference_hosts(self) -> frozenset[str]:
+        """Hosts enabled MCP servers declare as reference infrastructure."""
+        from peon.projects.models import CatalogMcp
+
+        try:
+            rows = CatalogMcp.objects.filter(enabled=True).values_list(
+                "reference_hosts", flat=True
+            )
+            return frozenset(
+                str(h).strip().lower()
+                for hosts in rows
+                for h in (hosts or ())
+                if str(h).strip()
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reference_hosts unavailable: %s", exc)
+            return frozenset()
+
     def _import_mcp_packs(self) -> int:
         """Bootstrap ``mcps/`` into an empty catalog (first boot)."""
         from peon.projects.models import CatalogMcp
@@ -1040,10 +1156,13 @@ class PlatformCatalog:
         return {"added": added, "removed": [], "modified": modified}
 
     def _import_skill_root(
-        self, root: Path, mode: str, *, keep_bindings: bool
+        self,
+        root: Path,
+        mode: str,
+        *,
+        keep_bindings: bool,
+        only_if_pristine: bool = False,
     ) -> list[str]:
-        from orchestrator.skills.affinity import read_affinity
-        from orchestrator.skills.kind import catalog_id_for, infer_skill_kind
         from orchestrator.skills.providers.base import CLAUDE_PROVIDER, PEON_PROVIDER
         from orchestrator.skills.registry_scan import discover_skill_candidates
 
@@ -1058,71 +1177,101 @@ class PlatformCatalog:
             logger.warning("skill bootstrap scan failed for %s: %s", root, exc)
             return []
         for candidate in candidates:
+            default_provider = default if mode == "infer" else CLAUDE_PROVIDER
             try:
-                text = candidate.manifest.read_text(encoding="utf-8")
-            except OSError as exc:
-                logger.warning("unreadable skill %s: %s", candidate.manifest, exc)
-                continue
-            kind = (
-                infer_skill_kind(candidate.root, default_provider=default)
-                if mode == "infer"
-                else infer_skill_kind(
-                    candidate.root, default_provider=CLAUDE_PROVIDER
-                )
-            )
-            files: dict[str, str] = {}
-            for path in sorted(candidate.root.rglob("*")):
-                if not path.is_file():
-                    continue
-                rel = path.relative_to(candidate.root).as_posix()
-                if rel in {"SKILL.md", "peon.affinity.yaml"} or path.name.startswith("."):
-                    continue
-                try:
-                    files[rel] = path.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    continue
-            try:
-                affinity = read_affinity(candidate.root)
-            except Exception:
-                affinity = None
-            binding_rows = []
-            if affinity is not None and not keep_bindings:
-                for binding in affinity.bindings:
-                    if binding.score < _AFFINITY_THRESHOLD:
-                        continue
-                    role = self.get_role(binding.role_id)
-                    if role is None:
-                        continue
-                    binding_rows.append(
-                        {
-                            "role_id": role.id,
-                            "score": binding.score,
-                            "lead": binding.lead,
-                        }
-                    )
-            try:
-                rec = self.upsert_skill(
-                    skill_md=text,
-                    files=files,
-                    skill_id=catalog_id_for(candidate.root.name, kind),
-                    provider=kind.provider,
-                    bindings=binding_rows or None,
+                rec = self.upsert_skill_from_candidate(
+                    candidate,
+                    default_provider=default_provider,
                     keep_bindings=keep_bindings,
+                    only_if_pristine=only_if_pristine,
                 )
             except Exception as exc:
                 logger.warning("skipped skill %s: %s", candidate.root, exc)
                 continue
-            imported.append(rec.skill_id)
+            if rec is not None:
+                imported.append(rec.skill_id)
         return imported
 
+    def upsert_skill_from_candidate(
+        self,
+        candidate,
+        *,
+        default_provider: str,
+        keep_bindings: bool = False,
+        only_if_pristine: bool = False,
+        from_disk: bool = True,
+    ) -> "SkillRecord | None":
+        """Upsert one ``SkillCandidate`` (from ``discover_skill_candidates``).
+
+        Shared by the disk bootstrap/sync scan and the marketplace importer —
+        the actual rules (namespace disambiguation, kind inference, file
+        collection, affinity-derived bindings) live here exactly once.
+        """
+        from orchestrator.skills.affinity import read_affinity
+        from orchestrator.skills.common import apply_skill_namespace, parse_frontmatter_yaml
+        from orchestrator.skills.kind import catalog_id_for, infer_skill_kind
+
+        text = candidate.manifest.read_text(encoding="utf-8")
+        if candidate.namespace:
+            # upsert_skill derives the catalog id from SKILL.md's own
+            # frontmatter `name:`, not from a skill_id hint (a mismatched
+            # hint is treated as a rename request, not an override) — so
+            # disambiguating two bundles' same-named skill means rewriting
+            # the frontmatter itself before upserting.
+            text = apply_skill_namespace(text, candidate.namespace)
+        parsed_fm = parse_frontmatter_yaml(text)
+        frontmatter_name = (
+            str(parsed_fm[0].get("name") or "").strip().lower() if parsed_fm else ""
+        ) or candidate.root.name
+        kind = infer_skill_kind(candidate.root, default_provider=default_provider)
+        files: dict[str, str] = {}
+        for path in sorted(candidate.root.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(candidate.root).as_posix()
+            if rel in {"SKILL.md", "peon.affinity.yaml"} or path.name.startswith("."):
+                continue
+            try:
+                files[rel] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+        try:
+            affinity = read_affinity(candidate.root)
+        except Exception:
+            affinity = None
+        binding_rows = []
+        if affinity is not None and not keep_bindings:
+            for binding in affinity.bindings:
+                if binding.score < _AFFINITY_THRESHOLD:
+                    continue
+                role = self.get_role(binding.role_id)
+                if role is None:
+                    continue
+                binding_rows.append(
+                    {"role_id": role.id, "score": binding.score, "lead": binding.lead}
+                )
+        return self.upsert_skill(
+            skill_md=text,
+            files=files,
+            skill_id=catalog_id_for(frontmatter_name, kind),
+            provider=kind.provider,
+            bindings=binding_rows or None,
+            keep_bindings=keep_bindings,
+            from_disk=from_disk,
+            only_if_pristine=only_if_pristine,
+        )
+
     def ingest_imported_skill(self, name: str) -> str:
-        """Load a pack from ``skills/<name>`` into the platform catalog."""
+        """Load a pack from ``skills/<name>`` into the platform catalog.
+
+        A thin wrapper over ``upsert_skill_from_candidate`` — file collection,
+        affinity-derived bindings, and kind inference all live there once.
+        """
         from django.conf import settings
 
-        from orchestrator.skills.affinity import read_affinity
         from orchestrator.skills.common import find_manifest
-        from orchestrator.skills.kind import catalog_id_for, infer_skill_kind
         from orchestrator.skills.providers.base import CLAUDE_PROVIDER
+        from orchestrator.skills.registry_scan import SkillCandidate
 
         slug = str(name or "").strip().lower()
         if not slug:
@@ -1137,46 +1286,9 @@ class PlatformCatalog:
         manifest = find_manifest(root)
         if manifest is None:
             raise ValueError(f"{root} has no SKILL.md")
-        text = manifest.read_text(encoding="utf-8")
-        files: dict[str, str] = {}
-        for path in sorted(root.rglob("*")):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(root).as_posix()
-            if rel in {"SKILL.md", "peon.affinity.yaml"} or path.name.startswith("."):
-                continue
-            try:
-                files[rel] = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-        binding_rows: list[dict[str, Any]] = []
-        try:
-            affinity = read_affinity(root)
-        except Exception:
-            affinity = None
-        if affinity is not None:
-            for binding in affinity.bindings:
-                if binding.score < _AFFINITY_THRESHOLD:
-                    continue
-                role = self.get_role(binding.role_id)
-                if role is None:
-                    continue
-                binding_rows.append(
-                    {
-                        "role_id": role.id,
-                        "score": binding.score,
-                        "lead": binding.lead,
-                    }
-                )
+        candidate = SkillCandidate(root=root, manifest=manifest, source="imported")
         # Installed / Lab packs default to claude unless signals say otherwise.
-        kind = infer_skill_kind(root, default_provider=CLAUDE_PROVIDER)
-        rec = self.upsert_skill(
-            skill_md=text,
-            files=files,
-            skill_id=catalog_id_for(slug, kind),
-            provider=kind.provider,
-            bindings=binding_rows or None,
-        )
+        rec = self.upsert_skill_from_candidate(candidate, default_provider=CLAUDE_PROVIDER)
         return rec.skill_id
 
 
@@ -1204,6 +1316,22 @@ def _manifest_payload(manifest) -> dict[str, Any]:
     }
 
 
+def _setup_post(metadata: dict[str, str] | None) -> list[str]:
+    """Commands from SKILL.md ``metadata: {setup-post: ...}`` (JSON list or lines)."""
+    raw = str((metadata or {}).get("setup-post") or "").strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = []
+        items = [str(x) for x in parsed] if isinstance(parsed, list) else []
+    else:
+        items = raw.splitlines()
+    return [c.strip() for c in items if c.strip() and "\x00" not in c][:8]
+
+
 def _setup_from_files(files: dict[str, str]) -> dict[str, str] | None:
     for kind, name in (
         ("pip", "requirements.txt"),
@@ -1215,17 +1343,40 @@ def _setup_from_files(files: dict[str, str]) -> dict[str, str] | None:
     return None
 
 
+_ENV_TYPES = frozenset({"string", "secret", "boolean", "number", "choice"})
+_SECRET_HINT = re.compile(
+    r"(token|password|secret|api_?key|authorization|access_token|refresh_token)", re.I
+)
+
+
 def _mcp_from_row(row, bindings: tuple[Binding, ...], files: dict[str, str]) -> McpRecord:
     schema_raw = row.env_schema or []
     schema: list[tuple[str, bool]] = []
+    schema_full: list[dict[str, Any]] = []
     if isinstance(schema_raw, list):
         for item in schema_raw:
             if isinstance(item, str) and item.strip():
-                schema.append((item.strip(), True))
+                name, required, extra = item.strip(), True, {}
             elif isinstance(item, dict) and str(item.get("name") or "").strip():
-                schema.append(
-                    (str(item["name"]).strip(), bool(item.get("required", True)))
-                )
+                name = str(item["name"]).strip()
+                required = bool(item.get("required", True))
+                extra = item
+            else:
+                continue
+            schema.append((name, required))
+            etype = str(extra.get("type") or "").strip().lower()
+            if etype not in _ENV_TYPES:
+                etype = "secret" if _SECRET_HINT.search(name) else "string"
+            schema_full.append(
+                {
+                    "name": name,
+                    "required": required,
+                    "type": etype,
+                    "description": str(extra.get("description") or ""),
+                    "default": "" if extra.get("default") is None else str(extra.get("default")),
+                    "choices": [str(c) for c in (extra.get("choices") or [])],
+                }
+            )
     install = dict(row.install) if isinstance(row.install, dict) else None
     args = tuple(str(a) for a in (row.args or []))
     return McpRecord(
@@ -1237,7 +1388,11 @@ def _mcp_from_row(row, bindings: tuple[Binding, ...], files: dict[str, str]) -> 
         cwd=str(getattr(row, "cwd", "") or ""),
         install=install,
         env_schema=tuple(schema),
+        env_schema_full=tuple(schema_full),
         enabled=bool(row.enabled),
         files=files,
         bindings=bindings,
+        reference_hosts=tuple(
+            str(h) for h in (getattr(row, "reference_hosts", None) or ())
+        ),
     )

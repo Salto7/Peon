@@ -8,7 +8,7 @@ description: >
 license: Apache-2.0
 compatibility: >
   Python 3.10+, network, aiohttp, tenacity, Playwright chromium; optional whois,
-  URLSCAN_API_KEY, DNSLYTICS_API_KEY. Cursor / Claude Code / Codex compatible.
+  URLSCAN_API_KEY, DNSLYTICS_API_KEY. Works with any agent that supports skills and/or MCP.
 metadata:
   author: corp-OSINT
   version: "3.0.0"
@@ -19,7 +19,7 @@ metadata:
 
 Passive public-source recon only. **Plugin architecture:**
 
-- One entrypoint: `python -m corp_osint`
+- One entrypoint: `uv run python main.py`
 - One abstract base: `corp_osint.plugin.Plugin`
 - All stages live in `corp_osint/plugins/` and inherit `Plugin`
 - Orchestrator: `CorpOsintPipeline(Plugin)` runs registered plugins
@@ -47,13 +47,13 @@ export CORP_OSINT_PROXY='socks5://127.0.0.1:1080'
 ```
 
 **Requirements:** [uv](https://docs.astral.sh/uv/), Python 3.10+, network access.
-MCP hosts launch via `uv run` (see `.mcp.json`).
+MCP hosts launch `corp-osint-mcp` via `uv run` (see `.mcp.json`, `docs/mcp.md`).
 
 **Verify install:**
 
 ```bash
-uv run python -m corp_osint --list-plugins
-uv run python -m corp_osint --plugin azure_tenant --domain microsoft.com
+uv run python main.py --list-plugins
+uv run python main.py --plugin azure_tenant --domain microsoft.com
 ```
 
 Agents: run the Install block if `uv` is missing or Playwright/Chromium is not installed.
@@ -79,10 +79,10 @@ Agents: run the Install block if `uv` is missing or Playwright/Chromium is not i
 ## Quick run
 
 ```bash
-uv run python -m corp_osint "Example Corp" --domain example.com --out report.json
-uv run python -m corp_osint -v "Example Corp" --domain example.com --summary-only
-uv run python -m corp_osint --list-plugins
-uv run python -m corp_osint --plugin dnslytics_gtm --domain example.com
+uv run python main.py "Example Corp" --domain example.com --out report.json
+uv run python main.py -v "Example Corp" --domain example.com --summary-only
+uv run python main.py --list-plugins
+uv run python main.py --plugin dnslytics_gtm --domain example.com
 ```
 
 Logging (stderr via logger only — no ``print``): default INFO stage progress;
@@ -102,14 +102,14 @@ All aiohttp traffic and Playwright Chromium share one proxy setting:
 
 ```bash
 # SOCKS5
-uv run python -m corp_osint "Example Corp" --domain example.com --proxy socks5://127.0.0.1:1080
+uv run python main.py "Example Corp" --domain example.com --proxy socks5://127.0.0.1:1080
 
 # HTTP proxy + bypass list
-uv run python -m corp_osint --plugin azure_tenant --domain microsoft.com \
+uv run python main.py --plugin azure_tenant --domain microsoft.com \
   --proxy http://127.0.0.1:8080 --no-proxy localhost,127.0.0.1
 
 # Force direct (ignore env proxies)
-uv run python -m corp_osint --plugin azure_tenant --domain microsoft.com --direct
+uv run python main.py --plugin azure_tenant --domain microsoft.com --direct
 ```
 
 Also: `CORP_OSINT_PROXY`, `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`, and
@@ -119,7 +119,7 @@ Also: `CORP_OSINT_PROXY`, `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`, and
 
 | Piece | Role |
 |-------|------|
-| `python -m corp_osint` | **Single entrypoint** |
+| `uv run python main.py` | **Single entrypoint** |
 | `corp_osint.plugin.Plugin` | **Abstract base** — every module inherits this |
 | `corp_osint.plugins.*` | Concrete plugins (`edgar`, `urlscan`, …) |
 | `corp_osint.plugins.pipeline.CorpOsintPipeline` | Orchestrator plugin (`name="pipeline"`) |
@@ -148,8 +148,8 @@ To add a stage: subclass `Plugin`, implement `async def run(**kwargs)`, register
 Same public flow as https://idefixtools.com/tenant-lookup.html:
 
 ```bash
-uv run python -m corp_osint --plugin tenant_domains --domain example.com
-uv run python -m corp_osint --plugin tenant_domains --tenant-id <guid>
+uv run python main.py --plugin tenant_domains --domain example.com
+uv run python main.py --plugin tenant_domains --tenant-id <guid>
 ```
 
 Uses `func-idefix-tenantlookup.azurewebsites.net/api/lookup|domains` plus
@@ -186,7 +186,7 @@ Cap: `LimitsConfig.dangling_max_domains` (default 200). Skip with `--skip dangli
 ## DNSLytics / GTM
 
 ```bash
-uv run python -m corp_osint --plugin dnslytics_gtm --domain example.com
+uv run python main.py --plugin dnslytics_gtm --domain example.com
 # optional paid API:
 export DNSLYTICS_API_KEY=...
 ```
@@ -265,12 +265,12 @@ Report includes `summary` and `summary_text`:
 Cite sources; never invent CIKs/tenants/ASNs/GTM IDs or subsidiary domains;
 separate confirmed vs candidate; no port scans.
 
-## Agent paths
+## Using with an agent
 
-| Runner | Path |
-|--------|------|
-| Cursor | `.cursor/skills/corp-osint/` → `docs/` / `$corp-osint` |
-| Claude Code | `.claude/skills/corp-osint/` → `docs/` / `/corp-osint` |
-| Subagent | `.cursor/agents/corp-osint.md` |
+- **MCP:** register `corp-osint-mcp` with your host (see [mcp.md](mcp.md)); any MCP client works.
+- **Skill file:** this playbook is plain Markdown with front matter. Copy or link
+  `docs/` into your agent's skills/instructions location (for example a
+  `corp-osint/` skills folder) — the path is host-specific.
+- **CLI fallback:** agents without MCP can run `uv run python main.py …`.
 
 See [sources.md](sources.md) and [report-schema.md](report-schema.md).

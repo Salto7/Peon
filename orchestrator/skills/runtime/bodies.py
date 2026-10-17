@@ -69,7 +69,7 @@ def _mcp_runtime_note(skill_id: str, *, role_id: str) -> str:
         f"## Peon MCP runtime\n"
         f"This skill is MCP server `{mid}` in the project sandbox. "
         f"Use `list_mcp_tools(\"{mid}\")` then `call_mcp_tool(\"{mid}\", …)` "
-        f"for pipeline work (including dangling-domain evidence)."
+        f"for this server's pipeline and lookups."
     )
 
 

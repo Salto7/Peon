@@ -28,6 +28,7 @@ COLLAB_TOOLS: tuple[str, ...] = (
     "list_team",
     "send_message",
     "check_inbox",
+    "message_status",
     "go_idle",
 )
 MANAGER_COLLAB_TOOLS: tuple[str, ...] = (*COLLAB_TOOLS, "list_delegations")
@@ -57,6 +58,7 @@ ANALYZER_RUNTIME_TOOLS: tuple[str, ...] = (
     "list_team",
     "send_message",
     "check_inbox",
+    "message_status",
     "recall_memory",
     "save_memory",
     "forget_memory",
@@ -78,6 +80,28 @@ MANAGER_RUNTIME_TOOLS: tuple[str, ...] = (
     *OBJECTIVE_RUNTIME_TOOLS,
     "list_findings",
 )
+
+# Tools that execute commands / external calls. A dispatch-only supervisor
+# (a specialist job with no parent) does not get these: it spawns a worker.
+EXECUTION_TOOLS: frozenset[str] = frozenset(
+    {"bash", "run_skill_script", "run_periodic", "provision_cli", "call_mcp_tool"}
+)
+# What a supervisor needs to read the outcome of the work it dispatched.
+SUPERVISOR_INSPECTION_TOOLS: tuple[str, ...] = (
+    "list_workspace_artifacts",
+    "read_workspace_artifact",
+    "write_workspace_artifact",
+)
+
+
+def for_dispatch_only(names: Iterable[str]) -> tuple[str, ...]:
+    """Tool names for a supervisor: no execution tools, plus result inspection."""
+    kept = [n for n in names if n not in EXECUTION_TOOLS]
+    for extra in SUPERVISOR_INSPECTION_TOOLS:
+        if extra not in kept:
+            kept.append(extra)
+    return tuple(kept)
+
 
 # Older skill-runtime names → CrewAI catalog names. ``None`` drops the token.
 SKILL_TOOL_ALIASES: dict[str, str | None] = {

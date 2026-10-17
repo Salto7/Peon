@@ -7,18 +7,19 @@ scripts) call those. Host execution is refused when no session is bound.
 
 from __future__ import annotations
 
-import logging
-
 import hashlib
+import logging
 import re
 import shlex
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from agent_runtime.api import Session
 from orchestrator.agent.job import get_job
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.sandbox.shell import ProvisionService, ShellRunner
+from orchestrator.sandbox.tool_output import ShellResult, render_tool_output
 from orchestrator.skills.providers.base import CLAUDE_PROVIDER, PEON_PROVIDER, SkillDocument
 from orchestrator.skills.registry import SkillRegistry
 from orchestrator.skills.runtime.interp import interpreter_argv
@@ -81,9 +82,7 @@ def role_binary_denial(binary: str) -> str:
     from orchestrator.skills.bind import effective_binaries, resolve_skill_ids
 
     extras = getattr(get_job(), "extras", None) or {}
-    allowed = effective_binaries(
-        role, resolve_skill_ids(role, extras.get("skill_ids"))
-    )
+    allowed = effective_binaries(role, resolve_skill_ids(role, extras.get("skill_ids")))
     if not allowed or name in allowed:
         return ""
     owners = []
@@ -243,6 +242,22 @@ def _write_setup_marker(session, marker: str, fingerprint: str):
     return result.ok
 
 
+def _run_setup_post(
+    session, setup, setup_root: str, env: dict[str, str], *, path_prefix: str
+) -> str:
+    """Run the setup commands a skill declares (``setup-post``), env first on PATH."""
+    for command in tuple(getattr(setup, "post", ()) or ()):
+        done = session.exec(
+            ["sh", "-c", command],
+            cwd=setup_root,
+            timeout=1200,
+            env={**env, "PATH": f"{path_prefix}:/usr/local/bin:/usr/bin:/bin"},
+        )
+        if not done.ok:
+            return _exec_error(done, f"setup command failed: {command[:80]}")
+    return ""
+
+
 def _ensure_skill_setup(
     doc: SkillDocument,
     session,
@@ -255,10 +270,7 @@ def _ensure_skill_setup(
     setup_root = doc.container_setup_root or container_skill_root(doc)
     manifest = f"{setup_root}/{_setup_manifest(doc)}"
     fingerprint = _setup_fingerprint(doc, files)
-    env = {
-        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
-        "PLAYWRIGHT_BROWSERS_PATH": "/workspace/.cache/ms-playwright",
-    }
+    env = {"PIP_DISABLE_PIP_VERSION_CHECK": "1"}
     if setup.kind == "pip":
         cache = f"/workspace/.peon-skill-venvs/{_skill_cache_name(doc)}"
         python = f"{cache}/bin/python"
@@ -273,9 +285,25 @@ def _ensure_skill_setup(
         if not created.ok:
             return "", env, _exec_error(created, "venv creation failed")
         if _setup_manifest(doc) == "pyproject.toml":
-            install_argv = [python, "-m", "pip", "install", "--disable-pip-version-check", "-e", setup_root]
+            install_argv = [
+                python,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "-e",
+                setup_root,
+            ]
         else:
-            install_argv = [python, "-m", "pip", "install", "--disable-pip-version-check", "-r", manifest]
+            install_argv = [
+                python,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "-r",
+                manifest,
+            ]
         installed = session.exec(
             install_argv,
             cwd=setup_root,
@@ -284,21 +312,9 @@ def _ensure_skill_setup(
         )
         if not installed.ok:
             return "", env, _exec_error(installed, "dependency install failed")
-        # Browser packages still need their browser payload. This is a
-        # dependency-driven convenience, not a skill-specific special case.
-        browser_probe = session.exec(
-            ["sh", "-c", f"grep -Eiq '(^|[[:space:]=<>])playwright([<>=[:space:]]|$)' {shlex.quote(manifest)}"],
-            timeout=15,
-        )
-        if browser_probe.ok:
-            browser = session.exec(
-                [python, "-m", "playwright", "install", "--with-deps", "chromium"],
-                cwd=setup_root,
-                timeout=1200,
-                env=env,
-            )
-            if not browser.ok:
-                return "", env, _exec_error(browser, "browser install failed")
+        post_error = _run_setup_post(session, setup, setup_root, env, path_prefix=f"{cache}/bin")
+        if post_error:
+            return "", env, post_error
         if not _write_setup_marker(session, marker, fingerprint):
             return "", env, "setup marker failed"
         return python, env, ""
@@ -336,24 +352,11 @@ def _ensure_skill_setup(
     )
     if not installed.ok:
         return "", env, _exec_error(installed, "Node dependency install failed")
-    browser_probe = session.exec(
-        [
-            "sh",
-            "-c",
-            f"grep -Eiq 'playwright' {shlex.quote(manifest)}",
-        ],
-        timeout=15,
+    post_error = _run_setup_post(
+        session, setup, setup_root, env, path_prefix=f"{cache}/node_modules/.bin"
     )
-    browser_cli = f"{cache}/node_modules/.bin/playwright"
-    if browser_probe.ok and session.exec(["test", "-x", browser_cli], timeout=15).ok:
-        browser = session.exec(
-            [browser_cli, "install", "--with-deps", "chromium"],
-            cwd=setup_root,
-            timeout=1200,
-            env=env,
-        )
-        if not browser.ok:
-            return "", env, _exec_error(browser, "browser install failed")
+    if post_error:
+        return "", env, post_error
     if not _write_setup_marker(session, marker, fingerprint):
         return "", env, "setup marker failed"
     return "", env, ""
@@ -393,9 +396,7 @@ class SandboxTools:
         if err:
             return err
         info = Session.current().info
-        lines = [
-            f"name={info.name} mode={info.mode} session_id={info.project_id or '-'}"
-        ]
+        lines = [f"name={info.name} mode={info.mode} session_id={info.project_id or '-'}"]
         if extra_binaries:
             try:
                 which = Session.current().which
@@ -422,6 +423,12 @@ class SandboxTools:
             denial = role_binary_denial(name)
             if denial:
                 return f"Error: {denial}"
+        emit_event(
+            "log",
+            f"provision {name}",
+            EVENT_PROVISION_CLI,
+            {"binary": name, "package": package or "", "phase": "start"},
+        )
         ok, msg = InstallResolver.shared().resolve(name, package=package)
         if not ok:
             return f"Error: {msg}"
@@ -430,7 +437,7 @@ class SandboxTools:
             "log",
             text,
             EVENT_PROVISION_CLI,
-            {"binary": name, "package": package or ""},
+            {"binary": name, "package": package or "", "phase": "done"},
         )
         return text
 
@@ -458,8 +465,20 @@ class SandboxTools:
         if err:
             return err
         assert cmd is not None
-        emit_event("tool", f"bash: {cmd[:200]}", EVENT_RUN_CLI, cli_payload(cmd))
-        return f"exit={ShellRunner.shared().run_shell(cmd)}"
+        emit_event(
+            "tool",
+            f"bash: {cmd[:200]}",
+            EVENT_RUN_CLI,
+            cli_payload(cmd, phase="start"),
+        )
+        result = ShellRunner.shared().run_shell_result(cmd)
+        emit_event(
+            "result",
+            f"bash done exit={result.code}",
+            EVENT_RUN_CLI,
+            cli_payload(cmd, phase="done", exit_code=result.code),
+        )
+        return render_tool_output(Session.current(), result, label="bash")
 
     def periodic(
         self,
@@ -486,15 +505,22 @@ class SandboxTools:
                 interval_seconds=interval,
                 duration_seconds=duration,
                 package=package or "",
+                phase="start",
             ),
         )
-        code = ShellRunner.shared().run_periodic(
+        result = ShellRunner.shared().run_periodic_result(
             cmd,
             interval_seconds=interval,
             duration_seconds=duration,
             package=package or "",
         )
-        return f"exit={code}"
+        emit_event(
+            "result",
+            f"run_periodic done exit={result.code}",
+            EVENT_RUN_PERIODIC,
+            cli_payload(cmd, phase="done", exit_code=result.code),
+        )
+        return render_tool_output(Session.current(), result, label="periodic")
 
     def script(
         self,
@@ -578,7 +604,7 @@ class SandboxTools:
         # Gate the operator argv first; the interpreter-prefixed line only when
         # there was no separate shell line (pure Claude args / no args).
         joined = shlex.join(argv)
-        for probe in ((tail_line,) if tail_line else (joined,)):
+        for probe in (tail_line,) if tail_line else (joined,):
             gated = _gate(probe)
             if gated:
                 return gated
@@ -593,12 +619,30 @@ class SandboxTools:
             "tool",
             f"run_skill_script: {doc.id} {rel}",
             EVENT_RUN_CLI,
-            cli_payload(tail_line or joined, skill_id=doc.id, entry=rel, argv=argv),
+            cli_payload(
+                tail_line or joined,
+                skill_id=doc.id,
+                entry=rel,
+                argv=argv,
+                phase="start",
+            ),
         )
         # Pack mounts are immutable. Relative output belongs in the writable
         # project workspace; SKILL_DIR remains available for pack resources.
         # Long OSINT / Playwright packs need well over 30 minutes.
         result = session.exec(argv, cwd=session.workdir(), timeout=2400, env=skill_env)
+        emit_event(
+            "result",
+            f"run_skill_script done exit={result.code}",
+            EVENT_RUN_CLI,
+            cli_payload(
+                tail_line or joined,
+                skill_id=doc.id,
+                entry=rel,
+                phase="done",
+                exit_code=result.code,
+            ),
+        )
         out = (result.stdout or "").strip()
         err_out = (result.stderr or "").strip()
         stream = StreamEmitter.shared()
@@ -606,9 +650,8 @@ class SandboxTools:
             stream.emit_stdout(out)
         if err_out:
             stream.emit_stderr(err_out)
-        lines = [f"exit={result.code}"]
-        if out:
-            lines.append(out[:8000])
-        if err_out:
-            lines.append(err_out[:4000])
-        return "\n".join(lines)
+        return render_tool_output(
+            session,
+            ShellResult(result.code if result.code is not None else 1, out, err_out),
+            label=f"skill-{doc.name}",
+        )

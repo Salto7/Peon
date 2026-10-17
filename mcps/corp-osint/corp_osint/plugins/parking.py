@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 PARKING_MARKERS: tuple[str, ...] = (
     "domain for sale",
@@ -50,7 +49,7 @@ def detect_parking(
     text: str = "",
     html: str = "",
     final_url: str = "",
-) -> tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Return (is_parked, matched_marker)."""
     blob = " ".join([title or "", text or "", html[:8000] if html else "", final_url or ""]).lower()
     if not blob.strip():

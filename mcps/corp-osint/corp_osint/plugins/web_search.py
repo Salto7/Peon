@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import parse_qs, quote_plus, urlparse
 
-from ..plugin import BrowserSupport, Plugin
 from ..http import AsyncHttpClient, incremental_sleep
+from ..plugin import BrowserSupport, Plugin
 
 _STOP = re.compile(
     r"(?i)(^|\.)(duckduckgo\.|google\.|bing\.|yahoo\.|wikipedia\.|facebook\.|"
@@ -31,7 +31,7 @@ def _unwrap_bing(href: str) -> str:
     u = (qs.get("u") or [None])[0]
     if not u:
         return href
-    raw = u.removeprefix("a1")
+    raw = u[2:] if u.startswith("a1") else u
     pad = "=" * (-len(raw) % 4)
     try:
         decoded = base64.urlsafe_b64decode(raw + pad).decode("utf-8", errors="replace")
@@ -47,7 +47,7 @@ class PlaywrightWebSearch(Plugin, BrowserSupport):
         Plugin.__init__(self, http, config=config, **kwargs)
         BrowserSupport.__init__(self)
 
-    def _queries(self, company: str, domain: Optional[str], max_queries: int) -> list[str]:
+    def _queries(self, company: str, domain: str | None, max_queries: int) -> list[str]:
         # When no domain is known, prioritize finding the official site first.
         if domain:
             queries = [
@@ -185,7 +185,7 @@ class PlaywrightWebSearch(Plugin, BrowserSupport):
     async def run(
         self,
         company: str,
-        domain: Optional[str] = None,
+        domain: str | None = None,
         engine: str = "bing",
         max_queries: int = 6,
         **kwargs: Any,
@@ -326,7 +326,7 @@ class PlaywrightWebSearch(Plugin, BrowserSupport):
         company: str,
         hits: list[dict[str, Any]],
         domain_rows: list[dict[str, Any]],
-    ) -> Optional[str]:
+    ) -> str | None:
         """Pick best official-looking apex from SERP hits (first strong match)."""
         stop = {"inc", "corp", "llc", "ltd", "the", "company", "corporation", "group"}
         tokens = [

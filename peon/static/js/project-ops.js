@@ -874,6 +874,20 @@
       body.appendChild(roles);
     }
 
+    if (agent.is_spawn && agent.description) {
+      const brief = document.createElement("div");
+      brief.className = "context-objective";
+      const bl = document.createElement("div");
+      bl.className = "meta";
+      bl.textContent = "Worker brief";
+      brief.appendChild(bl);
+      const bt = document.createElement("p");
+      bt.className = "context-action-text";
+      bt.textContent = agent.description;
+      brief.appendChild(bt);
+      body.appendChild(brief);
+    }
+
     if (agent.objective_title) {
       const obj = document.createElement("div");
       obj.className = "context-objective";
@@ -1178,9 +1192,37 @@
     thread.scrollTop = thread.scrollHeight;
   }
 
+  // Set by init; setFocus is module-level and needs it for history fetches.
+  var historyProjectPk = "";
+  var historyLoaded = {};
+  var historySink = null;
+
+  function loadJobHistory(jobId) {
+    if (!historyProjectPk || !jobId || historyLoaded[jobId] || !historySink) return;
+    historyLoaded[jobId] = true;
+    fetch(
+      "/projects/" + historyProjectPk + "/jobs/" + jobId + "/messages.json?limit=300",
+      { headers: { Accept: "application/json" } }
+    )
+      .then(function (res) {
+        return res.ok ? res.json() : null;
+      })
+      .then(function (data) {
+        if (!data || !data.messages) return;
+        data.messages.forEach(function (m) {
+          historySink(m);
+        });
+        applyFeedFilter();
+      })
+      .catch(function () {
+        historyLoaded[jobId] = false;
+      });
+  }
+
   function setFocus(jobId) {
     focusJobId = String(jobId || "");
     applyFeedFilter();
+    loadJobHistory(focusJobId);
     var thread = el("chat-thread");
     if (thread) thread.scrollTop = thread.scrollHeight;
   }
@@ -1246,7 +1288,14 @@
 
     article.appendChild(body);
     article.appendChild(meta);
-    log.appendChild(article);
+    // History backfill can be older than what is already shown: keep id order.
+    var anchor = null;
+    for (var n = log.lastElementChild; n; n = n.previousElementSibling) {
+      var nid = Number(n.dataset && n.dataset.id);
+      if (!nid || nid < Number(msg.id)) break;
+      anchor = n;
+    }
+    log.insertBefore(article, anchor);
     if (
       (feedFilter !== "all" && article.dataset.feedKey !== feedFilter) ||
       !jobMatchesFocus(article.dataset.jobId)
@@ -1811,6 +1860,7 @@
       const log = el("project-stream-log");
       const agentsList = el("agents-list");
       const projectPk = opts.projectPk;
+      historyProjectPk = String(projectPk || "");
       let lastId = 0;
       let lastSig = "";
       let lastProjectStatus = "";
@@ -1870,6 +1920,16 @@
         showAgentMenu(projectPk, agent, x, y, selectAgent);
       }
 
+      historySink = function (m) {
+        appendMessage(log, m, latestByJob);
+        if (String(m.job_id) === selectedId) {
+          const a = flattenAgents(agentsCache).find(function (x) {
+            return String(x.id) === selectedId;
+          });
+          if (a) renderContext(a, latestByJob);
+        }
+      };
+
       (opts.bootstrap || []).forEach(function (m) {
         appendMessage(log, m, latestByJob);
         if (m.id > lastId) lastId = m.id;
@@ -1895,12 +1955,20 @@
             appendMessage(log, m, latestByJob);
             if (m.id > lastId) lastId = m.id;
             if (m.job_id && String(m.job_id) === selectedId) touched = true;
-            if (
-              m.job_id &&
-              String(m.message_type || "").toLowerCase() === "tool"
-            ) {
+            if (m.job_id) {
               flattenAgents(agentsCache).forEach(function (a) {
-                if (String(a.id) === String(m.job_id)) {
+                if (String(a.id) !== String(m.job_id)) return;
+                // Idle and finished labels need the whole tree (who is still
+                // running). Live messages only move a running agent's line.
+                if (
+                  m.activity &&
+                  m.activity.label &&
+                  String(a.status || "").toLowerCase() === "running"
+                ) {
+                  a.activity = m.activity;
+                  graphDirty = true;
+                }
+                if (String(m.message_type || "").toLowerCase() === "tool") {
                   var text = streamCommandText(m);
                   if (text) {
                     a.last_command = text;
@@ -1999,23 +2067,26 @@
             project.phase || "",
             JSON.stringify(project.progress || {}),
             (project.sandbox && project.sandbox.name) || "",
-            agents
-              .map(function (a) {
-                return (
-                  a.id +
-                  ":" +
-                  a.status +
-                  ":" +
-                  (a.updated_at || "") +
-                  ":" +
-                  (a.subagents || [])
-                    .map(function (s) {
-                      return s.id + ":" + s.status;
-                    })
-                    .join(",")
-                );
-              })
-              .join("|"),
+            (function walk(list) {
+              return (list || [])
+                .map(function (a) {
+                  var act = a.activity || {};
+                  return (
+                    a.id +
+                    ":" +
+                    a.status +
+                    ":" +
+                    (act.label || "") +
+                    ":" +
+                    (a.last_command || "") +
+                    ":" +
+                    (a.updated_at || "") +
+                    ":" +
+                    walk(a.subagents)
+                  );
+                })
+                .join("|");
+            })(agents),
             JSON.stringify(roles),
             objectives
               .map(function (o) {

@@ -16,6 +16,9 @@ from agent_runtime.util import resource_name as make_resource_name
 
 logger = logging.getLogger(__name__)
 
+# Chromium (Playwright) crashes on Docker's default 64MB /dev/shm.
+_SANDBOX_SHM = "1gb"
+
 
 class DockerRuntime(Runtime):
     id = "sandbox"
@@ -82,6 +85,7 @@ class DockerRuntime(Runtime):
             "network": (spec.network or "").strip(),
             "env": sorted((str(k), str(v)) for k, v in (spec.env or {}).items()),
             "extra_hosts": sorted((spec.extra_hosts or {}).items()),
+            "shm_size": _SANDBOX_SHM,
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -112,9 +116,7 @@ class DockerRuntime(Runtime):
                 removed = cli.rm_force(name)
                 if not removed.ok:
                     detail = (removed.stderr or removed.stdout or "").strip()
-                    raise RuntimeError(
-                        f"Failed to recreate sandbox {name}: {detail}"
-                    )
+                    raise RuntimeError(f"Failed to recreate sandbox {name}: {detail}")
         action = cli.ensure_running(
             name,
             image=image,
@@ -125,6 +127,7 @@ class DockerRuntime(Runtime):
             env=dict(spec.env or {}),
             extra_hosts=dict(spec.extra_hosts or {}),
             pull_image=spec.pull_image,
+            shm_size=_SANDBOX_SHM,
         )
         return self._session(spec, action=action)
 

@@ -7,9 +7,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from orchestrator.skills.common import apply_candidate_namespace
 from orchestrator.skills.install.place import place_pack
-from orchestrator.skills.manifest import find_skill_manifest
-from orchestrator.utils.install_skip import skip_dir_name
+from orchestrator.skills.registry_scan import discover_skill_candidates
 
 
 def _reject_source(source: str) -> str:
@@ -17,30 +17,6 @@ def _reject_source(source: str) -> str:
     if not text or "\n" in text or "\r" in text or "\x00" in text:
         raise ValueError("skill source is empty or contains a newline")
     return text
-
-
-def pack_dirs(root: Path) -> list[Path]:
-    """Skill folders at or under ``root``, at most four levels down."""
-    found: list[Path] = []
-
-    def walk(path: Path, depth: int) -> None:
-        if find_skill_manifest(path) is not None:
-            found.append(path)
-            return
-        if depth >= 4 or not path.is_dir():
-            return
-        try:
-            children = sorted(path.iterdir())
-        except OSError:
-            return
-        for child in children:
-            # Skills may live under ``.claude/skills`` — only skip junk dirs here.
-            if not child.is_dir() or skip_dir_name(child.name, skip_hidden=False):
-                continue
-            walk(child, depth + 1)
-
-    walk(Path(root), 0)
-    return found
 
 
 def install_openskills(source: str, *, revision: str = "") -> list[str]:
@@ -66,10 +42,13 @@ def install_openskills(source: str, *, revision: str = "") -> list[str]:
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise RuntimeError(detail or "openskills install failed")
-        packs = pack_dirs(Path(tmp) / ".agent" / "skills")
-        if not packs:
+        candidates = discover_skill_candidates(
+            Path(tmp) / ".agent" / "skills", source="openskills", skip_helpers=True
+        )
+        if not candidates:
             raise RuntimeError("openskills install produced no SKILL.md pack")
-        names = [
-            place_pack(pack, source=origin, revision=revision) for pack in packs
-        ]
-    return names
+        ids: list[str] = []
+        for candidate in candidates:
+            apply_candidate_namespace(candidate)
+            ids.append(place_pack(candidate.root, source=origin, revision=revision))
+        return ids

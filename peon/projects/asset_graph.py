@@ -674,9 +674,7 @@ def _is_pollution_asset(asset: dict[str, Any]) -> bool:
         return True
     if typ in {"finding", "findings"}:
         return True
-    if value.upper().startswith("FIND-") or value.upper() == "FIND":
-        return True
-    return False
+    return bool(value.upper().startswith("FIND-") or value.upper() == "FIND")
 
 
 def _prune_finding_pollution(graph: AssetGraph) -> None:

@@ -1,0 +1,25 @@
+{
+  "skills": {
+    "plain-skill": {
+      "content_hash": "sha256:79d13d0a73c22d767237218b6ab52a1089a9b8f6f54da1a9956d0a2621e757da",
+      "name": "plain-skill",
+      "provider": "claude",
+      "revision": "",
+      "source": "zip:mk4.zip"
+    },
+    "plugin-a-recon": {
+      "content_hash": "sha256:561c6eed75364e3918863a6cb19345f2b524d4fbacac16940073b669325bba94",
+      "name": "plugin-a-recon",
+      "provider": "claude",
+      "revision": "",
+      "source": "zip:mk4.zip"
+    },
+    "plugin-b-recon": {
+      "content_hash": "sha256:ab035e8b54cfe23b3a9a1cdc74e2d4bcd27904552a2f125dda2bbd1ceb512ce4",
+      "name": "plugin-b-recon",
+      "provider": "claude",
+      "revision": "",
+      "source": "zip:mk3.zip"
+    }
+  }
+}

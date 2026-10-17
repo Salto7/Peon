@@ -1,0 +1,12 @@
+{% load ui project_actions %}
+{% comment %}
+Bulk project actions bar. Context: form_id, next (optional redirect target).
+Pair with [data-bulk-all="<form_id>"] and [data-bulk-row][form="<form_id>"].
+{% endcomment %}
+<form id="{{ form_id }}" data-bulk method="post" action="{% url 'projects_bulk' %}"
+      class="flex min-h-12 flex-wrap items-center gap-2 border-b px-4 py-2">
+  {% csrf_token %}
+  {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+  <span class="mr-auto text-xs text-muted-foreground" data-bulk-count>0 selected</span>
+  {% project_actions mode="bulk" %}
+</form>

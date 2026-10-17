@@ -467,12 +467,27 @@
     if (saveBtn) {
       saveBtn.addEventListener("click", function () {
         setBusy(saveBtn, true);
-        postJson(app.getAttribute("data-save-tool"), {
-          yaml: (document.getElementById("tool-yaml") || {}).value || "",
-          install_script: (document.getElementById("tool-script") || {}).value || "",
-        })
+        var yamlText = (document.getElementById("tool-yaml") || {}).value || "";
+        var scriptText = (document.getElementById("tool-script") || {}).value || "";
+        var doSave = function (overwrite) {
+          return postJson(app.getAttribute("data-save-tool"), {
+            yaml: yamlText,
+            install_script: scriptText,
+            overwrite: !!overwrite,
+          }).then(function (out) {
+            if (out.status === 409 && out.data && out.data.exists) {
+              var confirmed = window.confirm(
+                (out.data.error || "That tool already exists.") + " Overwrite it?"
+              );
+              return confirmed ? doSave(true) : out;
+            }
+            return out;
+          });
+        };
+        doSave(false)
           .then(function (out) {
             if (!out.ok || !out.data || !out.data.ok) {
+              if (out.data && out.data.exists) return; // user declined overwrite
               toast((out.data && out.data.error) || "Save failed", "error");
               return;
             }
@@ -489,16 +504,11 @@
 
     if (testBtn) {
       testBtn.addEventListener("click", function () {
-        if (app.getAttribute("data-lab-running") !== "1") {
-          toast("Turn on the test docker switch first", "error");
-          showTestLog("Test docker is not running — use the switch above to create it.");
-          return;
-        }
         var yaml = (document.getElementById("tool-yaml") || {}).value || "";
         var script = (document.getElementById("tool-script") || {}).value || "";
         setBusy(testBtn, true);
         showReplanPanel(false);
-        showTestLog("Running install test in " + (app.getAttribute("data-lab-name") || "lab") + "…");
+        showTestLog("Resetting a clean test container and running the install…");
         postJson(app.getAttribute("data-test-tool"), {
           yaml: yaml,
           install_script: script,
@@ -533,7 +543,7 @@
             }
             var seed =
               (document.getElementById("learn-prompt") || {}).value ||
-              "Fix the catalog install recipe for debian:bookworm-slim.";
+              "Fix the catalog install recipe for the Peon sandbox (Kali).";
             showReplanPanel(true, seed);
             toast("Install finished — check verify output below", "error");
           })

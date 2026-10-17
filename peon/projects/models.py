@@ -663,6 +663,14 @@ class AgentMessage(ProjectScopedModel):
     kind = models.CharField(
         max_length=16, choices=Kind.choices, default=Kind.INFORM
     )
+    reply_to = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="replies",
+        help_text="Message this one answers, if any (must be one the sender received).",
+    )
     message = models.JSONField(default=dict, help_text="A2A Message (JSON).")
     created_at = models.DateTimeField(auto_now_add=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
@@ -1086,7 +1094,22 @@ class JobCheckpoint(ProjectScopedModel):
         return f"CKPT-{self.seq} job={self.job_id}"
 
 
-class CatalogSkill(models.Model):
+class HashedCatalogRow(models.Model):
+    """Shared bookkeeping for catalog rows refreshed from disk/git/zip.
+
+    Skill, MCP, and marketplace-source rows all need the same two things to
+    decide whether a re-scan changed anything: a change-detection hash and a
+    last-updated timestamp. Declared once here instead of three times.
+    """
+
+    content_hash = models.CharField(max_length=64, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+
+
+class CatalogSkill(HashedCatalogRow):
     """Platform skill registry row. File bodies live in ``CatalogFile``."""
 
     skill_id = models.CharField(max_length=128, primary_key=True)
@@ -1095,8 +1118,6 @@ class CatalogSkill(models.Model):
     body = models.TextField(blank=True, default="")
     manifest = models.JSONField(default=dict, blank=True)
     setup = models.JSONField(null=True, blank=True)
-    content_hash = models.CharField(max_length=64, blank=True, default="")
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["skill_id"]
@@ -1105,7 +1126,7 @@ class CatalogSkill(models.Model):
         return self.skill_id
 
 
-class CatalogMcp(models.Model):
+class CatalogMcp(HashedCatalogRow):
     """Platform MCP server spec. Env values are never stored here."""
 
     mcp_id = models.CharField(max_length=128, primary_key=True)
@@ -1116,15 +1137,46 @@ class CatalogMcp(models.Model):
     cwd = models.CharField(max_length=256, blank=True, default="")
     install = models.JSONField(null=True, blank=True)
     env_schema = models.JSONField(default=list, blank=True)
+    # Hosts this server queries as reference infrastructure (research APIs,
+    # registries) — never engagement targets. Declared by the server itself.
+    reference_hosts = models.JSONField(default=list, blank=True)
     enabled = models.BooleanField(default=True)
-    content_hash = models.CharField(max_length=64, blank=True, default="")
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["mcp_id"]
 
     def __str__(self) -> str:
         return self.mcp_id
+
+
+class CatalogMarketplaceSource(HashedCatalogRow):
+    """A registered external source to scan for skills, roles, and MCP servers.
+
+    Scanning never writes ``CatalogSkill``/``CatalogMcp``/``CatalogProposal``
+    directly — it stages a summary in ``discovered`` for review. Importing
+    one discovered item calls the same ``PlatformCatalog.upsert_*`` every
+    other install path (disk bootstrap, git, zip, openskills) already uses.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=200)
+    source_type = models.CharField(max_length=16, help_text="github | zip")
+    url = models.CharField(max_length=500, blank=True, default="")
+    ref = models.CharField(max_length=200, blank=True, default="")
+    subpath = models.CharField(max_length=500, blank=True, default="")
+    archive_path = models.CharField(max_length=500, blank=True, default="")
+    status = models.CharField(
+        max_length=16, default="pending", help_text="pending | scanning | scanned | error"
+    )
+    error = models.TextField(blank=True, default="")
+    discovered = models.JSONField(default=dict, blank=True)
+    last_scanned_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self) -> str:
+        return self.name or str(self.pk)
 
 
 class CatalogFile(models.Model):
@@ -1177,6 +1229,36 @@ class CatalogBinding(models.Model):
         return f"{self.role_id}->{self.owner_kind}:{self.owner_id}"
 
 
+class CatalogProposal(models.Model):
+    """Dream-suggested role/skill change, staged for human review.
+
+    Dream never calls ``PlatformCatalog.upsert_role``/``upsert_skill``
+    directly — it writes one of these, and a human approves or rejects it
+    from the Dream page before the catalog itself changes.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    kind = models.CharField(max_length=16, help_text="role | skill")
+    action = models.CharField(max_length=16, help_text="create | update")
+    target_id = models.CharField(
+        max_length=128, blank=True, default="", help_text="Existing role_id/skill_id, blank for create"
+    )
+    title = models.CharField(max_length=200, blank=True, default="")
+    rationale = models.TextField(blank=True, default="")
+    payload = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, default="pending", help_text="pending | approved | rejected")
+    error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "-created_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.action} {self.kind} {self.target_id or '(new)'} [{self.status}]"
+
+
 class ProjectMcpConfig(ProjectScopedModel):
     """Per-project env values for an MCP server. Names live on ``CatalogMcp``."""
 
@@ -1201,3 +1283,43 @@ class ProjectMcpConfig(ProjectScopedModel):
 
     def __str__(self) -> str:
         return f"{self.project_id}:{self.mcp_id}"
+
+
+class LlmCallLog(models.Model):
+    """One upstream LLM call — cost/token telemetry, always on the platform DB.
+
+    LLM calls happen both inside a project (agent loops) and outside one
+    (planner, role router, skill-affinity classification, dream curation), so
+    this is not ``ProjectScopedModel``: it is one place to query spend across
+    every project. ``job_id`` / ``project_id`` are raw ids (no FK — jobs live
+    in per-project SQLite files, which cannot be FK-referenced from here).
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    purpose = models.CharField(
+        max_length=64,
+        db_index=True,
+        help_text="What triggered the call, e.g. agent_loop, planner, role_router.",
+    )
+    model = models.CharField(max_length=160, blank=True)
+    project_id = models.CharField(max_length=36, blank=True, db_index=True)
+    job_id = models.CharField(max_length=36, blank=True, db_index=True)
+    role_id = models.CharField(max_length=64, blank=True)
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    cost_usd = models.FloatField(default=0.0)
+    duration_ms = models.PositiveIntegerField(default=0)
+    ok = models.BooleanField(default=True)
+    error = models.CharField(max_length=300, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["purpose", "created_at"]),
+            models.Index(fields=["project_id", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.purpose}:{self.model} ${self.cost_usd:.4f}"

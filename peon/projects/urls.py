@@ -11,6 +11,7 @@ from peon.projects.search_palette import search_json
 
 urlpatterns = [
     path("", pages.home, name="home"),
+    path("alerts/clear/", pages.alerts_clear, name="alerts_clear"),
     path("projects/", pages.project_list, name="project_list"),
     path("projects/new/", pages.project_create, name="project_create"),
     path("settings/", pages.settings_page, name="settings_page"),
@@ -112,6 +113,11 @@ urlpatterns = [
         name="project_messages_json",
     ),
     path("projects/<uuid:pk>/jobs/<uuid:job_id>/start/", control.job_start, name="job_start"),
+    path(
+        "projects/<uuid:pk>/jobs/<uuid:job_id>/messages.json",
+        control.job_messages_json,
+        name="job_messages_json",
+    ),
     path(
         "projects/<uuid:pk>/jobs/<uuid:job_id>/remove/", control.job_remove, name="job_remove"
     ),

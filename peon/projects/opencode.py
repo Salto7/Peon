@@ -16,6 +16,7 @@ from typing import Any
 import yaml
 from django.conf import settings
 
+from orchestrator.learn.authoring import LearnAuthoring
 from orchestrator.learn.draft import (
     authoring_prompt,
     catalog_summaries,
@@ -29,6 +30,7 @@ from orchestrator.learn.draft import (
     tool_suggestion_from_payload,
     valid_skill_name,
 )
+from orchestrator.learn.system_skills import skill_writer_skill, tools_suggestor_skill
 from orchestrator.utils.service import SharedServiceBase
 from peon.projects.learn_lab import LearnLab
 from peon.projects.llm_proxy import LlmProxy
@@ -41,19 +43,16 @@ PROXY_REQUIRED_MSG = (
 )
 
 _OPENCODE_INSTALL = (
+    'export PATH="$HOME/.opencode/bin:/usr/local/bin:$PATH"; '
+    "if command -v opencode >/dev/null 2>&1; then command -v opencode; exit 0; fi; "
     "export DEBIAN_FRONTEND=noninteractive; "
     "apt-get update -qq && "
     "apt-get install -y --no-install-recommends ca-certificates curl bash "
     ">/dev/null && "
-    "if ! command -v opencode >/dev/null 2>&1; then "
-    "  curl -fsSL https://opencode.ai/install | bash; "
-    "  export PATH=\"$HOME/.opencode/bin:$PATH\"; "
-    "fi; "
+    "curl -fsSL https://opencode.ai/install | bash && "
+    'export PATH="$HOME/.opencode/bin:$PATH"; '
     "command -v opencode"
 )
-
-_TOOLS_SUGGESTOR = "tools-suggestor"
-_SKILL_WRITER = "skill-writer"
 
 
 class OpenCodeAuthoring(SharedServiceBase):
@@ -80,7 +79,7 @@ class OpenCodeAuthoring(SharedServiceBase):
         self.require_proxy()
         payload = self._run_json_task(
             kind="tool",
-            system=skill_prompt(_TOOLS_SUGGESTOR),
+            system=skill_prompt(tools_suggestor_skill()),
             human=tool_suggest_human(text),
             result_hint=(
                 "Write result.json with keys: id, yaml, install_script, notes. "
@@ -92,9 +91,7 @@ class OpenCodeAuthoring(SharedServiceBase):
             author="opencode",
         )
 
-    def write_skill(
-        self, prompt: str, *, tools: list[str] | None = None
-    ) -> dict[str, Any]:
+    def write_skill(self, prompt: str, *, tools: list[str] | None = None) -> dict[str, Any]:
         text = (prompt or "").strip()
         if not text:
             raise ValueError("prompt is required")
@@ -105,12 +102,12 @@ class OpenCodeAuthoring(SharedServiceBase):
         )
 
         tool_suggestion, proposed, install_recipes = propose_missing_tool(
-            text, self.suggest_tool
+            text, LearnAuthoring.suggest_tool
         )
 
         payload = self._run_json_task(
             kind="skill",
-            system=skill_prompt(_SKILL_WRITER),
+            system=skill_prompt(skill_writer_skill()),
             human=authoring_prompt(
                 text,
                 catalog,
@@ -159,7 +156,7 @@ class OpenCodeAuthoring(SharedServiceBase):
         self.require_proxy()
         payload = self._run_json_task(
             kind="tool-replan",
-            system=skill_prompt(_TOOLS_SUGGESTOR),
+            system=skill_prompt(tools_suggestor_skill()),
             human=tool_replan_human(
                 prompt=prompt,
                 yaml_text=yaml_text,
@@ -167,9 +164,7 @@ class OpenCodeAuthoring(SharedServiceBase):
                 error=error,
                 feedback=feedback,
             ),
-            result_hint=(
-                "Write result.json with keys: id, yaml, install_script, notes."
-            ),
+            result_hint=("Write result.json with keys: id, yaml, install_script, notes."),
         )
         return tool_suggestion_from_payload(
             payload,
@@ -186,9 +181,7 @@ class OpenCodeAuthoring(SharedServiceBase):
     ) -> dict[str, Any]:
         lab = LearnLab.shared()
         staging = lab.staging_root()
-        draft = Path(
-            tempfile.mkdtemp(prefix=f"opencode-{kind}-", dir=str(staging))
-        )
+        draft = Path(tempfile.mkdtemp(prefix=f"opencode-{kind}-", dir=str(staging)))
         rel = draft.relative_to(staging).as_posix()
         try:
             (draft / "SYSTEM.md").write_text(system.rstrip() + "\n", encoding="utf-8")
@@ -207,15 +200,16 @@ class OpenCodeAuthoring(SharedServiceBase):
             self._write_opencode_config(draft)
 
             info = lab.ensure_for_authoring(workspace_host=str(staging))
-            session = lab.connect()
+            session = lab.connect(authoring=True)
             bootstrap = session.exec(_OPENCODE_INSTALL, timeout=300, shell=True)
             if bootstrap.code != 0:
                 detail = (bootstrap.stderr or bootstrap.stdout or "").strip()[:500]
                 raise RuntimeError(f"OpenCode install failed in Learn lab: {detail}")
 
-            model = str(
-                getattr(settings, "OPENCODE_MODEL", None) or "peon/default"
-            ).strip() or "peon/default"
+            model = (
+                str(getattr(settings, "OPENCODE_MODEL", None) or "peon/default").strip()
+                or "peon/default"
+            )
             message = (
                 "Complete the Peon Toolsmith authoring task in AGENTS.md. "
                 "Write result.json when done."
@@ -242,8 +236,7 @@ class OpenCodeAuthoring(SharedServiceBase):
                 if recovered is not None:
                     return recovered
                 raise RuntimeError(
-                    "OpenCode finished without result.json "
-                    f"(stdout: {(run.stdout or '')[:400]})"
+                    f"OpenCode finished without result.json (stdout: {(run.stdout or '')[:400]})"
                 )
             try:
                 payload = json.loads(result_path.read_text(encoding="utf-8"))
@@ -257,9 +250,7 @@ class OpenCodeAuthoring(SharedServiceBase):
                 files.update(out_files)
                 if "SKILL.md" in out_files and not payload.get("skill_md"):
                     payload["skill_md"] = out_files["SKILL.md"]
-                payload["files"] = {
-                    k: v for k, v in files.items() if k != "SKILL.md"
-                }
+                payload["files"] = {k: v for k, v in files.items() if k != "SKILL.md"}
                 if not payload.get("name"):
                     for child in (draft / "out").iterdir():
                         if child.is_dir() and valid_skill_name(child.name):
@@ -300,17 +291,13 @@ class OpenCodeAuthoring(SharedServiceBase):
             "model": f"peon/{model_id}",
             "enabled_providers": ["peon"],
         }
-        (draft / "opencode.json").write_text(
-            json.dumps(cfg, indent=2) + "\n", encoding="utf-8"
-        )
+        (draft / "opencode.json").write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
     @staticmethod
     def _collect_files(root: Path) -> dict[str, str]:
         if not root.is_dir():
             return {}
-        skill_roots = [
-            p for p in root.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()
-        ]
+        skill_roots = [p for p in root.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()]
         base = skill_roots[0] if skill_roots else root
         out: dict[str, str] = {}
         for path in base.rglob("*"):

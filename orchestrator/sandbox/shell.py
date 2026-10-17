@@ -8,6 +8,7 @@ import time
 
 from agent_runtime.api import Session
 from orchestrator.prompts import INSTALL_MISSING_HINT
+from orchestrator.sandbox.tool_output import ShellResult
 from orchestrator.tools.install import InstallResolver, cli_on_path
 from orchestrator.utils.service import SharedServiceBase
 from orchestrator.utils.stream import StreamEmitter
@@ -128,22 +129,31 @@ class ShellRunner(SharedServiceBase):
             return 1
         return None
 
-    def _run_shell(self, cmd: str, *, timeout: float | None = None) -> int:
+    def _exec_shell(self, cmd: str, *, timeout: float | None = None) -> ShellResult:
+        """Run ``cmd``, mirror its output to the operator stream, return it."""
         res = Session.current().exec(cmd, timeout=timeout, shell=True)
         code = res.code if res.code is not None else 1
         if res.stdout:
             self._stream.emit_stdout(res.stdout, exit_code=code)
         if res.stderr:
             self._stream.emit_stderr(res.stderr, exit_code=code)
-        return code
+        return ShellResult(code, res.stdout or "", res.stderr or "")
 
-    def run_shell(self, command: str, *, package: str = "") -> int:
+    def run_shell_result(self, command: str, *, package: str = "") -> ShellResult:
+        """Provision + run; the result carries the output for the caller."""
         cmd = (command or "").strip()
         if not cmd:
-            self._stream.emit_stderr("usage: '<shell command>' [apt_package]")
-            return 2
-        err = self._announce(*self._provision.provision_command(cmd, package=package))
-        return err if err is not None else self._run_shell(cmd)
+            msg = "usage: '<shell command>' [apt_package]"
+            self._stream.emit_stderr(msg)
+            return ShellResult(2, "", msg)
+        ok, msg = self._provision.provision_command(cmd, package=package)
+        err = self._announce(ok, msg)
+        if err is not None:
+            return ShellResult(err, "", msg)
+        return self._exec_shell(cmd)
+
+    def run_shell(self, command: str, *, package: str = "") -> int:
+        return self.run_shell_result(command, package=package).code
 
     def run_periodic(
         self,
@@ -153,12 +163,27 @@ class ShellRunner(SharedServiceBase):
         duration_seconds: int,
         package: str = "",
     ) -> int:
+        return self.run_periodic_result(
+            command,
+            interval_seconds=interval_seconds,
+            duration_seconds=duration_seconds,
+            package=package,
+        ).code
+
+    def run_periodic_result(
+        self,
+        command: str,
+        *,
+        interval_seconds: int,
+        duration_seconds: int,
+        package: str = "",
+    ) -> ShellResult:
+        """Like :meth:`run_periodic`; returns the last run's output."""
         cmd = (command or "").strip()
         if not cmd:
-            self._stream.emit_stderr(
-                "usage: command + interval_seconds + duration_seconds"
-            )
-            return 2
+            msg = "usage: command + interval_seconds + duration_seconds"
+            self._stream.emit_stderr(msg)
+            return ShellResult(2, "", msg)
         interval = max(1, int(interval_seconds))
         total = max(interval, int(duration_seconds))
         ok, msg = self._provision.provision_command(cmd, package=package)
@@ -167,17 +192,21 @@ class ShellRunner(SharedServiceBase):
         if not ok:
             if msg:
                 self._stream.emit_stderr(msg)
-            return 1
+            return ShellResult(1, "", msg)
         deadline = time.time() + total
         tick = min(max(interval * 2, 60), 600)
-        iteration = last = 0
+        iteration = 0
+        last = ShellResult(0)
         self._stream.emit_log(f"Periodic: {cmd!r} every {interval}s for {total}s")
         while time.time() < deadline:
             iteration += 1
             self._stream.emit_log(f"--- run {iteration}: {cmd} ---")
-            last = self._run_shell(cmd, timeout=tick)
+            last = self._exec_shell(cmd, timeout=tick)
             self._stream.stream(
-                "log", f"exit_code={last}", iteration=iteration, timed_out=last == 124
+                "log",
+                f"exit_code={last.code}",
+                iteration=iteration,
+                timed_out=last.code == 124,
             )
             remaining = deadline - time.time()
             if remaining <= 0:

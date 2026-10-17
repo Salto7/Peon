@@ -14,10 +14,9 @@ import asyncio
 import json
 import os
 import re
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
-from ..plugin import BrowserSupport, Plugin
 from ..http import (
     RATE_LIMIT_MAX_SEC,
     RATE_LIMIT_STEP_SEC,
@@ -25,6 +24,7 @@ from ..http import (
     incremental_sleep,
     parse_retry_after,
 )
+from ..plugin import BrowserSupport, Plugin
 
 GTM_RE = re.compile(r"\b(GTM-[A-Z0-9]{4,})\b", re.I)
 TAG_RE = re.compile(r"\b((?:GTM|AW|DC|GT)-[A-Z0-9]{4,}|UA-\d{4,}-\d+)\b", re.I)
@@ -43,7 +43,7 @@ class DnslyticsGtmLookup(Plugin, BrowserSupport):
         self,
         http: AsyncHttpClient,
         config=None,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         min_interval_sec: float = RATE_LIMIT_MAX_SEC,
         max_attempts: int = 5,
         **kwargs,
@@ -336,8 +336,8 @@ class DnslyticsGtmLookup(Plugin, BrowserSupport):
 
     async def run(
         self,
-        domains: Optional[list[str]] = None,
-        domain: Optional[str] = None,
+        domains: list[str] | None = None,
+        domain: str | None = None,
         max_domains: int = 5,
         max_gtm_reverse: int = 5,
         **kwargs: Any,

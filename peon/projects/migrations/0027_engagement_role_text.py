@@ -20,10 +20,20 @@ def fill_role_text(apps, schema_editor):
 
 
 def seed_catalog(apps, schema_editor):
-    del apps, schema_editor
-    from peon.projects.platform_catalog import PlatformCatalog
+    """Best-effort early seed.
 
-    PlatformCatalog.shared().ensure_seeded()
+    This runs the *live* catalog code against the schema as of this migration,
+    which later migrations extend (new columns). It must therefore never fail a
+    migration: process start (``apps.ready``) seeds the catalog again, against
+    the final schema.
+    """
+    del apps, schema_editor
+    try:
+        from peon.projects.platform_catalog import PlatformCatalog
+
+        PlatformCatalog.shared().ensure_seeded()
+    except Exception:  # noqa: BLE001 — seeded at startup instead
+        return
 
 
 class Migration(migrations.Migration):

@@ -21,6 +21,8 @@ const Pending = z.object({
   id: z.coerce.string(),
   kind: z.string().optional().nullable(),
   question: z.string().optional().nullable(),
+  options: z.array(z.string()).optional().nullable(),
+  job_title: z.string().optional().nullable(),
   project_id: z.coerce.string().optional().nullable(),
   project_title: z.string().optional().nullable(),
   href: z.string().optional().nullable(),
@@ -117,6 +119,9 @@ export default function HitlPrompt({
 
   // Blocked objectives cannot be answered here; they need the project page.
   const projectOnly = !!current?.id.startsWith("obj-");
+  // A multiple-choice question is answered, not approved/denied.
+  const options = (current?.options ?? []).filter((o) => o.trim());
+  const hasOptions = options.length > 0;
 
   return (
     <Dialog open={!!current} onOpenChange={(o) => !o && close()}>
@@ -129,7 +134,25 @@ export default function HitlPrompt({
         </DialogHeader>
         <div className="space-y-3">
           {current?.kind ? <Badge variant="secondary">{current.kind}</Badge> : null}
+          {current?.job_title ? (
+            <p className="text-xs text-muted-foreground">Asked by {current.job_title}</p>
+          ) : null}
           <p className="text-sm whitespace-pre-wrap">{current?.question}</p>
+          {!projectOnly && hasOptions && (
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Answer options">
+              {options.map((opt) => (
+                <Button
+                  key={opt}
+                  type="button"
+                  size="sm"
+                  variant={reply === opt ? "default" : "outline"}
+                  onClick={() => setReply(opt)}
+                >
+                  {opt}
+                </Button>
+              ))}
+            </div>
+          )}
           {!projectOnly && (
             <div className="space-y-1.5">
               <Label htmlFor="hitl-reply">Reply</Label>
@@ -138,7 +161,11 @@ export default function HitlPrompt({
                 rows={3}
                 value={reply}
                 onChange={(e) => setReply(e.target.value)}
-                placeholder="Optional for approve/deny, required to send an edit"
+                placeholder={
+                  hasOptions
+                    ? "Pick an option above, or type your own answer"
+                    : "Optional for approve/deny, required to send an edit"
+                }
               />
             </div>
           )}
@@ -149,23 +176,34 @@ export default function HitlPrompt({
           </Button>
           {!projectOnly && (
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                disabled={decide.isPending}
-                onClick={() => decide.mutate("deny")}
-              >
-                Deny
-              </Button>
-              <Button
-                variant="outline"
-                disabled={decide.isPending || !reply.trim()}
-                onClick={() => decide.mutate("edit")}
-              >
-                Send edit
-              </Button>
-              <Button disabled={decide.isPending} onClick={() => decide.mutate("approve")}>
-                Approve
-              </Button>
+              {hasOptions ? (
+                <Button
+                  disabled={decide.isPending || !reply.trim()}
+                  onClick={() => decide.mutate("edit")}
+                >
+                  Send answer
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    variant="outline"
+                    disabled={decide.isPending}
+                    onClick={() => decide.mutate("deny")}
+                  >
+                    Deny
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={decide.isPending || !reply.trim()}
+                    onClick={() => decide.mutate("edit")}
+                  >
+                    Send edit
+                  </Button>
+                  <Button disabled={decide.isPending} onClick={() => decide.mutate("approve")}>
+                    Approve
+                  </Button>
+                </>
+              )}
             </div>
           )}
         </DialogFooter>

@@ -33,7 +33,11 @@ _MANIFEST_NAMES = (
 _PYTHON_MCP_ENTRIES = (
     "mcp_server.py",
     "server.py",
+    "main.py",
 )
+# Clone/upload directory names that say nothing about the real package —
+# a git clone always lands at ``.../repo`` regardless of what's inside.
+_GENERIC_PACK_DIR_NAMES = frozenset({"repo", "pack", "upload"})
 
 
 def install_mcp_source(kind: str, value: str, *, revision: str = "") -> list[str]:
@@ -328,12 +332,36 @@ def _upsert_file(
     raise ValueError(f"{path.name} must be an MCP server object or mcpServers map")
 
 
-def _inferred_mcp_id(root: Path, entry: str) -> str:
-    """Prefer a real pack/package name over temp upload directory names."""
+def _repo_name_from_origin(origin: str) -> str:
+    """Repo/package name from an origin label like ``git:https://host/owner/repo.git``."""
+    text = str(origin or "").strip()
+    if text.startswith("git:"):
+        text = text[4:]
+    text = text.rstrip("/")
+    if text.endswith(".git"):
+        text = text[: -len(".git")]
+    return text.rsplit("/", 1)[-1] if "/" in text else ""
+
+
+def _inferred_mcp_id(root: Path, entry: str, *, origin: str = "") -> str:
+    """Prefer a real pack/package name over temp clone/upload directory names.
+
+    A git clone always lands at ``.../repo`` (see ``_from_git``) and an
+    upload at ``peon-mcp-drop-<random>`` — neither says anything about the
+    actual package, so both fall through to ``origin`` (the git URL) or the
+    package/entry-name heuristics below.
+    """
     base = Path(root)
     name = base.name
-    if not name.startswith("peon-mcp-") and not name.startswith("tmp"):
+    if (
+        name not in _GENERIC_PACK_DIR_NAMES
+        and not name.startswith("peon-mcp-")
+        and not name.startswith("tmp")
+    ):
         return _slug_from_package(name)
+    repo_name = _repo_name_from_origin(origin)
+    if repo_name:
+        return _slug_from_package(repo_name)
     packages = [
         child.name
         for child in base.iterdir()
@@ -358,7 +386,7 @@ def _from_python_stdio_pack(
             break
     if not entry:
         return None
-    mcp_id = _inferred_mcp_id(root, entry)
+    mcp_id = _inferred_mcp_id(root, entry, origin=origin)
     files = _collect_text_tree(root)
     document = {
         "name": mcp_id,

@@ -167,8 +167,8 @@ Once a company Entra tenant ID is known, every found domain is checked via share
 
 Matches (issuer tenant == company tenant) are marked `matches_company_tenant` /
 `relationship_verified`. Reuses the same helper as `azure_tenant` and
-`tenant_domains` (no duplicated OIDC parsing). Cap: `LimitsConfig.entra_verify_max`
-(default 200). Skip with `--skip entra_verify`.
+`tenant_domains` (no duplicated OIDC parsing). No limit by default (an optional `max_domains` bounds work and is reported
+as `skipped_over_limit`). Skip with `--skip entra_verify`.
 
 ## Dangling / parked / unregistered (Entra)
 
@@ -184,7 +184,8 @@ registrable name). Flagged as dangling when Entra-verified **and** any of:
 | `unreachable` | DNS may work but HTTP dead |
 
 Results: `dangling_domains[]` with `kind`, plus `dangling_check.counts`.
-Cap: `LimitsConfig.dangling_max_domains` (default 200). Skip with `--skip dangling`.
+No limit by default; apex domains only — anything not probed is accounted for
+in `skipped` (`subdomains`, `over_limit`). Skip with `--skip dangling`.
 
 ## DNSLytics / GTM
 
@@ -263,10 +264,28 @@ Report includes `summary` and `summary_text`:
 }
 ```
 
+## Stage selection
+Run the full pipeline (no `skip` / `only`) unless the operator asked to narrow
+it or a stage is unavailable. `dangling` is passive DNS / RDAP / HTTP reachability
+checking of the **company's own Entra-verified apex domains**; it is the stage
+that produces dangling-domain findings, so skipping it removes that result.
+Read `stages` in the result: `failed` / `disabled` means those results are
+missing, not empty.
+
 ## Output rules
 
 Cite sources; never invent CIKs/tenants/ASNs/GTM IDs or subsidiary domains;
 separate confirmed vs candidate; no port scans.
+
+## Record what you find
+- After a pipeline run, check `errors` / `notes` and `entities`: a failed
+  plugin (e.g. `playwright unavailable`, `EDGAR match ambiguous`) means
+  subsidiary / brand discovery did **not** run — say so in your handoff and
+  retry with `--ticker` / `--cik` or an alternative source rather than
+  reporting an empty list as a result.
+- `record_findings` one row **per** dangling domain / verified domain /
+  entity (not a single "N domains" aggregate), so the board and the final
+  report can enumerate them.
 
 ## Agent paths
 
@@ -281,5 +300,5 @@ See [sources.md](sources.md) and [report-schema.md](report-schema.md).
 ## Collaboration & memory
 - Before repeating a method, tool, or target, `recall_memory`; `save_memory` for durable lessons a later agent would otherwise rediscover.
 - Report up: `send_message` findings, blockers, and scope changes to your parent / role agent — blockers and scope/RoE changes reach the governance PM.
-- Stream, don't hoard: as you discover something a waiting agent needs, `list_team` then `send_message` it (OBJ-n or role id) so it can start while you continue — batch per subject, do not wait for completion.
+- Stream, don't hoard: as you discover something a waiting agent needs, `list_team` then `send_message` it (to one agent, by its id) so it can start while you continue — batch per subject, do not wait for completion.
 - `check_inbox` between steps; when you can only wait on another agent's output, `go_idle` (never poll).

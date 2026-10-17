@@ -9,8 +9,10 @@ configured in ``docker-compose.yml`` (OpenRouter + ``LITELLM_MODEL``).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -85,14 +87,28 @@ class CogneeBackend(SharedServiceBase):
         session_id: str = "",
         self_improvement: bool = False,
         run_in_background: bool = True,
+        document_name: str = "",
     ) -> dict[str, Any]:
-        """Ingest text/JSON into Cognee (multipart ``remember``)."""
+        """Ingest text/JSON into Cognee (multipart ``remember``).
+
+        Cognee identifies a document by its filename within the dataset and
+        refuses to "update" one (HTTP 409), so distinct documents must carry
+        distinct names. ``document_name`` is explicit and stable (a record
+        that is rebuilt wholesale); by default the name is derived from the
+        content.
+        """
         if not self.enabled():
             return {"ok": False, "skipped": True, "reason": "disabled"}
         text = self._normalize_content(content)
         if not text.strip():
             return {"ok": False, "skipped": True, "reason": "empty"}
-        filename = "memory.json" if text.lstrip().startswith(("{", "[")) else "memory.txt"
+        ext = "json" if text.lstrip().startswith(("{", "[")) else "txt"
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "-", str(document_name or "").strip()).strip("-.")[:120]
+        if not stem:
+            # Content-addressed default: identical content re-adds idempotently,
+            # different content never collides on a shared name.
+            stem = "memory-" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+        filename = f"{stem}.{ext}"
         fields: dict[str, str] = {
             "datasetName": str(dataset_name or "peon").strip() or "peon",
             "run_in_background": "true" if run_in_background else "false",
@@ -121,21 +137,34 @@ class CogneeBackend(SharedServiceBase):
         datasets: list[str] | None = None,
         session_id: str = "",
         top_k: int = 8,
+        search_type: str = "CHUNKS",
     ) -> dict[str, Any]:
+        """Retrieve stored memory.
+
+        Defaults to ``CHUNKS``: the nearest stored documents, verbatim. A
+        completion search type lets the sidecar answer from the model's own
+        knowledge when the graph is thin, and Cognee caches that answer as a
+        Q&A session which a later ``improve`` persists back as "knowledge".
+        Request a completion type only for an explicit, operator-driven question.
+
+        The REST payload uses camelCase names (``searchType``, ``topK``,
+        ``sessionId``); snake_case names are ignored by the sidecar.
+        """
         if not self.enabled():
             return {"ok": False, "skipped": True, "results": [], "text": ""}
         q = (query or "").strip()
         if not q:
             return {"ok": True, "results": [], "text": ""}
+        kind = str(search_type or "CHUNKS").strip().upper()
         payload: dict[str, Any] = {
             "query": q,
             "datasets": list(datasets or ["peon"]),
-            "search_type": "GRAPH_COMPLETION",
-            "top_k": max(1, min(50, int(top_k or 8))),
+            "searchType": kind,
+            "topK": max(1, min(50, int(top_k or 8))),
         }
         sid = str(session_id or "").strip()
         if sid:
-            payload["session_id"] = sid
+            payload["sessionId"] = sid
         try:
             code, body = self._request("POST", "/api/v1/recall", json_body=payload)
             build_err = self._build_failed(body)
@@ -149,6 +178,8 @@ class CogneeBackend(SharedServiceBase):
                     "error": build_err,
                     "build_failed": True,
                 }
+            if isinstance(body, list) and kind == "CHUNKS":
+                body = [r for r in body if not self._is_session_artifact(r)]
             text = self._recall_text(body)
             return {
                 "ok": 200 <= code < 300,
@@ -224,6 +255,57 @@ class CogneeBackend(SharedServiceBase):
             results.append({"dataset": name, **row})
         ok = all(bool(r.get("ok")) for r in results)
         return {"ok": ok, "results": results, "count": len(results)}
+
+    def clear_dataset(self, name: str) -> int:
+        """Delete every document in dataset ``name`` (the dataset itself stays).
+
+        Used for datasets Peon fully owns and rebuilds from its own records.
+        Returns how many documents were removed.
+        """
+        if not self.enabled():
+            return 0
+        rows = self.datasets().get("datasets") or []
+        did = next(
+            (str(r.get("id")) for r in rows if isinstance(r, dict) and r.get("name") == name),
+            "",
+        )
+        if not did:
+            return 0
+        removed = 0
+        try:
+            code, body = self._request("GET", f"/api/v1/datasets/{did}/data")
+            items = body if isinstance(body, list) else []
+            for item in items:
+                data_id = str((item or {}).get("id") or "")
+                if not data_id:
+                    continue
+                code, _ = self._request("DELETE", f"/api/v1/datasets/{did}/data/{data_id}")
+                removed += 1 if 200 <= code < 300 else 0
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cognee clear_dataset(%s) failed: %s", name, exc)
+        return removed
+
+    def clear_all(self) -> dict[str, Any]:
+        """Delete every dataset (documents, graph and vectors) the sidecar holds."""
+        if not self.enabled():
+            return {"ok": False, "skipped": True, "reason": "disabled", "deleted": []}
+        rows = self.datasets().get("datasets") or []
+        deleted: list[str] = []
+        errors: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            name = str(row.get("name") or row["id"])
+            try:
+                code, _ = self._request("DELETE", f"/api/v1/datasets/{row['id']}")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{name}: {str(exc)[:120]}")
+                continue
+            if 200 <= code < 300:
+                deleted.append(name)
+            else:
+                errors.append(f"{name}: HTTP {code}")
+        return {"ok": not errors, "deleted": deleted, "errors": errors}
 
     def datasets(self) -> dict[str, Any]:
         if not self.enabled():
@@ -318,6 +400,12 @@ class CogneeBackend(SharedServiceBase):
         except Exception as exc:
             logger.warning("cognee cognify failed: %s", exc)
             return {"ok": False, "error": str(exc)[:400]}
+
+    @staticmethod
+    def _is_session_artifact(item: Any) -> bool:
+        """Cached chat Q&A (``Session ID: ... Question: ... Answer: ...``) is not memory."""
+        text = str(item.get("text") or "") if isinstance(item, dict) else ""
+        return text.lstrip().startswith("Session ID:") and "Question:" in text
 
     @staticmethod
     def _recall_text(body: Any) -> str:

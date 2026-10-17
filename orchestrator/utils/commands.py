@@ -197,10 +197,7 @@ def normalize_objective_commands(commands: list | str | None) -> list[str]:
     hints (``roe_status()``, …) are kept when they are not shell wrappers.
     ``bash("nmap …")`` forms are coerced to the inner shell CLI.
     """
-    if isinstance(commands, str):
-        items = [commands]
-    else:
-        items = list(commands or [])
+    items = [commands] if isinstance(commands, str) else list(commands or [])
     shells: list[str] = []
     hints: list[str] = []
     seen: set[str] = set()

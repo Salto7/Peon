@@ -12,12 +12,12 @@ from __future__ import annotations
 import asyncio
 import re
 import socket
-from typing import Any, Optional
+from typing import Any
 
 from ..http import AsyncHttpClient
-from .parking import detect_parking
 from ..plugin import Plugin
 from ..util import is_apex_domain, normalize_domain
+from .parking import detect_parking
 
 _TITLE_RE = re.compile(r"(?is)<title[^>]*>(.*?)</title>")
 
@@ -140,7 +140,7 @@ class DanglingCheck(Plugin):
         domain: str,
         *,
         entra_verified: bool = False,
-        tenant_id: Optional[str] = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         domain = normalize_domain(domain) or domain
         # Always DNS + HTTP: local resolver failures must not alone classify NXDOMAIN
@@ -198,10 +198,10 @@ class DanglingCheck(Plugin):
 
     async def run(
         self,
-        domains: Optional[list[str]] = None,
+        domains: list[str] | None = None,
         *,
-        entra_verified_domains: Optional[list[str]] = None,
-        tenant_id: Optional[str] = None,
+        entra_verified_domains: list[str] | None = None,
+        tenant_id: str | None = None,
         max_domains: int = 200,
         **kwargs: Any,
     ) -> dict[str, Any]:

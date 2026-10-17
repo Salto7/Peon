@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from django.db import transaction
@@ -17,6 +18,8 @@ from peon.projects.db import (
 from peon.projects.models import Job, JobStatus, Project, ProjectStatus
 from peon.projects.runtime_settings import PeonSettings
 from peon.projects.streaming import emit_job_stream
+
+logger = logging.getLogger(__name__)
 
 
 def emit(job: Job, message_type: str, content: str, **meta) -> None:
@@ -39,7 +42,16 @@ def mark_job_running(job: Job) -> Job | None:
             return None
         job = Job.objects.using(alias).get(pk=job.pk)
     if job.project_id:
-        refresh_project_kpis(job.project_id)
+        # Best-effort dashboard counters: the PENDING -> RUNNING transition just
+        # above already committed. A failure here (e.g. sqlite "database is
+        # locked" under concurrent writers) must never bubble up as if the claim
+        # itself failed — dramatiq would retry the message, and the retry's
+        # "already running" guard would then leave this job stuck forever with
+        # no actual work ever started. See finish_job's identical guard.
+        try:
+            refresh_project_kpis(job.project_id)
+        except Exception as exc:
+            logger.warning("refresh_project_kpis failed: %s", exc, exc_info=True)
     return job
 
 
@@ -53,22 +65,28 @@ def reclaim_stuck_jobs(*, older_than_seconds: int | None = None) -> int:
     cutoff = dj_tz.now() - timedelta(seconds=seconds)
     from peon.projects.job_run import finish_job
 
+    def _fail_stuck(jobs: list[Job]) -> int:
+        count = 0
+        for job in jobs:
+            err = (job.error or "").strip()
+            note = f"[reclaimed] stuck RUNNING > {seconds}s"
+            finish_job(
+                job,
+                status=JobStatus.FAILED,
+                error=(f"{err}\n{note}" if err else note)[:2000],
+            )
+            count += 1
+        return count
+
     n = 0
     # Platform orphan jobs
-    stuck = list(
-        Job.objects.using("default").filter(
-            status=JobStatus.RUNNING, updated_at__lt=cutoff, project_id__isnull=True
-        )[:50]
-    )
-    for job in stuck:
-        err = (job.error or "").strip()
-        note = f"[reclaimed] stuck RUNNING > {seconds}s"
-        finish_job(
-            job,
-            status=JobStatus.FAILED,
-            error=(f"{err}\n{note}" if err else note)[:2000],
+    n += _fail_stuck(
+        list(
+            Job.objects.using("default").filter(
+                status=JobStatus.RUNNING, updated_at__lt=cutoff, project_id__isnull=True
+            )[:50]
         )
-        n += 1
+    )
 
     for project_id, alias in iter_project_aliases():
         stuck = list(
@@ -77,15 +95,7 @@ def reclaim_stuck_jobs(*, older_than_seconds: int | None = None) -> int:
             )[:50]
         )
         with using_project(project_id):
-            for job in stuck:
-                err = (job.error or "").strip()
-                note = f"[reclaimed] stuck RUNNING > {seconds}s"
-                finish_job(
-                    job,
-                    status=JobStatus.FAILED,
-                    error=(f"{err}\n{note}" if err else note)[:2000],
-                )
-                n += 1
+            n += _fail_stuck(stuck)
     return n
 
 

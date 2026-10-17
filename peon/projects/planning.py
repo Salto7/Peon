@@ -21,6 +21,7 @@ from orchestrator.planning import (
     bookend_role_ids,
     parse_project_objectives,
 )
+from orchestrator.utils import llm_usage
 from orchestrator.utils.llm import chat_messages
 from peon.projects.models import (
     Job,
@@ -32,7 +33,11 @@ from peon.projects.models import (
     RulesOfEngagement,
     SandboxRuntime,
 )
-from peon.projects.objectives import ObjectivePlanSync, ObjectiveScheduler
+from peon.projects.objectives import (
+    ObjectivePlanSync,
+    ObjectiveScheduler,
+    latest_plan_text,
+)
 from peon.projects.roe_ops import provision_project_roe
 from peon.projects.target_shapes import (
     coerce_targets,
@@ -157,10 +162,7 @@ def draft_llm_plan(*,
             title = project.title or title
         if not summary:
             summary = project.summary or ""
-        prior_plan = (
-            project.jobs.order_by("-created_at").values_list("plan_text", flat=True).first()
-            or ""
-        )
+        prior_plan = latest_plan_text(project)
         if not prior_plan:
             try:
                 plan_path = (
@@ -207,7 +209,8 @@ def draft_llm_plan(*,
             prior_plan=prior_plan,
             existing_objectives_summary=existing_summary,
         )
-        raw = planner.message_text(chat_messages(msgs))
+        with llm_usage.purpose("planner_project"):
+            raw = planner.message_text(chat_messages(msgs))
         payload = parse_project_objectives(raw)
         plan_text = planner.format_result(raw, project_title=title)
         obj_roles = [
@@ -231,7 +234,8 @@ def draft_llm_plan(*,
 
     planner = JobPlanner()
     msgs = planner.build_messages(prompt)
-    plan_text = planner.format_result(planner.message_text(chat_messages(msgs)))
+    with llm_usage.purpose("planner_job"):
+        plan_text = planner.format_result(planner.message_text(chat_messages(msgs)))
     return PlanDraft(
         mode=mode_norm,
         plan_text=plan_text,

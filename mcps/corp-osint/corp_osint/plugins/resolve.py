@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import re
 from html.parser import HTMLParser
-from typing import Any, Optional
+from typing import Any
 
 from ..http import AsyncHttpClient
-from .parking import detect_parking
 from ..plugin import Plugin
+from .parking import detect_parking
 
 
 class _TitleDesc(HTMLParser):
@@ -20,7 +20,7 @@ class _TitleDesc(HTMLParser):
         self.text_bits: list[str] = []
         self._skip = False
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         ad = {k.lower(): (v or "") for k, v in attrs}
         if tag == "title":
             self._in_title = True
@@ -53,7 +53,7 @@ class DomainResolver(Plugin):
     @staticmethod
     def candidates(
         name: str,
-        parent_domain: Optional[str] = None,
+        parent_domain: str | None = None,
         *,
         allow_guess: bool = True,
     ) -> list[str]:
@@ -110,7 +110,7 @@ class DomainResolver(Plugin):
     async def run(
         self,
         name: str,
-        parent_domain: Optional[str] = None,
+        parent_domain: str | None = None,
         *,
         allow_guess: bool = True,
         **kwargs: Any,
@@ -170,7 +170,7 @@ class DomainResolver(Plugin):
         return {"domain": domain, "ok": False, "error": "unreachable"}
 
     @staticmethod
-    def _verify(name: str, site: dict[str, Any], parent_domain: Optional[str]) -> dict[str, Any]:
+    def _verify(name: str, site: dict[str, Any], parent_domain: str | None) -> dict[str, Any]:
         if not site.get("ok"):
             return {
                 "domain": site.get("domain"),

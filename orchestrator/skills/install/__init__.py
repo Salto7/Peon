@@ -5,7 +5,7 @@ from orchestrator.skills.install.dragdrop import (
     install_relative_files,
     install_zip,
 )
-from orchestrator.skills.install.openskills import install_openskills, pack_dirs
+from orchestrator.skills.install.openskills import install_openskills
 from orchestrator.skills.install.sources import install_skill_source
 
 __all__ = [
@@ -14,5 +14,4 @@ __all__ = [
     "install_relative_files",
     "install_skill_source",
     "install_zip",
-    "pack_dirs",
 ]

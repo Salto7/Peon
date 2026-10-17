@@ -2,9 +2,9 @@
 
 from .config import PipelineConfig
 from .log import get_logger, setup_logging
-from .plugins.pipeline import CorpOsintPipeline
 from .plugin import Plugin
 from .plugins import PLUGIN_REGISTRY, create_plugin, list_plugins
+from .plugins.pipeline import CorpOsintPipeline
 from .runtime import run_pipeline, run_plugin
 
 __all__ = [

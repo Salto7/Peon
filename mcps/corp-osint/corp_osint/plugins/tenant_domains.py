@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
-from .entra import GUID_RE, fetch_oidc, oidc_url
 from ..http import AsyncHttpClient
 from ..plugin import Plugin
 from ..util import normalize_domain
+from .entra import GUID_RE, fetch_oidc, oidc_url
 
 IDEFIX_LOOKUP = "https://func-idefix-tenantlookup.azurewebsites.net/api/lookup/{id}"
 IDEFIX_DOMAINS = "https://func-idefix-tenantlookup.azurewebsites.net/api/domains/{domain}"
@@ -138,15 +138,17 @@ class TenantDomainLookup(Plugin):
 
     async def run(
         self,
-        tenant_id: Optional[str] = None,
-        domain: Optional[str] = None,
-        max_domains: int = 200,
+        tenant_id: str | None = None,
+        domain: str | None = None,
+        max_domains: int | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         errors: list[str] = []
         info: dict[str, Any] = {}
         seed = domain
-        self.log.info("lookup tenant_id=%s domain=%s max=%d", tenant_id, domain, max_domains)
+        self.log.info(
+            "lookup tenant_id=%s domain=%s max=%s", tenant_id, domain, max_domains or "none"
+        )
 
         if tenant_id:
             info = await self.lookup_tenant(tenant_id)
@@ -181,7 +183,7 @@ class TenantDomainLookup(Plugin):
         if not probe and seed:
             probe = [seed.lower()]
 
-        for d in probe[:5]:
+        for d in probe:
             try:
                 for name in await self.fetch_domains_idefix(d):
                     known.add(name)
@@ -193,10 +195,11 @@ class TenantDomainLookup(Plugin):
             except Exception as e:  # noqa: BLE001
                 errors.append(f"autodiscover {d}: {e}")
 
-        domains_sorted = sorted(
+        domains_all = sorted(
             known,
             key=lambda x: (x.endswith(".onmicrosoft.com"), x.endswith(".mail.onmicrosoft.com"), x),
-        )[:max_domains]
+        )
+        domains_sorted = domains_all[:max_domains] if max_domains else domains_all
         self.log.info(
             "found tenant=%s display=%s domains=%d errors=%d",
             tenant_id,
@@ -223,6 +226,7 @@ class TenantDomainLookup(Plugin):
                 for d in domains_sorted
             ],
             "domain_count": len(domains_sorted),
+            "domains_found": len(domains_all),
             "sources": [SOURCE_UI],
             "errors": errors,
         }

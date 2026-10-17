@@ -18,6 +18,7 @@ Model (see also ``AgentMessage``):
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any, Iterable
 
@@ -87,6 +88,27 @@ def build_message(
     return msg.model_dump(mode="json", exclude_none=True, by_alias=True)
 
 
+def short_id(value: Any) -> str:
+    """First 8 hex chars of an agent (job) id — the form shown to people."""
+    return str(value or "").replace("-", "")[:8]
+
+
+def agent_label(job: Job | None, *, fallback: str = "system") -> str:
+    """``role (id8)`` for an agent; the fallback name for a non-agent sender."""
+    if job is None:
+        return fallback
+    role = ((job.role_ids or [""])[0] or job.title or "agent").strip()
+    return f"{role} ({short_id(job.pk)})"
+
+
+def sender_label_of(message: AgentMessage) -> str:
+    """Who sent a stored message, with the sender's agent id when it was an agent."""
+    job = message.from_job if message.from_job_id else None
+    if job is not None:
+        return agent_label(job)
+    return message.sender or "system"
+
+
 def render_messages(messages: Iterable[AgentMessage]) -> str:
     """Prompt block for an agent that is picking up (or resuming) work."""
     rows = list(messages)[:MAX_INBOX_RENDER]
@@ -100,8 +122,7 @@ def render_messages(messages: Iterable[AgentMessage]) -> str:
             AgentMessage.Kind.REPLY: "REPLY",
             AgentMessage.Kind.OPERATOR: "OPERATOR",
         }.get(m.kind, "MESSAGE")
-        sender = m.sender or "agent"
-        blocks.append(f"[{label} from {sender}]\n{m.text}")
+        blocks.append(f"[{label} from {sender_label_of(m)}]\n{m.text}")
     return (
         "## Messages from other agents\n"
         "You were woken (or resumed) with these messages. Act on them under "
@@ -240,6 +261,51 @@ def wake_job(job: Job, *, reason: str) -> bool:
 # ── send / receive ───────────────────────────────────────────────────────
 
 
+#: FAILED/CANCELLED are a genuine stop; a stray message must not resurrect them.
+#: COMPLETED is not final in the same sense — it means "had nothing left to do",
+#: and a new message is exactly a reason to pick back up (see Claude's agent
+#: model: sending to a finished agent resumes it from its transcript).
+_RESUMABLE_ON_MESSAGE = frozenset({JobStatus.COMPLETED})
+
+
+def resume_completed_job(job: Job) -> Job:
+    """Requeue a COMPLETED job from its checkpoint so a new message reaches it.
+
+    Reuses ``lifecycle.queue_job`` (objective reopen + project reconcile are
+    already solved there) and asks for the prior checkpoint explicitly, so the
+    agent resumes with its earlier context instead of starting cold.
+    """
+    from peon.projects import lifecycle
+    from peon.projects.db import using_project
+
+    alias = _alias(job.project_id)
+    with using_project(job.project_id):
+        job.resume_from_checkpoint = True
+        job.save(using=alias, update_fields=["resume_from_checkpoint"])
+    return lifecycle.queue_job(job)
+
+
+def _messages_between(from_job: Job, to_job: Job, alias: str) -> int:
+    return (
+        AgentMessage.objects.using(alias)
+        .filter(from_job=from_job, to_job=to_job)
+        .count()
+    )
+
+
+def _message_cap_exceeded(from_job: Job, to_job: Job, alias: str) -> int | None:
+    """The configured cap, if this pair has reached it; else None (no guard, or room left)."""
+    try:
+        from peon.projects.runtime_settings import PeonSettings
+
+        cap = PeonSettings.get_int("A2A_MAX_MESSAGES_PER_PAIR", 40)
+    except Exception:  # noqa: BLE001
+        cap = 40
+    if cap <= 0:
+        return None
+    return cap if _messages_between(from_job, to_job, alias) >= cap else None
+
+
 def send_message(
     project: Project,
     *,
@@ -250,15 +316,17 @@ def send_message(
     kind: str = AgentMessage.Kind.INFORM,
     data: dict[str, Any] | None = None,
     wake: bool = True,
+    reply_to: AgentMessage | None = None,
 ) -> AgentMessage:
-    """Deliver an A2A message to ``to_job`` and wake it if it is idle."""
+    """Deliver an A2A message to ``to_job``; wake or resume it as needed."""
     body = (text or "").strip()
     if not body:
         raise ValueError("Message text is required")
-    if to_job.status in TERMINAL_JOB_STATUSES:
+    resurrecting = to_job.status in TERMINAL_JOB_STATUSES
+    if resurrecting and to_job.status not in _RESUMABLE_ON_MESSAGE:
         raise ValueError(
-            f"Agent {to_job.title!r} has finished ({to_job.status}); "
-            "spawn new work instead of messaging it."
+            f"Agent {to_job.title!r} {to_job.status} with an error and cannot be "
+            "resumed by messaging it; spawn new work instead."
         )
     if from_job is not None and from_job.pk == to_job.pk:
         raise ValueError("An agent cannot message itself")
@@ -269,6 +337,19 @@ def send_message(
         or (((from_job.role_ids or [""])[0] if from_job else "") or "")
         or "system"
     )
+    alias = _alias(project.pk)
+    if from_job is not None:
+        cap = _message_cap_exceeded(from_job, to_job, alias)
+        if cap is not None:
+            raise ValueError(
+                f"message cap reached ({cap}) between these two agents — this "
+                "looks like a loop; stop messaging and finish your turn, or "
+                "escalate via go_idle/the governance PM instead"
+            )
+    if reply_to is not None and (
+        reply_to.to_job_id != (from_job.pk if from_job else None)
+    ):
+        raise ValueError("reply_to must be a message you received")
     ctx = str(to_job.objective_id or project.pk)
     msg = build_message(
         body,
@@ -280,9 +361,9 @@ def send_message(
         metadata={
             "from_job_id": str(from_job.pk) if from_job else "",
             "sender": sender_label,
+            "reply_to": str(reply_to.pk) if reply_to else "",
         },
     )
-    alias = _alias(project.pk)
     row = AgentMessage.objects.using(alias).create(
         project=project,
         objective=to_job.objective,
@@ -291,20 +372,30 @@ def send_message(
         sender=sender_label[:96],
         kind=kind,
         message=msg,
+        reply_to=reply_to,
     )
-    to_label = ((to_job.role_ids or [""])[0] or to_job.title or "agent").strip()
+    # Every message is directed at exactly one agent; show both ends by id.
+    from_text = agent_label(from_job, fallback=sender_label)
+    to_text = agent_label(to_job)
     _emit(
         to_job,
         "log",
-        f"{sender_label} → {to_label} [{kind}]: {body[:400]}",
+        f"{from_text} → {to_text} [{kind}]: {body[:400]}",
         tag="a2a",
         event="a2a_message",
         a2a_kind=str(kind),
         a2a_from=sender_label,
-        a2a_to=to_label,
+        a2a_to=to_text,
+        a2a_from_id=str(from_job.pk) if from_job else "",
+        a2a_to_id=str(to_job.pk),
         from_job_id=str(from_job.pk) if from_job else "",
         to_job_id=str(to_job.pk),
     )
+    if resurrecting:
+        # A COMPLETED agent has no IDLE state to wake from; requeue it from its
+        # checkpoint so this message is waiting in its inbox when it starts.
+        resume_completed_job(to_job)
+        return row
     if not wake:
         # Coalescing backstop: wake=False messages (interim handoffs, fan-out
         # informs) accumulate cost-free, but once enough pile up on an idle
@@ -336,6 +427,43 @@ def _interim_backstop_reached(to_job: Job, alias: str) -> bool:
         .count()
     )
     return unread_n >= threshold
+
+
+def sent_message_status(from_job: Job, *, limit: int = 10) -> list[dict[str, Any]]:
+    """Delivery/read state of this agent's own recent sends — the sender's feedback.
+
+    A row exists the instant ``send_message`` returns (delivery is certain: the
+    recipient is a live agent in this project, or was just resurrected). What a
+    sender cannot see without asking is whether it has been *read* yet
+    (``delivered_at`` is set once the recipient's inbox actually drains it) and
+    whether a reply has come back.
+    """
+    alias = _alias(from_job.project_id)
+    rows = (
+        AgentMessage.objects.using(alias)
+        .filter(from_job=from_job)
+        .select_related("to_job")
+        .order_by("-created_at")[: max(1, min(50, limit))]
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        reply = (
+            AgentMessage.objects.using(alias)
+            .filter(reply_to=row)
+            .order_by("created_at")
+            .first()
+        )
+        out.append(
+            {
+                "message_id": str(row.pk),
+                "to": agent_label(row.to_job),
+                "sent_at": row.created_at,
+                "read": row.delivered_at is not None,
+                "replied": reply is not None,
+                "reply_text": reply.text[:300] if reply else "",
+            }
+        )
+    return out
 
 
 def unread(job: Job) -> list[AgentMessage]:
@@ -591,6 +719,20 @@ def notify_governor(
     )
 
 
+def try_notify_governor(
+    project: Project,
+    *,
+    text: str,
+    from_job: Job | None = None,
+    escalate: bool = False,
+) -> None:
+    """Best-effort :func:`notify_governor` — governance must never break the caller."""
+    try:
+        notify_governor(project, text=text, from_job=from_job, escalate=escalate)
+    except Exception:
+        logger.debug("governor notify failed", exc_info=True)
+
+
 def repark_governor(job: Job) -> Job:
     """Re-park the governance PM IDLE after a turn; re-wake if mail arrived."""
     park_idle(job, reason="governance", note="governing engagement", checkpoint=True)
@@ -653,47 +795,50 @@ def sweep_orphan_standby(project: Project) -> int:
 def resolve_recipient(
     project: Project, spec: str, *, sender: Job | None = None
 ) -> tuple[Job | None, str]:
-    """Find the live agent a message is for.
+    """Find the one agent a message is addressed to.
 
-    ``spec`` is a job id, ``OBJ-<seq>`` / ``<seq>``, or a role id. Returns
-    ``(job, "")`` or ``(None, reason)`` (reason lists candidates when ambiguous).
+    Messages are directed, never broadcast: ``spec`` must be an agent id — the
+    full id or a unique prefix of at least 8 characters, as shown by
+    ``list_team``. A role id or objective names a *group*, so it is never
+    delivered; the reason lists the matching agents' ids instead.
     """
-    text = (spec or "").strip()
+    text = (spec or "").strip().lower()
     if not text:
-        return None, "recipient is required (job id, OBJ-n or role id)"
+        return None, "recipient is required: the agent id from list_team"
     alias = _alias(project.pk)
-    live = Job.objects.using(alias).filter(project_id=project.pk).exclude(
-        status__in=TERMINAL_JOB_STATUSES
+    agents = list(Job.objects.using(alias).filter(project_id=project.pk).select_related("objective"))
+
+    compact = text.replace("-", "")
+    if re.fullmatch(r"[0-9a-f]{8,32}", compact):
+        hits = [j for j in agents if str(j.pk).replace("-", "").startswith(compact)]
+        if len(hits) == 1:
+            return hits[0], ""
+        if not hits:
+            return None, f"no agent with id {text} on this project"
+        listing = "; ".join(f"{j.pk} ({agent_label(j)})" for j in hits[:6])
+        return None, f"id prefix {text!r} matches several agents — use more characters: {listing}"
+
+    live = [
+        j
+        for j in agents
+        if j.status not in TERMINAL_JOB_STATUSES and (sender is None or j.pk != sender.pk)
+    ]
+    token = text.removeprefix("obj-").removeprefix("obj")
+    matches = [
+        j
+        for j in live
+        if text in [str(r).lower() for r in (j.role_ids or [])]
+        or (token.isdigit() and j.objective_id and j.objective is not None and j.objective.seq == int(token))
+    ]
+    hint = (
+        " Matching agents: " + "; ".join(f"{j.pk} ({agent_label(j)})" for j in matches[:6])
+        if matches
+        else ""
     )
-    if sender is not None:
-        live = live.exclude(pk=sender.pk)
-
-    try:
-        jid = uuid.UUID(text)
-    except ValueError:
-        jid = None
-    if jid is not None:
-        job = Job.objects.using(alias).filter(project_id=project.pk, pk=jid).first()
-        if job is None:
-            return None, f"no agent {text} on this project"
-        return job, ""
-
-    token = text.upper().removeprefix("OBJ-").removeprefix("OBJ")
-    if token.strip().isdigit():
-        seq = int(token)
-        cands = list(live.filter(objective__seq=seq, parent__isnull=True))
-        if not cands:
-            return None, f"no live agent on OBJ-{seq}"
-        return cands[0], ""
-
-    role = text.lower()
-    cands = [j for j in live if role in [str(r).lower() for r in (j.role_ids or [])]]
-    if len(cands) == 1:
-        return cands[0], ""
-    if not cands:
-        return None, f"no live agent with role {text!r}"
-    listing = "; ".join(f"{j.pk} (OBJ-{getattr(j.objective, 'seq', '?')})" for j in cands[:6])
-    return None, f"role {text!r} matches several agents — address one by id: {listing}"
+    return None, (
+        f"{spec!r} is not an agent id — messages go to one agent, addressed by its id "
+        f"(see list_team).{hint}"
+    )
 
 
 def team_listing(project: Project, *, viewer: Job | None = None) -> str:
@@ -701,17 +846,20 @@ def team_listing(project: Project, *, viewer: Job | None = None) -> str:
     alias = _alias(project.pk)
     jobs = (
         Job.objects.using(alias)
-        .filter(project_id=project.pk, parent__isnull=True)
+        .filter(project_id=project.pk)
+        .exclude(status__in=TERMINAL_JOB_STATUSES)
         .select_related("objective")
-        .order_by("objective__seq", "created_at")[:60]
+        .order_by("objective__seq", "created_at")[:80]
     )
     lines = []
     for j in jobs:
         me = " (you)" if viewer is not None and j.pk == viewer.pk else ""
         seq = f"OBJ-{j.objective.seq}" if j.objective_id and j.objective else "-"
+        parent = f" parent={short_id(j.parent_id)}" if j.parent_id else ""
         wait = f" — waiting: {j.idle_note}" if j.status == JobStatus.IDLE and j.idle_note else ""
         lines.append(
-            f"{j.pk} {seq} role={','.join(j.role_ids or []) or '-'} "
+            f"id={j.pk} {seq} role={','.join(j.role_ids or []) or '-'}{parent} "
             f"state={a2a_state(j.status)} [{j.status}]{me}{wait}"
         )
-    return "\n".join(lines) or "No agents on this project yet."
+    header = "Address a message to ONE agent by its id (full id, or its first 8 characters):"
+    return header + "\n" + "\n".join(lines) if lines else "No live agents on this project."

@@ -63,6 +63,25 @@ STREAM_BOOTSTRAP_LIMIT = 120
 STREAM_POLL_LIMIT = 200
 HOME_PROJECT_LIMIT = 40
 HOME_ALERT_LIMIT = 12
+ALERTS_CLEARED_KEY = "alerts_cleared_at"
+
+
+def _alerts_cleared_at(request: HttpRequest):
+    """When the operator last cleared the home alerts (None = never)."""
+    from django.utils.dateparse import parse_datetime
+
+    raw = request.session.get(ALERTS_CLEARED_KEY)
+    return parse_datetime(raw) if raw else None
+
+
+@require_http_methods(["POST"])
+def alerts_clear(request: HttpRequest) -> HttpResponse:
+    """Dismiss every alert currently shown on the home page."""
+    from django.utils import timezone
+
+    request.session[ALERTS_CLEARED_KEY] = timezone.now().isoformat()
+    messages.success(request, "Alerts cleared")
+    return redirect("home")
 
 
 @require_GET
@@ -96,23 +115,30 @@ def home(request: HttpRequest) -> HttpResponse:
     failed_jobs = int(agg.get("failed") or 0)
     failed_recent = []
     stream_errors = []
+    cleared_at = _alerts_cleared_at(request)
     for pid, alias in iter_project_aliases():
         if len(failed_recent) < HOME_ALERT_LIMIT:
-            for job in (
+            failed_qs = (
                 Job.objects.using(alias)
                 .filter(status=JobStatus.FAILED)
                 .exclude(error="")
-                .order_by("-updated_at")[: HOME_ALERT_LIMIT - len(failed_recent)]
-            ):
+            )
+            if cleared_at:
+                failed_qs = failed_qs.filter(updated_at__gt=cleared_at)
+            for job in failed_qs.order_by("-updated_at")[
+                : HOME_ALERT_LIMIT - len(failed_recent)
+            ]:
                 job.project = Project.objects.filter(pk=pid).first()
                 failed_recent.append(job)
         if len(stream_errors) < HOME_ALERT_LIMIT:
-            for msg in (
-                StreamMessage.objects.using(alias)
-                .filter(message_type=StreamMessageType.ERROR)
-                .select_related("job")
-                .order_by("-created_at")[: HOME_ALERT_LIMIT - len(stream_errors)]
-            ):
+            err_qs = StreamMessage.objects.using(alias).filter(
+                message_type=StreamMessageType.ERROR
+            )
+            if cleared_at:
+                err_qs = err_qs.filter(created_at__gt=cleared_at)
+            for msg in err_qs.select_related("job").order_by("-created_at")[
+                : HOME_ALERT_LIMIT - len(stream_errors)
+            ]:
                 stream_errors.append(msg)
     notices: list[str] = []
     if not llm_configured():

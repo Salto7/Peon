@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-from orchestrator.skills.common import SKILL_NAME_RE
+from orchestrator.skills.common import SKILL_NAME_RE, render_prompt_block
 from orchestrator.utils.paths import normalize_rel_path, safe_join
 
 PEON_PROVIDER = "peon"
@@ -59,6 +59,8 @@ class SkillSetup:
     kind: str
     cwd: str = "."
     manifest: str = ""
+    # One-off commands run after the dependency install (declared by the skill).
+    post: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,13 +136,9 @@ class SkillDocument:
         return ""
 
     def prompt_block(self, *, body_limit: int = 8000) -> str:
-        body = (self.instructions or "").strip()
-        if len(body) > body_limit:
-            body = body[:body_limit].rstrip() + "\n…"
-        head = f"### Skill `{self.id}`"
-        if self.description:
-            head = f"{head}\n{self.description.strip()}"
-        return f"{head}\n\n{body}".strip() if body else head
+        return render_prompt_block(
+            self.id, self.description, self.instructions, body_limit=body_limit
+        )
 
 
 class SkillProvider(ABC):

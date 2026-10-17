@@ -27,6 +27,9 @@ PLATFORM_ONLY_MODEL_NAMES = frozenset(
         "CatalogFile",
         "CatalogBinding",
         "CatalogMcp",
+        "LlmCallLog",
+        "CatalogProposal",
+        "CatalogMarketplaceSource",
     }
 )
 

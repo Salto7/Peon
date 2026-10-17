@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Type
+from typing import TYPE_CHECKING
 
 from ..plugin import Plugin
 from .asn import AsnLookup
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 # Registry: plugin name → class (used by the orchestrator + CLI)
 # CorpOsintPipeline is imported lazily via create_plugin / public API to avoid cycles.
-PLUGIN_REGISTRY: dict[str, Type[Plugin]] = {
+PLUGIN_REGISTRY: dict[str, type[Plugin]] = {
     EdgarLookup.name: EdgarLookup,
     DomainResolver.name: DomainResolver,
     UrlscanLookup.name: UrlscanLookup,
@@ -39,8 +39,8 @@ PLUGIN_REGISTRY: dict[str, Type[Plugin]] = {
 
 def create_plugin(
     name: str,
-    http: "AsyncHttpClient",
-    config: "PipelineConfig | None" = None,
+    http: AsyncHttpClient,
+    config: PipelineConfig | None = None,
     **kwargs,
 ) -> Plugin:
     """Instantiate a registered plugin by name."""

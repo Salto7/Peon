@@ -85,13 +85,21 @@ SPECS: dict[str, _S] = {
     _S('REDIS_URL', 'str', 'redis://redis:6379/0', 'queue', 'Redis URL', 'Dramatiq broker URL. Requires Peon restart.', restart=True),
     _S('DURABLE_SCHEDULER_ENABLED', 'bool', 1, 'queue', 'Durable scheduler enabled', 'Fire due ProjectSchedule rows via Dramatiq.'),
     _S('DURABLE_SCHEDULER_INTERVAL_MS', 'int', 60000, 'queue', 'Durable scheduler interval (ms)', 'Delay between due-scan passes. Requires Peon restart to re-arm cadence.', lo=15000, hi=3600000, restart=True),
+    # authoring
+    _S('AUTHORING_TOOLS_SKILL', 'str', 'tools-suggestor', 'agent', 'Authoring: tool-recipe skill', 'Catalog skill id whose prompt drafts tool-catalog recipes (Learn).'),
+    _S('AUTHORING_SKILL_WRITER', 'str', 'skill-writer', 'agent', 'Authoring: skill-writer skill', 'Catalog skill id whose prompt drafts new skills (Learn).'),
     # agent
     _S('AGENT_MODULE', 'choice', 'crewai', 'agent', 'Agent module', 'Orchestration module (crewai). Requires Peon restart.', choices=('crewai',), restart=True),
     _S('AGENT_MAX_FAILURE_REPLANS', 'int', 2, 'agent', 'Agent failure replans', 'PM recovery replans allowed after failed specialist objective jobs.', lo=0, hi=20),
     _S('AGENT_MAX_ITERATIONS', 'int', 40, 'agent', 'Agent max iterations', 'Hard cap on CrewAI max_iter per Job (roles may set a lower value).', lo=1, hi=500),
     _S('AGENT_MAX_SUBAGENTS', 'int', 8, 'agent', 'Agent max subagents', 'Max concurrent child Jobs via spawn_work.', lo=0, hi=32),
+    _S('AGENT_DISPATCH_ONLY', 'bool', True, 'agent', 'Specialists dispatch, workers execute', 'A specialist role job (no parent) cannot run commands itself: it must spawn_work a skill-bound worker, which executes. Turn off to let specialists run tools directly.'),
     _S('AGENT_MAX_SUBAGENT_DEPTH', 'int', 2, 'agent', 'Agent max subagent depth', 'Max Job parent→child depth (2 = root + one level).', lo=1, hi=8),
     _S('AGENT_RUNTIME_ENABLED', 'bool', 1, 'agent', 'Agent runtime enabled', 'Emergency kill switch for CrewAI job / project agents.'),
+    # a2a
+    _S('A2A_INTERIM_WAKE_UNREAD', 'int', 3, 'a2a', 'A2A interim wake threshold', 'Unread wake=False messages piled on an idle agent before it is woken anyway.', lo=1, hi=50),
+    _S('A2A_MAX_MESSAGES_PER_PAIR', 'int', 40, 'a2a', 'A2A max messages per pair', 'Cap on messages one agent may send another within a project — guards against ping-pong loops. 0 disables the guard.', lo=0, hi=1000),
+    _S('A2A_MAX_RECIPIENTS', 'int', 5, 'a2a', 'A2A max recipients per send', 'Max agents one send_message call may address at once (comma-separated ids).', lo=1, hi=20),
     # crew
     _S('CREW_REASONING_EFFORT', 'choice', 'low', 'crew', 'CrewAI reasoning effort', 'When RoleSpec.reasoning is true — PlanningConfig effort (low/medium/high).', choices=('low', 'medium', 'high')),
     _S('CREW_REASONING_MAX_ATTEMPTS', 'int', 1, 'crew', 'CrewAI reasoning max attempts', 'When RoleSpec.reasoning is true — max planning refine attempts.', lo=1, hi=5),

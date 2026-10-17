@@ -132,17 +132,14 @@ def _escalate_scope_change(roe: RulesOfEngagement, added: list[dict[str, str]]) 
     project = getattr(roe, "project", None)
     if project is None:
         return
-    try:
-        from peon.projects import a2a
+    from peon.projects import a2a
 
-        vals = ", ".join(t.get("value", "") for t in added if t.get("value"))[:300]
-        a2a.notify_governor(
-            project,
-            text=f"Scope changed: {len(added)} target(s) now in RoE in_scope: {vals}",
-            escalate=True,
-        )
-    except Exception:
-        logger.debug("governor scope-escalate failed", exc_info=True)
+    vals = ", ".join(t.get("value", "") for t in added if t.get("value"))[:300]
+    a2a.try_notify_governor(
+        project,
+        text=f"Scope changed: {len(added)} target(s) now in RoE in_scope: {vals}",
+        escalate=True,
+    )
 
 
 def promote_candidates(

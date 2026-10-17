@@ -13,7 +13,7 @@ from ..log import get_logger
 from ..plugin import Plugin
 from ..report import finalize_report
 from ..summary import _is_junk_entity_name
-from ..util import normalize_domain
+from ..util import apex_domain, is_apex_domain, normalize_domain
 from . import create_plugin
 from .entra import clear_oidc_cache
 
@@ -127,6 +127,13 @@ class CorpOsintPipeline(Plugin):
         dom = normalize_domain(domain)
         if not dom:
             return
+        if not is_apex_domain(dom):
+            # Collapse hostnames (e.g. GTM-reverse or OIDC hits on a subdomain)
+            # down to their registrable apex — a subdomain is not a new company
+            # domain, and urlscan/web_search already apex-collapse their own
+            # hits. Without this, dnslytics_gtm and the entra OIDC-verify stage
+            # (neither of which apex-filters) leak raw hostnames into results.
+            dom = apex_domain(dom) or dom
         if dom not in order:
             order.append(dom)
         prev = meta.get(dom)
@@ -145,6 +152,17 @@ class CorpOsintPipeline(Plugin):
                 prev["evidence"] = (prev.get("evidence") or "") + "; parking page"
 
     async def run(self, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return await self._run()
+        finally:
+            # Always release browsers, even when a stage raised unexpectedly.
+            for plug in self.plugins.values():
+                try:
+                    await plug.close()
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("plugin close failed: %s", exc)
+
+    async def _run(self) -> dict[str, Any]:
         cfg = self.config
         assert cfg is not None
         errors: list[str] = []
@@ -561,7 +579,7 @@ class CorpOsintPipeline(Plugin):
                     "dangling_entra": False,
                     "dangling_entra_detail": None,
                 }
-                for k, part in zip(keys, parts):
+                for k, part in zip(keys, parts, strict=True):
                     if isinstance(part, Exception):
                         errors.append(f"{k}:{dom}: {part}")
                         continue
@@ -832,11 +850,6 @@ class CorpOsintPipeline(Plugin):
             else:
                 notes.append("dangling parked/Entra check skipped")
                 log.info("stage dangling_check skipped")
-
-            # cleanup plugins (browsers, etc.)
-            log.debug("closing plugins")
-            for plug in self.plugins.values():
-                await plug.close()
 
         entities_out = [
             e

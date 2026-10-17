@@ -275,6 +275,10 @@ def _dataset(project: Project | None) -> str:
 
 
 def _mirror(entry: MemoryEntry, project: Project | None) -> None:
+    if project is None:
+        # The platform dataset is rebuilt as a whole by ``sync_platform_dataset``
+        # (idempotent; no stale versions of an edited note linger).
+        return
     try:
         from orchestrator.crew.cognee_backend import CogneeBackend
         from orchestrator.crew.memory import memory_enabled
@@ -302,7 +306,42 @@ def _mirror(entry: MemoryEntry, project: Project | None) -> None:
         logger.debug("memory mirror failed", exc_info=True)
 
 
+def sync_platform_dataset() -> dict[str, Any]:
+    """Rebuild the platform ``peon`` Cognee dataset from the platform memory entries.
+
+    Peon's memory table is the source of truth; Cognee is a retrieval index over
+    it. A full, idempotent rebuild keeps the index exactly equal to the records
+    (edits replace, retired notes disappear) and is independent of any session
+    cache state in the sidecar.
+    """
+    from orchestrator.crew.cognee_backend import CogneeBackend
+    from orchestrator.crew.memory import memory_enabled, peon_memory_enabled
+
+    if not (memory_enabled() and peon_memory_enabled()):
+        return {"ok": False, "skipped": True}
+    backend = CogneeBackend.shared()
+    entries = [e for e in _scope_qs(None)]
+    removed = backend.clear_dataset("peon")
+    sent = 0
+    for e in entries:
+        text = (
+            f"# {e.name} ({e.kind})\n{e.description}\n\n{(e.body or '').strip()}"
+        ).strip()
+        result = backend.remember(
+            text,
+            dataset_name="peon",
+            session_id="",
+            self_improvement=False,
+            run_in_background=True,
+            document_name=e.name,
+        )
+        sent += 1 if result.get("ok") else 0
+    return {"ok": True, "removed": removed, "entries": len(entries), "sent": sent}
+
+
 def _mirror_tombstone(project: Project | None, slug: str) -> None:
+    if project is None:
+        return  # platform dataset is rebuilt from the table; retired notes just drop out
     try:
         from orchestrator.crew.cognee_backend import CogneeBackend
         from orchestrator.crew.memory import memory_enabled
@@ -426,7 +465,15 @@ def index_block(project: Project, *, role_id: str = "", manager: bool = False) -
         for e in _scope_qs(None)
         if not role_id or not e.role_id or e.role_id == role_id
     ]
-    plat.sort(key=lambda e: (e.role_id != role_id, -e.recall_count, -e.updated_at.timestamp()))
+    # Consolidated playbooks outrank raw per-run gists in the index.
+    plat.sort(
+        key=lambda e: (
+            not e.name.startswith("playbook-"),
+            e.role_id != role_id,
+            -e.recall_count,
+            -e.updated_at.timestamp(),
+        )
+    )
     lines = [
         "## Memory",
         "Notes carried over from earlier work (point-in-time — verify before "

@@ -44,6 +44,11 @@ def _document_from_record(rec) -> SkillDocument:
             kind=str(setup_raw.get("kind") or ""),
             cwd=str(setup_raw.get("cwd") or "."),
             manifest=str(setup_raw.get("manifest") or ""),
+            post=tuple(
+                str(c).strip()
+                for c in (setup_raw.get("post") or ())
+                if str(c).strip()
+            ),
         )
     role_ids = tuple(
         b.role_id for b in (rec.bindings or ()) if float(b.score) >= 0.5
@@ -259,9 +264,8 @@ class SkillRegistry(SharedServiceBase):
         if doc is None:
             return None
         role = (role_id or "").strip().lower()
-        if doc.provider == PEON_PROVIDER:
-            if not role:
-                return doc
+        if doc.provider == PEON_PROVIDER and not role:
+            return doc
         if not role or role not in doc.role_ids:
             return None
         return doc

@@ -26,9 +26,9 @@
 
     <aside id="app-sidebar" aria-label="Main"
            class="fixed inset-y-0 left-0 z-[var(--z-modal)] flex w-[var(--sidebar-width)] -translate-x-full flex-col border-r border-sidebar-border bg-sidebar transition-[transform,width] duration-150 sidebar-open:translate-x-0 md:sticky md:top-0 md:h-dvh md:translate-x-0 sidebar-collapsed:md:w-[var(--sidebar-width-collapsed)]">
-      <div class="flex h-14 items-center gap-2 px-3 sidebar-collapsed:md:justify-center sidebar-collapsed:md:px-0">
+      <div class="flex h-16 items-center gap-2 px-3 sidebar-collapsed:md:justify-center sidebar-collapsed:md:px-0">
         <a href="{% url 'home' %}" class="flex min-w-0 items-center gap-2 rounded-md" title="Home">
-          <img src="{% static 'img/favicon.png' %}" width="28" height="28" alt="" class="size-7 rounded-md [image-rendering:pixelated]">
+          <img src="{% static 'img/peon-mark.gif' %}" width="40" height="40" alt="" class="size-10 shrink-0 [image-rendering:pixelated]">
           <span class="truncate text-sm font-semibold tracking-tight sidebar-collapsed:md:sr-only">Peon</span>
         </a>
         <c-button variant="ghost" size="icon-sm" class="ml-auto md:hidden" data-sidebar-dismiss aria-label="Close menu">{% icon "x" %}</c-button>

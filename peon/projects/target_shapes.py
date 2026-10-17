@@ -180,27 +180,6 @@ def url_host(raw: str) -> str:
         return ""
 
 
-# Public OSINT / identity lookup hosts — research APIs, not engagement targets.
-_PASSIVE_REFERENCE_HOSTS = frozenset(
-    {
-        "login.microsoftonline.com",
-        "rdap.org",
-        "www.rdap.org",
-        "sec.gov",
-        "www.sec.gov",
-        "data.sec.gov",
-        "efts.sec.gov",
-        "urlscan.io",
-        "www.urlscan.io",
-        "search.dnslytics.com",
-        "api.dnslytics.net",
-        "idefixtools.com",
-        "www.idefixtools.com",
-        "func-idefix-tenantlookup.azurewebsites.net",
-    }
-)
-
-
 def hostname_of(value: str) -> str:
     """Hostname from a URL or bare host string."""
     raw = (value or "").strip()
@@ -211,13 +190,19 @@ def hostname_of(value: str) -> str:
 
 
 def is_passive_reference_host(host: str) -> bool:
-    """True for well-known passive OSINT / Entra / RDAP reference hosts."""
+    """True for hosts an MCP server declares as reference infrastructure.
+
+    Research APIs / registries a tool *queries* are provenance, not engagement
+    targets. Which hosts those are is declared by each server's manifest
+    (``reference_hosts``); the platform does not enumerate them.
+    """
     h = (host or "").strip().lower().rstrip(".")
     if not h:
         return False
-    if h in _PASSIVE_REFERENCE_HOSTS:
-        return True
-    return any(h.endswith("." + ref) for ref in _PASSIVE_REFERENCE_HOSTS)
+    from peon.projects.platform_catalog import PlatformCatalog
+
+    refs = PlatformCatalog.shared().reference_hosts()
+    return h in refs or any(h.endswith("." + ref) for ref in refs)
 
 
 @dataclass(frozen=True)

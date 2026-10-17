@@ -114,7 +114,17 @@
     const wrap = $("dream-query-wrap");
     if (wrap) wrap.hidden = mode !== "recall";
     const btn = $("dream-action-btn");
-    if (btn) btn.textContent = mode === "recall" ? "Recall" : "Improve";
+    if (btn) btn.textContent = mode === "recall" ? "Recall" : "Run Cognee maintenance";
+    const help = $("dream-mode-help");
+    if (help) {
+      help.textContent =
+        mode === "recall"
+          ? "Recall searches Cognee's memory; nothing changes."
+          : "Triggers Cognee's own internal self-improvement pass on the dataset " +
+            "(consolidation inside Cognee itself). This is not Peon's gist/playbook " +
+            "curation and does not touch the roles/skills catalog — review those on " +
+            "the Catalog page instead.";
+    }
     fillSessions();
   }
 
@@ -157,6 +167,48 @@
     Promise.all([refreshStatus(), refreshCatalog()]).catch(console.error);
   });
 
+  $("dream-improvements")?.addEventListener("click", () => {
+    const btn = $("dream-improvements");
+    const section = $("dream-summary");
+    const body = $("dream-summary-body");
+    const meta = $("dream-summary-meta");
+    if (btn) btn.disabled = true;
+    if (section) section.hidden = false;
+    if (body) body.textContent = "Reading Cognee memory…";
+    if (meta) meta.textContent = "From Cognee platform memory. Nothing is changed.";
+    postJson(urls.improvements, {})
+      .then((data) => {
+        if (body) {
+          body.textContent = data.text || data.error || "No summary.";
+        }
+        if (meta) {
+          const n = Number(data.sources);
+          const matched = Number(data.matched);
+          let line = "From Cognee platform memory. Nothing is changed.";
+          if (data.ok && Number.isFinite(n)) {
+            line =
+              Number.isFinite(matched) && matched > n
+                ? "From " + n + " of " + matched + " Cognee excerpts. Nothing was changed."
+                : "From " +
+                  n +
+                  " Cognee excerpt" +
+                  (n === 1 ? "" : "s") +
+                  ". Nothing was changed.";
+          }
+          meta.textContent = line;
+        }
+        if (!data.ok && window.PeonUI && window.PeonUI.toast) {
+          window.PeonUI.toast(data.error || "Could not summarize memory", "error");
+        }
+      })
+      .catch((err) => {
+        if (body) body.textContent = String(err);
+      })
+      .finally(() => {
+        if (btn) btn.disabled = false;
+      });
+  });
+
   $("dream-run-cycle")?.addEventListener("click", () => {
     postJson(urls.run_cycle || urls.run, {})
       .then((data) => {
@@ -164,6 +216,38 @@
         return Promise.all([refreshStatus(), refreshCatalog()]);
       })
       .catch(console.error);
+  });
+
+  $("dream-clear")?.addEventListener("click", () => {
+    const reindex = !!$("dream-clear-reindex")?.checked;
+    window.dispatchEvent(
+      new CustomEvent("peon:confirm", {
+        detail: {
+          title: "Clear Cognee?",
+          message:
+            "Every Cognee dataset (project transcripts, indexed memory) will be deleted. " +
+            "Peon's own memory notes, gists and playbooks are kept" +
+            (reindex ? " and the platform ones are re-indexed now." : "; re-index later via a dream cycle."),
+          confirmLabel: "Clear Cognee",
+          destructive: true,
+          onConfirm: () => {
+            showOut("Clearing Cognee…");
+            postJson(urls.clear, { reindex })
+              .then((data) => {
+                showOut(JSON.stringify(data, null, 2));
+                if (window.PeonUI && window.PeonUI.toast) {
+                  window.PeonUI.toast(
+                    data.ok ? "Cognee cleared" : "Cognee clear had errors",
+                    data.ok ? "ok" : "error"
+                  );
+                }
+                return Promise.all([refreshStatus(), refreshCatalog()]);
+              })
+              .catch(console.error);
+          },
+        },
+      })
+    );
   });
 
   $("dream-dataset")?.addEventListener("change", () => fillSessions());

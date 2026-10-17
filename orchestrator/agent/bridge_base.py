@@ -98,14 +98,21 @@ class AgentBridgeBase(ABC):
     idle_requested: bool = False
     idle_note: str = ""
 
-    def send_message(self, to: str, content: str, *, kind: str = "inform") -> str:
-        """Send an A2A message to another live agent (wakes it if idle)."""
-        del to, content, kind
+    def send_message(
+        self, to: str, content: str, *, kind: str = "inform", reply_to: str = ""
+    ) -> str:
+        """Send an A2A message to one or more live agents (wakes/resumes as needed)."""
+        del to, content, kind, reply_to
         return "send_message bridge not configured."
 
     def check_inbox(self) -> str:
         """Read (and consume) messages other agents or the operator sent."""
         return "check_inbox bridge not configured."
+
+    def message_status(self, limit: int = 10) -> str:
+        """Delivery/read state of messages this agent sent, most recent first."""
+        del limit
+        return "message_status bridge not configured."
 
     def go_idle(self, reason: str = "") -> str:
         """Park this agent until another agent/operator messages it."""
@@ -149,6 +156,11 @@ class AgentBridgeBase(ABC):
         """Append a markdown section into findings/report.md (not a Finding row)."""
         del section, body
         return "write_report_note bridge not configured."
+
+    def write_workspace_artifact(self, path: str, content: str) -> str:
+        """Write a text deliverable under ``workspace/`` (no execution)."""
+        del path, content
+        return "write_workspace_artifact bridge not configured."
 
     def list_workspace_artifacts(self) -> str:
         """List evidence files under the job workspace (prior agent outputs)."""

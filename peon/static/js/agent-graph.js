@@ -1,7 +1,7 @@
 /* Paperclip-style agent hierarchy: PM apex, pyramid below, panel-centered. */
 (function () {
   var NODE_W = 240;
-  var NODE_H = 96;
+  var NODE_H = 118;
   var GAP_X = 28;
   var GAP_Y = 48;
   var PAD = 28;
@@ -25,6 +25,24 @@
     if (s === "failed" || s === "cancelled") return "failed";
     if (s === "completed") return "done";
     return "idle";
+  }
+
+  // A "running" agent is expected to move the ball regularly (tool calls,
+  // status lines). No update for this long is a signal worth a look — not
+  // proof of a stuck job (a long single LLM call is normal), so this is a
+  // "check it" cue, not a "failed" one.
+  var STALE_RUNNING_MS = 3 * 60 * 1000;
+
+  function staleMinutes(agent) {
+    if (String(agent.status || "").toLowerCase() !== "running") return 0;
+    // last_activity_at is the newest stream line for this job (any type),
+    // falling back server-side to its claim time if it hasn't emitted one
+    // yet — NOT the Job row's own updated_at, which normal mid-run tool
+    // calls never touch and would make every long-running agent look stale.
+    var raw = agent.last_activity_at;
+    if (!raw) return 0;
+    var since = Date.now() - new Date(raw).getTime();
+    return since >= STALE_RUNNING_MS ? Math.floor(since / 60000) : 0;
   }
 
   function shortCmd(text) {
@@ -90,6 +108,7 @@
       objective_seq: agent.objective_seq,
       objective_title: agent.objective_title,
       role: agent.role,
+      activity: agent.activity || null,
       subagents: (agent.subagents || []).map(cloneNode),
     };
   }
@@ -124,7 +143,13 @@
    * stable pyramid (specialists, then analyzer).
    */
   function normalizePyramid(agents) {
-    var roots = (agents || []).map(cloneNode);
+    // The resident governance PM is a background watcher, not a crew node:
+    // drawing it would show a second Project Manager next to the OBJ-1 PM.
+    var roots = (agents || [])
+      .filter(function (a) {
+        return a.profile !== "governance";
+      })
+      .map(cloneNode);
     if (!roots.length) return [];
 
     var apexIdx = -1;
@@ -312,6 +337,8 @@
 
   function makeNode(agent, projectPk, selectedId, onSelect, onContext) {
     var led = ledKind(agent.status);
+    var staleMin = staleMinutes(agent);
+    if (staleMin > 0) led = "stale";
     var lane = laneOf(agent);
     var node = document.createElement("button");
     node.type = "button";
@@ -353,7 +380,10 @@
     var ledEl = document.createElement("span");
     ledEl.className = "flow-node-led org-agent-led";
     ledEl.dataset.led = led;
-    ledEl.title = agent.status || "pending";
+    ledEl.title =
+      staleMin > 0
+        ? "running — no activity for " + staleMin + "m (may be stuck)"
+        : agent.status || "pending";
     iconWrap.appendChild(ledEl);
     row.appendChild(iconWrap);
 
@@ -407,7 +437,8 @@
       skillLine.textContent = primarySkill;
       skillLine.title = primarySkill;
     } else {
-      skillLine.textContent = lane === "pm" ? "project-manager" : "—";
+      skillLine.textContent =
+        lane === "pm" ? agent.primary_role_id || agent.role_label || "—" : "—";
     }
     text.appendChild(skillLine);
 
@@ -456,7 +487,9 @@
       objLine.title =
         agent.last_command || agent.objective_title || agent.status || "";
     }
-    if (String(agent.status || "") === "idle") {
+    var activity = agent.activity || {};
+    var activityLabel = String(activity.label || "").trim();
+    if (!activityLabel && String(agent.status || "") === "idle") {
       var wait = document.createElement("span");
       wait.className = "org-agent-wait";
       var waitingOn = Array.isArray(agent.waiting_on) ? agent.waiting_on : [];
@@ -477,6 +510,29 @@
       objLine.appendChild(wait);
     }
     text.appendChild(objLine);
+
+    if (activityLabel) {
+      var act = document.createElement("div");
+      act.className =
+        "org-agent-activity" + (activity.live ? " is-live" : "");
+      act.textContent = activityLabel;
+      act.title = activityLabel;
+      text.appendChild(act);
+    }
+
+    if (staleMin > 0) {
+      var staleEl = document.createElement("div");
+      staleEl.className = "org-agent-stale";
+      staleEl.textContent =
+        "⚠ no activity for " + staleMin + "m — may be stuck";
+      staleEl.title =
+        "This agent is marked running but has not emitted any tool call or " +
+        "status update in " +
+        staleMin +
+        " minute(s). A long single step (e.g. one LLM call) can look like " +
+        "this briefly; if it stays here, it may need a kill/restart.";
+      text.appendChild(staleEl);
+    }
 
     row.appendChild(text);
     node.appendChild(row);
@@ -589,9 +645,17 @@
       (canvas && (canvas.offsetWidth || parseFloat(canvas.style.width))) || 0;
     var ch =
       (canvas && (canvas.offsetHeight || parseFloat(canvas.style.height))) || 0;
-    _zoom.s = 1;
-    _zoom.x = Math.max(12, (vw - cw) / 2);
-    _zoom.y = Math.max(12, (vh - ch) / 2);
+    var pad = 24;
+    var fit = 1;
+    if (cw > 0 && ch > 0 && vw > pad && vh > pad) {
+      fit = Math.min((vw - pad) / cw, (vh - pad) / ch);
+    }
+    if (!isFinite(fit) || fit <= 0) fit = 1;
+    // Fit frames the whole canvas. Wheel and +/- stay within ZOOM_MIN so
+    // casual zoom-out does not shrink the crew until Fit is used again.
+    _zoom.s = Math.min(ZOOM_MAX, fit);
+    _zoom.x = Math.max(pad / 2, (vw - cw * _zoom.s) / 2);
+    _zoom.y = Math.max(pad / 2, (vh - ch * _zoom.s) / 2);
     applyZoom();
   }
 
@@ -602,7 +666,7 @@
     bar.innerHTML =
       '<button type="button" class="as-zoom-btn" data-ag-zoom="in" title="Zoom in" aria-label="Zoom in">+</button>' +
       '<button type="button" class="as-zoom-btn" data-ag-zoom="out" title="Zoom out" aria-label="Zoom out">−</button>' +
-      '<button type="button" class="as-zoom-btn" data-ag-zoom="center" title="Center" aria-label="Center">⌂</button>';
+      '<button type="button" class="as-zoom-btn as-zoom-fit" data-ag-zoom="fit" title="Show all agents" aria-label="Show all agents">Fit</button>';
     bar.addEventListener("click", function (ev) {
       ev.preventDefault();
       ev.stopPropagation();

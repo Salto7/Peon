@@ -275,6 +275,12 @@ class ProjectsConfig(AppConfig):
         configure_sqlite_concurrency()
         _watch_vite_manifest()
         configure_orchestrator()
+        try:
+            from orchestrator.utils.llm_usage import register as register_llm_usage
+
+            register_llm_usage()
+        except Exception as exc:
+            logger.warning("llm usage tracking not started: %s", exc)
         configure_broker()
         RuntimeRegistry.shared().register_builtin()
         kind = _process_kind()

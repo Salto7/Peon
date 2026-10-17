@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from collections.abc import Iterable
 from urllib.parse import urlparse
 
 # Common multi-part public suffixes (registrable = label + suffix)
@@ -36,15 +36,22 @@ _MULTI_TLD = frozenset(
 )
 
 
-def normalize_domain(value: str | None) -> Optional[str]:
+def normalize_domain(value: str | None) -> str | None:
     """Lowercase host: strip, drop leading www., empty → None."""
     if not value:
         return None
-    d = str(value).lower().strip().removeprefix("www.")
+    d = str(value).lower().strip()
+    if "://" in d:  # URL pasted instead of a bare host (common from LLM hosts)
+        d = urlparse(d).hostname or ""
+    else:
+        d = d.split("/", 1)[0].split("?", 1)[0]
+        if d.count(":") == 1:  # host:port
+            d = d.split(":", 1)[0]
+    d = d.rstrip(".").removeprefix("www.")
     return d or None
 
 
-def apex_domain(value: str | None) -> Optional[str]:
+def apex_domain(value: str | None) -> str | None:
     """Registrable / apex domain (e.g. ``app.example.com`` → ``example.com``)."""
     d = normalize_domain(value)
     if not d or "." not in d:

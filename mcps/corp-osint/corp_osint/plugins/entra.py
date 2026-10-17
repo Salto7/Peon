@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 from urllib.parse import quote
 
 from ..http import AsyncHttpClient
@@ -37,7 +38,7 @@ def oidc_url(identifier: str) -> str:
     return OIDC_URL.format(id=quote(identifier.strip(), safe=".-"))
 
 
-def tenant_id_from_issuer(issuer: str | None) -> Optional[str]:
+def tenant_id_from_issuer(issuer: str | None) -> str | None:
     if not issuer:
         return None
     for part in issuer.rstrip("/").split("/"):
@@ -173,7 +174,7 @@ async def verify_domains_against_tenant(
     *,
     concurrency: int = 10,
     max_domains: int = 200,
-    skip: Optional[set[str]] = None,
+    skip: set[str] | None = None,
 ) -> dict[str, Any]:
     """
     OIDC-check domains and mark which resolve to ``expected_tenant_id``.

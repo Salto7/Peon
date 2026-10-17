@@ -1,4 +1,4 @@
-"""CrewAI-aware operator controls (pause / resume / replan / reprompt).
+"""CrewAI-aware operator controls (stop / pause / restart / resume / replan / reprompt).
 
 Builds on ``lifecycle``; keeps crew_status / crew_flow_id in sync.
 """
@@ -39,6 +39,64 @@ def set_crew_status(project: Project, status: str, *, flow_id: str = "") -> None
         project.crew_flow_id = flow_id[:64]
         fields.append("crew_flow_id")
     project.save(update_fields=fields)
+
+
+def _engagement_manager_job(project: Project, manager_id: str) -> Job | None:
+    """The engagement's manager job, not the resident governance watcher.
+
+    Prefer a row that is still in play. A cancelled row is reused only when
+    it carries the manager objective, so dispatch stays on the bookend job
+    instead of a new manager with nothing to settle.
+    """
+    from peon.projects.a2a import GOVERNANCE_PROFILE
+
+    if not manager_id:
+        return None
+    candidates = [
+        job
+        for job in project.jobs.exclude(profile=GOVERNANCE_PROFILE).order_by("-created_at")
+        if manager_id in (job.role_ids or [])
+    ]
+    for job in candidates:
+        if job.status != JobStatus.CANCELLED:
+            return job
+    for job in candidates:
+        if job.objective_id:
+            return job
+    return None
+
+
+def stop_project(project: Project) -> Project:
+    """Cancel in-flight jobs and mark the project stopped. The row is kept."""
+    from django.utils import timezone as dj_tz
+
+    project.status = ProjectStatus.CANCELLED
+    project.completed_at = dj_tz.now()
+    project.save(update_fields=["status", "completed_at", "updated_at"])
+    lifecycle.cancel_open_jobs(project)
+    set_crew_status(project, "stopped")
+    return project
+
+
+def restart_project(project: Project) -> Project:
+    """Stop in-flight attempts and dispatch the plan again.
+
+    Objectives stay as they are. Open ones are queued by the manager bookend
+    (``enqueue_ready`` treats an IN_PROGRESS objective with no live job as
+    ready). Operator kill remains the action that withdraws an objective.
+    """
+    from peon.projects.a2a import ensure_governance_pm
+
+    mgr = RoleRegistry.shared().manager()
+    manager = _engagement_manager_job(project, mgr.id if mgr is not None else "")
+    lifecycle.abandon_open_attempts(project, reuse=manager)
+    project.status = ProjectStatus.ACTIVE
+    project.completed_at = None
+    project.save(update_fields=["status", "completed_at", "updated_at"])
+    set_crew_status(project, "running")
+    _ensure_manager_job(project, resume=False)
+    ensure_governance_pm(project)
+    return project
 
 
 def pause_project(project: Project) -> Project:
@@ -86,9 +144,7 @@ def replan_project(project: Project, message: str) -> dict[str, Any]:
     }
 
 
-def reprompt_manager(
-    project: Project, message: str, *, kind: str = "steer"
-) -> dict[str, Any]:
+def reprompt_manager(project: Project, message: str, *, kind: str = "steer") -> dict[str, Any]:
     """Inject operator text into the manager job and (re)queue it."""
     text = (message or "").strip()
     if not text:
@@ -111,9 +167,7 @@ def instruct_project(
     text = (message or "").strip()
     if not text:
         raise ValueError("Instruction message is required")
-    result = route_operator_instruction(
-        project, text, job_id=job_id, record_stream=False
-    )
+    result = route_operator_instruction(project, text, job_id=job_id, record_stream=False)
     if agent_module() == "crewai" and project.status == ProjectStatus.ACTIVE:
         set_crew_status(project, "running")
     return result
@@ -131,16 +185,9 @@ def _ensure_manager_job(
     mgr = RoleRegistry.shared().manager()
     if mgr is None:
         raise RuntimeError(
-            "No CrewAI manager role is loaded; check "
-            "platform roles + skills/ on web and worker"
+            "No CrewAI manager role is loaded; check platform roles + skills/ on web and worker"
         )
-    job = None
-    for candidate in project.jobs.exclude(status=JobStatus.CANCELLED).order_by(
-        "-created_at"
-    ):
-        if mgr.id in (candidate.role_ids or []):
-            job = candidate
-            break
+    job = _engagement_manager_job(project, mgr.id)
     if job is None:
         from peon.projects.db import ensure_project_database
 
@@ -160,14 +207,14 @@ def _ensure_manager_job(
 
         alias = ensure_project_database(project.id)
         if steer:
-            job.description = (
-                f"{(job.description or '').strip()}\n\nOPERATOR:\n{steer}".strip()
-            )[:8000]
+            job.description = (f"{(job.description or '').strip()}\n\nOPERATOR:\n{steer}".strip())[
+                :8000
+            ]
+        lifecycle.reopen_objective_for_rerun(job)
         job.status = JobStatus.PENDING
         job.error = ""
         job.completed_at = None
-        if resume:
-            job.resume_from_checkpoint = True
+        job.resume_from_checkpoint = bool(resume)
         job.save(
             using=alias,
             update_fields=[
@@ -177,11 +224,9 @@ def _ensure_manager_job(
                 "completed_at",
                 "resume_from_checkpoint",
                 "updated_at",
-            ]
+            ],
         )
     if replan and steer:
-        enqueue_job_directive(
-            job, steer, kind=JobDirectiveKind.REPLAN
-        )
+        enqueue_job_directive(job, steer, kind=JobDirectiveKind.REPLAN)
     enqueue_job(str(job.id))
     return job

@@ -5,9 +5,9 @@ allowed-tools: Bash Read
 ---
 
 ## Goal
-Turn a natural-language tool request into a **valid catalog YAML** that matches
-`tools/CATALOG.md` install priorities
-(`custom` → `apt` → `github_release` → `pip` / `git_clone`).
+Turn a natural-language tool request into a **valid catalog YAML** for the
+Kali sandbox image. Prefer apt, then a GitHub release, then git clone, then
+pip. Use a custom script only when those do not fit.
 
 ## Scripts
 - `scripts/run.sh` — entry (argv; writes suggestion under `workspace/learn/`)

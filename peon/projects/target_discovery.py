@@ -254,7 +254,10 @@ def _llm_suggest_assets(text: str) -> list[dict[str, str]]:
     try:
         if not llm_configured():
             return []
-        data = chat_json(_LLM_ASSET_SYSTEM, (text or "")[:4000])
+        from orchestrator.utils import llm_usage
+
+        with llm_usage.purpose("target_discovery"):
+            data = chat_json(_LLM_ASSET_SYSTEM, (text or "")[:4000])
     except Exception:
         return []
     if not isinstance(data, dict):

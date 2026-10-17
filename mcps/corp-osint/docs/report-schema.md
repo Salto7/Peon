@@ -3,7 +3,7 @@
 The `ticker` field contains the company’s stock market ticker symbol. The JSON
 key remains `ticker` for compatibility with the existing CLI and reports.
 
-`python -m corp_osint` (full pipeline) emits an object shaped like:
+`uv run python main.py` (full pipeline) emits an object shaped like:
 
 ```json
 {

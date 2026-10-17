@@ -65,7 +65,10 @@ def propose_agents(
     if digest:
         human += f"\nTranscript digest (errors/handoffs/gaps):\n{digest[:4000]}\n"
     try:
-        data = chat_json(_PROPOSE_SYSTEM, human)
+        from orchestrator.utils import llm_usage
+
+        with llm_usage.purpose("agent_propose"):
+            data = chat_json(_PROPOSE_SYSTEM, human)
     except Exception:
         return []
     rows = data.get("agents") if isinstance(data, dict) else None

@@ -196,14 +196,23 @@ def list_team() -> str:
 
 @crew_tool(
     "send_message",
-    "Send an A2A message to another agent on this project. `to` is a job id from "
-    "list_team, an objective like OBJ-3, or a role id (if unambiguous). Put the "
-    "work detail in `content`: what you found, what you need, relevant paths. "
-    "If the recipient is idle it wakes and picks the work up. kind: inform | "
-    "request | reply. Prefer this over spawn_work when a suitable agent already exists.",
+    "Send an A2A message to one or more agents on this project, each addressed "
+    "individually — this is never a broadcast. `to` is an agent id from list_team "
+    "(full id or its first 8 characters); for more than one recipient, "
+    "comma-separate ids (capped — list_team shows the limit). Role ids / "
+    "objectives are not accepted as `to`. Put the work detail in `content`: what "
+    "you found, what you need, relevant paths. If a recipient is idle it wakes "
+    "and picks the work up; if it already finished, it resumes from its last "
+    "checkpoint to read your message. `reply_to` is optional: pass a message_id "
+    "from your own inbox to link this as a reply to it. kind: inform | request | "
+    "reply. Prefer this over spawn_work when a suitable agent already exists. A "
+    "per-pair message cap guards against ping-pong loops — if you hit it, stop "
+    "messaging and finish your turn instead of retrying.",
 )
-def send_message(to: str, content: str, kind: str = "inform") -> str:
-    return EngagementTools.send_message(to, content, kind=kind or "inform")
+def send_message(to: str, content: str, kind: str = "inform", reply_to: str = "") -> str:
+    return EngagementTools.send_message(
+        to, content, kind=kind or "inform", reply_to=reply_to or ""
+    )
 
 
 @crew_tool(
@@ -213,6 +222,17 @@ def send_message(to: str, content: str, kind: str = "inform") -> str:
 )
 def check_inbox() -> str:
     return EngagementTools.check_inbox()
+
+
+@crew_tool(
+    "message_status",
+    "Check the delivery/read state of messages YOU sent (most recent first): "
+    "whether each was read yet and whether the recipient replied. Use this "
+    "instead of re-sending or polling when you are waiting on an answer; prefer "
+    "go_idle if you have nothing else to do while you wait.",
+)
+def message_status(limit: int = 10) -> str:
+    return EngagementTools.message_status(limit=int(limit or 10))
 
 
 @crew_tool(
@@ -268,6 +288,16 @@ def list_workspace_artifacts() -> str:
 )
 def read_workspace_artifact(path: str, max_chars: int = 100000) -> str:
     return _bridge("read_workspace_artifact")(path, max_chars=int(max_chars))
+
+
+@crew_tool(
+    "write_workspace_artifact",
+    "Write a text deliverable (synthesis, manifest, JSON) to a relative path "
+    "under workspace/. Does not execute anything; use it to persist your lane's "
+    "output instead of spawning a job just to create a file.",
+)
+def write_workspace_artifact(path: str, content: str) -> str:
+    return _bridge("write_workspace_artifact")(path, content)
 
 
 @crew_tool(

@@ -151,7 +151,7 @@ def extract_from_text(text: str) -> list[str]:
     if not text:
         return found
     stripped = text.strip()
-    if stripped.startswith("{") or stripped.startswith("["):
+    if stripped.startswith(("{", "[")):
         try:
             _walk_json(json.loads(stripped), found)
         except json.JSONDecodeError:

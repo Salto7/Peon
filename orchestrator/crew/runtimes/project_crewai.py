@@ -14,6 +14,7 @@ from orchestrator.crew.runtime_base import (
     CrewRunResult,
     CrewRuntimeBase,
 )
+from orchestrator.utils import llm_usage
 from orchestrator.utils.stream_events import envelope
 
 
@@ -78,7 +79,7 @@ class ProjectCrewRuntime(CrewRuntimeBase):
             ),
         )
 
-        with bind_job(scope, cfg):
+        with bind_job(scope, cfg), llm_usage.purpose("agent_loop_crew"):
             try:
                 result = crew.kickoff()
             except Exception as exc:

@@ -1,0 +1,29 @@
+{% load ui %}
+{% with btn="inline-flex cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors outline-none hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 h-8" %}
+{% for item in actions %}
+  {% if mode == "bulk" %}
+  <button type="submit" name="action" value="{{ item.action }}" data-bulk-btn disabled
+          class="{{ btn }}{% if item.destructive %} text-destructive hover:text-destructive{% endif %}"
+          {% if item.confirm %}data-confirm="{{ item.confirm }}" data-confirm-title="{{ item.confirm_title }}" data-confirm-label="{{ item.label }}"{% if not item.destructive %} data-confirm-tone="default"{% endif %}{% endif %}>
+    {% icon item.icon %} {{ item.label }}
+  </button>
+  {% else %}
+  <form method="post" action="{% url 'project_control' project.pk %}" {% if mode == "toolbar" %}class="inline-flex"{% endif %}
+        {% if item.confirm and not item.disabled %}data-confirm="{{ item.confirm }}" data-confirm-title="{{ item.confirm_title }}" data-confirm-label="{{ item.label }}"{% if not item.destructive %} data-confirm-tone="default"{% endif %}{% endif %}>
+    {% csrf_token %}
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+    <input type="hidden" name="action" value="{{ item.action }}">
+    {% if mode == "menu" %}
+    <button type="submit" class="ui-menu-item disabled:cursor-not-allowed disabled:opacity-50" {% if item.destructive %}data-variant="destructive"{% endif %} {% if item.disabled %}disabled{% endif %}>
+      {% icon item.icon %} {{ item.label }}
+    </button>
+    {% else %}
+    <button type="submit" class="{{ btn }}{% if item.destructive %} text-destructive hover:text-destructive{% endif %}" {% if item.disabled %}disabled{% endif %}>
+      {% icon item.icon %} {{ item.label }}
+    </button>
+    {% endif %}
+  </form>
+  {% endif %}
+  {% if item.sep_after and mode == "menu" %}<div class="ui-menu-sep"></div>{% endif %}
+{% endfor %}
+{% endwith %}

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Optional
 
 LOG_NAME = "corp_osint"
 
@@ -21,7 +20,7 @@ _LEVELS = {
 }
 
 
-def get_logger(name: Optional[str] = None) -> logging.Logger:
+def get_logger(name: str | None = None) -> logging.Logger:
     """Return package logger or a child (``corp_osint.<name>``)."""
     if name and not name.startswith(LOG_NAME):
         return logging.getLogger(f"{LOG_NAME}.{name}")
@@ -74,19 +73,12 @@ def setup_logging(verbosity: int = 0, *, quiet: bool = False) -> logging.Logger:
     # Attach a dedicated INFO handler if quiet suppressed INFO.
     for h in list(output.handlers):
         output.removeHandler(h)
-    if level > logging.INFO:
-        out_handler = logging.StreamHandler(sys.stderr)
-        out_handler.setLevel(logging.INFO)
-        out_handler.setFormatter(logging.Formatter("%(message)s"))
-        output.addHandler(out_handler)
-        output.propagate = False
-    else:
-        # Prefer bare payload lines without INFO prefix for readability
-        out_handler = logging.StreamHandler(sys.stderr)
-        out_handler.setLevel(logging.INFO)
-        out_handler.setFormatter(logging.Formatter("%(message)s"))
-        output.addHandler(out_handler)
-        output.propagate = False
+    # Bare payload lines (no level prefix), independent of the progress level.
+    out_handler = logging.StreamHandler(sys.stderr)
+    out_handler.setLevel(logging.INFO)
+    out_handler.setFormatter(logging.Formatter("%(message)s"))
+    output.addHandler(out_handler)
+    output.propagate = False
 
     if verbosity < 2:
         for noisy in ("aiohttp", "asyncio", "urllib3", "playwright"):

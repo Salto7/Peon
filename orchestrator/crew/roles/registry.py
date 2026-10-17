@@ -49,7 +49,7 @@ def _build_role(
     defn: RoleDef,
     skills: SkillRegistry,
     *,
-    manager_id: str = "project-manager",
+    manager_id: str = "",
 ) -> RoleSpec:
     skill_ids = skills.skills_for_role(defn.id)
     specs = [
@@ -90,7 +90,7 @@ def _build_role(
             goal = "Turn workspace evidence into findings and a report. No probing."
         if not backstory:
             backstory = f"You are the reporting specialist (`{defn.id}`)."
-        reports_to = manager_id or "project-manager"
+        reports_to = manager_id
         allow_delegation = False
         advanced_reasoning = False
         max_iter = 12
@@ -105,7 +105,7 @@ def _build_role(
                 f"You are `{defn.id}`, a technical expert. Run the authorized "
                 "scope as given. Stay in RoE scope."
             )
-        reports_to = manager_id or "project-manager"
+        reports_to = manager_id
         allow_delegation = False
         advanced_reasoning = False
         max_iter = 25
@@ -171,10 +171,7 @@ class RoleRegistry(SharedServiceBase):
     def _scan(self) -> dict[str, RoleSpec]:
         skills = SkillRegistry.shared()
         defs = load_role_catalog()
-        manager_id = next(
-            (d.id for d in defs if d.kind == "engagement-pm"),
-            "project-manager",
-        )
+        manager_id = next((d.id for d in defs if d.kind == "engagement-pm"), "")
         return {
             defn.id: _build_role(defn, skills, manager_id=manager_id)
             for defn in defs

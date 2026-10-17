@@ -11,8 +11,9 @@ import socket
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any
 
 from django.conf import settings
 
@@ -22,26 +23,23 @@ logger = logging.getLogger(__name__)
 
 _VALID_TYPES = frozenset(StreamMessageType.values)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_LIVE = frozenset(
-    {JobStatus.RUNNING, JobStatus.PENDING, JobStatus.PAUSED, JobStatus.IDLE}
-)
+_LIVE = frozenset({JobStatus.RUNNING, JobStatus.PENDING, JobStatus.PAUSED, JobStatus.IDLE})
 
 
 def anchor_job(project: Project, *, prefer_live: bool = True) -> Job | None:
     """Pick a job to hang stream/audit lines on."""
-    roots = project.jobs.filter(parent__isnull=True)
+    # The resident governance PM is infrastructure, not a place for the
+    # operator-facing audit trail.
+    roots = project.jobs.filter(parent__isnull=True).exclude(profile="governance")
     if prefer_live:
         live = roots.filter(status__in=_LIVE).order_by("-updated_at").first()
         if live is not None:
             return live
-    return (
-        roots.order_by("-updated_at").first()
-        or project.jobs.order_by("-updated_at").first()
-    )
+    return roots.order_by("-updated_at").first() or project.jobs.order_by("-updated_at").first()
 
 
 def has_live_agents(project: Project) -> bool:
-    return project.jobs.filter(status__in=_LIVE).exists()
+    return project.jobs.filter(status__in=_LIVE).exclude(profile="governance").exists()
 
 
 def scrub_stream_noise(content: object) -> str:
@@ -285,6 +283,35 @@ def project_message_dicts(
     return [message_to_dict(attach_job_context(m, project)) for m in rows]
 
 
+def job_message_dicts(
+    project: Project,
+    job_id: str,
+    *,
+    before_id: int = 0,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """One job's own stream lines (oldest→newest), newest ``limit`` of them.
+
+    The project-wide feed only bootstraps the latest lines, so an agent that
+    ran earlier has nothing client-side; this serves its history on demand.
+    """
+    from peon.projects.db import ensure_project_database, using_project
+
+    alias = ensure_project_database(project.pk)
+    with using_project(project.pk):
+        qs = (
+            StreamMessage.objects.using(alias)
+            .filter(job_id=job_id, job__project_id=project.pk)
+            .exclude(metadata__has_key="mirrored")
+            .select_related("job")
+        )
+        if before_id > 0:
+            qs = qs.filter(id__lt=before_id)
+        rows = list(qs.order_by("-id")[: max(1, min(limit, 500))])
+    rows.reverse()
+    return [message_to_dict(attach_job_context(m, project)) for m in rows]
+
+
 def attach_job_context(
     msg: StreamMessage,
     project: Project | None = None,
@@ -302,7 +329,20 @@ def attach_job_context(
 
 
 def message_to_dict(msg: StreamMessage) -> dict[str, Any]:
+    from orchestrator.utils.agent_activity import describe_activity
+    from orchestrator.utils.stream_events import event_of, payload_of
+
     meta = msg.metadata or {}
+    event = event_of(meta)
+    activity = (
+        describe_activity(
+            status=str(getattr(msg, "_payload_status", None) or meta.get("job_status") or ""),
+            event=event,
+            payload=payload_of(meta),
+        )
+        if event
+        else None
+    )
     return {
         "id": msg.id,
         "message_type": msg.message_type,
@@ -314,9 +354,8 @@ def message_to_dict(msg: StreamMessage) -> dict[str, Any]:
         or meta.get("job_title")
         or str(msg.job_id),
         "job_status": getattr(msg, "_payload_status", None) or meta.get("job_status") or "",
-        "project_id": getattr(msg, "_payload_project", None)
-        or meta.get("project_id")
-        or "",
+        "activity": activity,
+        "project_id": getattr(msg, "_payload_project", None) or meta.get("project_id") or "",
     }
 
 
@@ -376,9 +415,7 @@ class StreamSocketServer:
             max_workers=_HANDLER_WORKERS, thread_name_prefix="stream-sock"
         )
         self._running = True
-        self._thread = threading.Thread(
-            target=self._serve, name="stream-sock-accept", daemon=True
-        )
+        self._thread = threading.Thread(target=self._serve, name="stream-sock-accept", daemon=True)
         self._thread.start()
         logger.info("Stream Unix socket listening on %s", self.socket_path)
 

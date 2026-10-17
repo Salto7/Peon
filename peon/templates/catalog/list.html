@@ -5,10 +5,12 @@
 <c-page-header title="Catalog" description="Roles, skills and MCP servers live in the platform catalog. Tools stay on disk." />
 
 <nav aria-label="Catalog sections" class="sticky top-0 z-[var(--z-sticky)] -mx-4 mb-6 flex gap-1 overflow-x-auto border-b bg-background/90 px-4 py-2 backdrop-blur md:-mx-8 md:px-8">
-  <a href="#roles" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Roles <c-badge>{{ roles|length }}</c-badge></a>
-  <a href="#skills" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Skills <c-badge>{{ skills|length }}</c-badge></a>
+  {% url 'catalog_api_proposals' as proposals_list_url %}{% url 'catalog_api_proposal_decide' as proposal_decide_url %}
+  <a href="#roles" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Roles <c-badge>{{ roles|length }}</c-badge>{% island "proposal-badge" element_id="roles-nav-pending" listUrl=proposals_list_url kind="role" %}</a>
+  <a href="#skills" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Skills <c-badge>{{ skills|length }}</c-badge>{% island "proposal-badge" element_id="skills-nav-pending" listUrl=proposals_list_url kind="skill" %}</a>
   <a href="#mcp" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">MCP servers <c-badge>{{ mcps|length }}</c-badge></a>
   <a href="#tools" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Tools <c-badge>{{ tools|length }}</c-badge></a>
+  <a href="#marketplace" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Marketplace <c-badge>{{ marketplace_sources|length }}</c-badge></a>
 </nav>
 
 <div class="space-y-12">
@@ -60,6 +62,7 @@
     {% else %}
     <c-card><c-empty icon="bot" title="No roles yet">Create one here or in Lab → Roles.</c-empty></c-card>
     {% endif %}
+    {% island "pending-proposals" element_id="roles-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="role" %}
   </section>
 
   {# ── Skills ── #}
@@ -107,6 +110,7 @@
     {% else %}
     <c-card><c-empty icon="sparkles" title="No skills installed">Install one above or create a new skill.</c-empty></c-card>
     {% endif %}
+    {% island "pending-proposals" element_id="skills-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="skill" %}
   </section>
 
   {# ── MCP ── #}
@@ -199,6 +203,18 @@
     {% else %}
     <c-card><c-empty icon="wrench" title="No tools found">Add YAML definitions under the tools catalog directory.</c-empty></c-card>
     {% endif %}
+  </section>
+
+  {# ── Marketplace ── #}
+  <section id="marketplace" aria-labelledby="marketplace-heading" class="scroll-mt-16 space-y-4">
+    <div>
+      <h2 id="marketplace-heading" class="text-base font-semibold">Marketplace</h2>
+      <p class="text-xs text-muted-foreground">Scan a GitHub repo or uploaded zip for skills, agent definitions, and MCP-server pointers. Nothing is imported until you review and approve each item.</p>
+    </div>
+    <c-card>
+      {% url 'catalog_api_marketplace_sources' as marketplace_list_url %}
+      {% island "marketplace-panel" element_id="marketplace-panel" listUrl=marketplace_list_url urls=marketplace_urls proposalUrls=proposal_urls sources=marketplace_sources %}
+    </c-card>
   </section>
 
   <p class="text-xs text-muted-foreground">Resolve roles for a job brief: <code class="ui-code">GET/POST /catalog/api/resolve/?brief=…</code></p>

@@ -346,7 +346,7 @@
     setStatus(msg || "Reconnecting…", "warn");
     _retryTimer = setTimeout(function () {
       _retryTimer = null;
-      openSession();
+      openSession({ passive: true });
     }, delay);
   }
 
@@ -392,10 +392,14 @@
     });
   }
 
-  function openSession() {
+  // ``opts.passive``: attach quietly (page-load auto-connect). Only an explicit
+  // user action may unfold the card, switch tabs or take keyboard focus —
+  // focusing the xterm textarea scrolls the page to the terminal.
+  function openSession(opts) {
+    var passive = !!(opts && opts.passive);
     if (!_cfg || !_term) return Promise.resolve();
     _userClosed = false;
-    revealShellCard();
+    if (!passive) revealShellCard();
     setStatus("Starting sandbox shell…", "");
     return new Promise(function (resolve) {
       // Wait for unfold layout before measuring / opening the PTY.
@@ -428,9 +432,11 @@
               connectStream(_session.id);
               setTimeout(fit, 40);
               flushInput();
-              _term.focus();
-              _focused = true;
-              document.body.classList.add("terminal-focused");
+              if (!passive) {
+                _term.focus();
+                _focused = true;
+                document.body.classList.add("terminal-focused");
+              }
             })
             .catch(function (err) {
               var msg =
@@ -555,7 +561,7 @@
     setTimeout(function () {
       if (_session) return;
       if (!_host || _host.clientWidth < 40 || _host.clientHeight < 40) return;
-      openSession();
+      openSession({ passive: true });
     }, 400);
   }
 

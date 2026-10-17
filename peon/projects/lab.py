@@ -33,6 +33,8 @@ def lab_dream_page(request: HttpRequest) -> HttpResponse:
         "recall": "/lab/dream/api/recall/",
         "improve": "/lab/dream/api/improve/",
         "run_cycle": "/lab/dream/api/run/",
+        "clear": "/lab/dream/api/clear/",
+        "improvements": "/lab/dream/api/improvements/",
     }
     interval_s = max(60, int(PeonSettings.get_int("PEON_DREAMING_INTERVAL_S", 900)))
     return render(
@@ -80,9 +82,7 @@ def lab_dream_recall(request: HttpRequest) -> JsonResponse:
         session_id=session_id,
         top_k=10,
     )
-    return JsonResponse(
-        {"ok": True, "text": text, "dataset": dataset, "session_id": session_id}
-    )
+    return JsonResponse({"ok": True, "text": text, "dataset": dataset, "session_id": session_id})
 
 
 @require_POST
@@ -113,9 +113,25 @@ def lab_dream_improve(request: HttpRequest) -> JsonResponse:
 
 
 @require_POST
+def lab_dream_improvements(_request: HttpRequest) -> JsonResponse:
+    """Summarize suggested improvements from Cognee. Does not change memory."""
+    result = DreamingService.shared().improvement_summary()
+    return JsonResponse(result, status=200 if result.get("ok") else 502)
+
+
+@require_POST
 def lab_dream_run(_request: HttpRequest) -> JsonResponse:
     result = DreamingService.shared().run_cycle()
     return JsonResponse(result)
+
+
+@require_POST
+def lab_dream_clear(request: HttpRequest) -> JsonResponse:
+    """Delete everything in Cognee; optionally re-index platform memory."""
+    body = parse_json_body(request, strict=False) or {}
+    reindex = bool(body.get("reindex", True))
+    result = DreamingService.shared().clear(reindex=reindex)
+    return JsonResponse(result, status=200 if result.get("ok") else 502)
 
 
 urlpatterns = [
@@ -128,4 +144,10 @@ urlpatterns = [
     path("dream/api/recall/", lab_dream_recall, name="lab_dream_recall"),
     path("dream/api/improve/", lab_dream_improve, name="lab_dream_improve"),
     path("dream/api/run/", lab_dream_run, name="lab_dream_run"),
+    path(
+        "dream/api/improvements/",
+        lab_dream_improvements,
+        name="lab_dream_improvements",
+    ),
+    path("dream/api/clear/", lab_dream_clear, name="lab_dream_clear"),
 ]

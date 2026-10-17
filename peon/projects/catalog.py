@@ -28,7 +28,8 @@ from peon.projects.catalog_edit import (
     save_tool_source,
 )
 from orchestrator.utils.strings import as_str_list
-from peon.projects.http_helpers import parse_json_body
+from peon.projects import marketplace_ops
+from peon.projects.http_helpers import json_errors, parse_json_body
 from peon.projects.platform_catalog import PlatformCatalog
 from orchestrator.skills.registry import SkillRegistry
 
@@ -110,6 +111,17 @@ def catalog_page(request: HttpRequest) -> HttpResponse:
         "role_write": "/catalog/api/roles/{id}/edit/",
         "role_create": reverse("catalog_api_role_create"),
     }
+    marketplace_urls = {
+        "delete": "/catalog/api/marketplace/{id}/",
+        "scan": "/catalog/api/marketplace/{id}/scan/",
+        "import": "/catalog/api/marketplace/{id}/import/",
+    }
+    # Proposals (Dream-suggested or marketplace-discovered role/skill changes
+    # pending review) are reviewed here, not on the Dream page.
+    proposal_urls = {
+        "list": reverse("catalog_api_proposals"),
+        "decide": reverse("catalog_api_proposal_decide"),
+    }
     catalog = PlatformCatalog.shared()
     return render(
         request,
@@ -129,6 +141,9 @@ def catalog_page(request: HttpRequest) -> HttpResponse:
             "role_names": sorted(r["name"] for r in RoleCards.catalog(jobable_only=False)),
             "skill_sources": INSTALL_SOURCES["skill"],
             "mcp_sources": INSTALL_SOURCES["mcp"],
+            "marketplace_sources": marketplace_ops.list_sources(),
+            "marketplace_urls": marketplace_urls,
+            "proposal_urls": proposal_urls,
             "nav": "catalog",
         },
     )
@@ -238,6 +253,7 @@ def _source_response(load, item_id: str) -> JsonResponse:
 
 
 @require_http_methods(["GET", "POST"])
+@json_errors
 def api_skill_source(request: HttpRequest, skill_id: str) -> JsonResponse:
     if request.method == "GET":
         return _source_response(load_skill_source, skill_id)
@@ -248,38 +264,29 @@ def api_skill_source(request: HttpRequest, skill_id: str) -> JsonResponse:
     bindings = body.get("bindings")
     if bindings is not None and not isinstance(bindings, list):
         return JsonResponse({"ok": False, "error": "bindings must be a list"}, status=400)
-    try:
-        result = save_skill_source(
-            skill_id,
-            skill_md=str(body.get("skill_md") or ""),
-            files={str(k): str(v) for k, v in files.items()},
-            bindings=bindings,
-        )
-        status = 200 if result.get("ok") else 400
-        return JsonResponse(result, status=status)
-    except ValueError as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
-    except Exception as exc:  # noqa: BLE001
-        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
+    result = save_skill_source(
+        skill_id,
+        skill_md=str(body.get("skill_md") or ""),
+        files={str(k): str(v) for k, v in files.items()},
+        bindings=bindings,
+    )
+    status = 200 if result.get("ok") else 400
+    return JsonResponse(result, status=status)
 
 
 @require_http_methods(["GET", "POST"])
+@json_errors
 def api_tool_source(request: HttpRequest, tool_id: str) -> JsonResponse:
     if request.method == "GET":
         return _source_response(load_tool_source, tool_id)
     body = parse_json_body(request, strict=False) or {}
-    try:
-        return JsonResponse(
-            save_tool_source(
-                tool_id,
-                yaml_text=str(body.get("yaml") or body.get("text") or ""),
-                install_script=str(body.get("install_script") or ""),
-            )
+    return JsonResponse(
+        save_tool_source(
+            tool_id,
+            yaml_text=str(body.get("yaml") or body.get("text") or ""),
+            install_script=str(body.get("install_script") or ""),
         )
-    except ValueError as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
-    except Exception as exc:  # noqa: BLE001
-        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
+    )
 
 
 @require_http_methods(["GET", "POST"])
@@ -453,10 +460,7 @@ def api_mcp_detail(request: HttpRequest, mcp_id: str) -> JsonResponse:
                     "args": list(rec.args),
                     "cwd": rec.cwd,
                     "install": rec.install,
-                    "env_schema": [
-                        {"name": name, "required": required}
-                        for name, required in rec.env_schema
-                    ],
+                    "env_schema": list(rec.env_schema_full),
                 },
                 "files": rec.files,
                 "bindings": [
@@ -612,6 +616,127 @@ def api_mcp_upload(request: HttpRequest) -> HttpResponse:
     )
 
 
+# ── Marketplace: register a source, scan it, import reviewed items ─────────
+
+
+@require_http_methods(["GET", "POST"])
+def api_marketplace_sources(request: HttpRequest) -> JsonResponse:
+    if request.method == "GET":
+        return JsonResponse({"ok": True, "sources": marketplace_ops.list_sources()})
+    body = parse_json_body(request, strict=False) or {} if _wants_json(request) else {}
+    archive_bytes = None
+    if request.FILES.get("file"):
+        upload = request.FILES["file"]
+        if int(upload.size or 0) > _MAX_UPLOAD_BYTES:
+            return JsonResponse({"ok": False, "error": "Upload is larger than 20 MB"}, status=400)
+        archive_bytes = upload.read()
+    try:
+        source = marketplace_ops.create_source(
+            name=body.get("name") or request.POST.get("name") or "",
+            source_type=body.get("source_type") or request.POST.get("source_type") or "",
+            url=body.get("url") or request.POST.get("url") or "",
+            ref=body.get("ref") or request.POST.get("ref") or "",
+            subpath=body.get("subpath") or request.POST.get("subpath") or "",
+            archive_bytes=archive_bytes,
+        )
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    return JsonResponse({"ok": True, "source": source})
+
+
+@require_http_methods(["DELETE"])
+def api_marketplace_source_delete(request: HttpRequest, source_id: str) -> JsonResponse:
+    try:
+        marketplace_ops.delete_source(source_id)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=404)
+    return JsonResponse({"ok": True})
+
+
+@require_POST
+def api_marketplace_scan(request: HttpRequest, source_id: str) -> JsonResponse:
+    try:
+        source = marketplace_ops.scan_source(source_id)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)[:400]}, status=502)
+    return JsonResponse({"ok": True, "source": source})
+
+
+@require_POST
+def api_marketplace_import(request: HttpRequest, source_id: str) -> JsonResponse:
+    body = parse_json_body(request, strict=False) or {}
+    item_kind = str(body.get("kind") or "").strip().lower()
+    try:
+        if item_kind == "skill":
+            result = marketplace_ops.import_skill(source_id, path=str(body.get("path") or ""))
+        elif item_kind == "mcp_pointer":
+            result = marketplace_ops.import_mcp_pointer(
+                source_id, repo_url=str(body.get("repo_url") or ""), ref=str(body.get("ref") or "")
+            )
+        elif item_kind == "agent":
+            result = marketplace_ops.import_agent(
+                source_id,
+                name=str(body.get("name") or ""),
+                description=str(body.get("description") or ""),
+                instructions=str(body.get("instructions") or ""),
+            )
+        else:
+            return JsonResponse({"ok": False, "error": "kind must be skill, mcp_pointer, or agent"}, status=400)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)[:400]}, status=502)
+    return JsonResponse(result)
+
+
+# ── Pending role/skill proposals (Dream-suggested or marketplace-discovered
+# catalog changes) — reviewed and approved right here, not on the Dream page.
+# A proposal never becomes a live role/skill until approved; nothing here
+# makes an unapproved one assignable.
+
+
+def _serialize_proposal(row) -> dict:
+    return {
+        "id": str(row.pk),
+        "kind": row.kind,
+        "action": row.action,
+        "target_id": row.target_id,
+        "title": row.title,
+        "rationale": row.rationale,
+        "payload": row.payload,
+        "status": row.status,
+        "error": row.error,
+        "created_at": row.created_at.isoformat() if row.created_at else "",
+    }
+
+
+@require_GET
+def api_proposals(request: HttpRequest) -> JsonResponse:
+    from peon.projects.models import CatalogProposal
+
+    status = (request.GET.get("status") or "pending").strip().lower()
+    qs = CatalogProposal.objects.all()
+    if status != "all":
+        qs = qs.filter(status=status)
+    rows = list(qs[:50])
+    return JsonResponse({"ok": True, "proposals": [_serialize_proposal(r) for r in rows]})
+
+
+@require_POST
+def api_proposal_decide(request: HttpRequest) -> JsonResponse:
+    from peon.projects.gist import apply_proposal
+
+    body = parse_json_body(request, strict=False) or {}
+    proposal_id = str(body.get("id") or "").strip()
+    decision = str(body.get("decision") or "").strip().lower()
+    if not proposal_id or decision not in {"approve", "reject"}:
+        return JsonResponse({"ok": False, "error": "id and decision (approve|reject) required"}, status=400)
+    result = apply_proposal(proposal_id, decision=decision)
+    return JsonResponse(result, status=200 if result.get("ok") else 400)
+
+
 urlpatterns = [
     path("", catalog_page, name="catalog"),
     path("api/roles/", api_roles, name="catalog_api_roles"),
@@ -638,6 +763,24 @@ urlpatterns = [
     path("api/mcp/install/", api_mcp_install, name="catalog_api_mcp_install"),
     path("api/mcp/upload/", api_mcp_upload, name="catalog_api_mcp_upload"),
     path("api/mcp/<str:mcp_id>/", api_mcp_detail, name="catalog_api_mcp"),
+    path("api/marketplace/", api_marketplace_sources, name="catalog_api_marketplace_sources"),
+    path(
+        "api/marketplace/<str:source_id>/",
+        api_marketplace_source_delete,
+        name="catalog_api_marketplace_source_delete",
+    ),
+    path(
+        "api/marketplace/<str:source_id>/scan/",
+        api_marketplace_scan,
+        name="catalog_api_marketplace_scan",
+    ),
+    path(
+        "api/marketplace/<str:source_id>/import/",
+        api_marketplace_import,
+        name="catalog_api_marketplace_import",
+    ),
+    path("api/proposals/", api_proposals, name="catalog_api_proposals"),
+    path("api/proposals/decide/", api_proposal_decide, name="catalog_api_proposal_decide"),
     path("api/tools/", api_tools, name="catalog_api_tools"),
     path("api/tools/reload/", api_tools_reload, name="catalog_api_tools_reload"),
     path(
