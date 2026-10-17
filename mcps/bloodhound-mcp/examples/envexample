@@ -1,8 +1,0 @@
-# BloodHound API Configuration
-BLOODHOUND_DOMAIN=
-BLOODHOUND_TOKEN_KEY=
-BLOODHOUND_TOKEN_ID=
-BLOODHOUND_PORT=
-BLOODHOUND_SCHEME=
-# For trusted self-signed lab deployments only; verification is enabled by default.
-# BLOODHOUND_VERIFY_TLS=false

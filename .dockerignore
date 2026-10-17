@@ -1,0 +1,6 @@
+# Keep build context small; the frontend stage runs its own npm ci/build.
+frontend/node_modules
+peon/static/dist
+.venv
+**/__pycache__
+.git

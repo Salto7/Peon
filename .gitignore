@@ -5,8 +5,22 @@ __pycache__/
 /workspaces/
 .venv/
 .env
+.ruff_cache/
+.pytest_cache/
 changelog/
+PLAN.md
+plan.md
+notes.txt
+todo.txt
+*.swp
+*.swo
+.cursor/
+.claude/
+/docs/
 pytest.ini
 tests/
 test_*.py
-PLAN.md
+# Frontend (Vite) — build output is generated, not committed
+frontend/node_modules/
+peon/static/dist/
+ruff.toml
