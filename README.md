@@ -12,10 +12,9 @@
 ---
 
 ## Overview
+Peon is a self-hosted console for the cybersec engagements. It  turns an operator brief into a plan, objectives, and runs a **crew** of sandboxed agents: a **project manager** with set of specialists with specific **roles** who spawn**workers** (subagents) that execute Dramatiq jobs (relevant cli/custom tools or scripts) in dedicated sandboxes. Skills and tools are defined on extend as catalog, can either manually extende, or by Peon suggestions. OpenSkills, Claude-style skills are supported as well as custom ones. Agents and workers cooridination is handled by **A2A** interface allowing better handover and delegation; specialists can spawn more workers when work fans out.
 
-Peon turns an operator brief into a plan, objectives, and a **crew** of sandboxed agents: a **project manager**, catalog **roles**, and Dramatiq **worker** jobs that run tools and scripts. Skills and CLI tools extend as catalog files, not forked app code. Live jobs can coordinate via **A2A** messages; specialists can spawn more workers when work fans out.
-
-Operators set Rules of Engagement, steer live jobs, promote discoveries into scope, triage findings, and take reports. Between engagements, Peon keeps a **semantic memory** (fed live, consolidated on a dream cycle, recalled into new projects) so crews do not start every engagement from zero — that is what **Cognee** is for.
+Operators set Rules of Engagement, steer live jobs, promote discoveries into scope, triage findings, and take reports. Between engagements, Peon keeps a semantic memory using **Cognee**. Memory is routeinly curated by a background job introducing a "dreaming effect" inspired by Anthropic agent dreaming. Curated memeory recalled into new projects to improve planning.
 
 ---
 
@@ -72,7 +71,7 @@ flowchart TD
 
 - **Plan / replan** — Brief or chat → objectives → jobs; rewritable mid-run or after finish.
 - **Rules of Engagement** — Scope is authorization; promote candidates before active probes.
-- **HITL** — Chat, sandbox PTY, and prompts when an agent needs operator input.
+- **HITL** — Chat, sandbox PTY  terminal are accessible in the project war room. Prompts are triggered whever an agent needs operators input.
 - **Steer** — Instruct live agents or edit/re-run a job command.
 - **Findings & attack surface** — Severity-tagged discoveries + asset graph.
 - **Reports** — Analyzer synthesizes workspace evidence.
@@ -81,14 +80,14 @@ flowchart TD
 ### Sandbox & tooling
 
 - **Per-project sandbox** — Isolated Docker; artifacts stay in-project; wiped on delete.
-- **Catalogs** — roles, skills, role mappings, and MCP servers live in the platform SQLite catalog; CLI tools stay in `tools/catalog/*.yaml`.
-- **Install cascade** — PATH → catalog YAML → LLM recipe (`apt` / `github_release` / `git_clone` / `pip` / `custom` + `verify`).
-- **MCP** — MCP servers are parsed into the platform catalog and provisioned inside the project sandbox. Heavy backing services (ghidra,BHCE ...etc) stay outside the container and are reached through URIs.
+- **Catalogs** — roles, skills, role mappings,MCP servers as well as complete claude/codex workspaces (such as [SpectreOps Markerplace](https://github.com/SpecterOps/skills) ). live in the platform SQLite catalog; CLI tools stay in `tools/catalog/*.yaml`, Peon is not bound to these tools but prefers them over availale tools in the sandbox (or suggested by the llm)
+- **Tool install** — If a command is already in the project sandbox, Peon uses it. Otherwise it installs the tool from the catalog, which records how to provision it(a Kali package, a GitHub release, pip, a git clone, or through custom script). Then checks that it actually runs. When the catalog has no entry, Peon asks the model for an install recipe.
+- **MCP** — MCP servers are parsed into the platform catalog and provisioned inside the project sandbox. Heavy backing services (ghidra,BHCE ...etc) stay outside the container, confiugrations announced by the mcp can be edited from engagement (project) itself.
 
 ### Lab
 
-- **Toolsmith** — Prompt Poen to prepare installation package for a complex/custom tool or skill. if code writting is needed, Peon uses OpenCode; Toolsmish also help linting and testing draft packages in a Lab sandbox (not mid-engagement). 
-- **Dream** — Improve performance by curating and improving persistant memory by improvement cycle. improved memory is recalled when a new project starts, reducing potential issues nad learning from previous prompts/mistakes (need to be revised).
+- **Toolsmith** — Prompt Poen to prepare installation package for a arbitrary/custom tool or skill. if code writting is needed, Peon uses OpenCode; Toolsmish also help linting and testing draft packages in a Lab sandbox (not mid-engagement) before publishing it in the catalog. 
+- **Dream** — (WIP) Improve performance by curating and improving persistant memory by improvement cycle. improved memory is recalled when a new project starts, reducing potential issues nad learning from previous prompts/mistakes (need to be revised).
 
 ### Memory (Cognee)
 
@@ -104,32 +103,29 @@ Settings: `COGNEE_ENABLED`, `COGNEE_PORT`, `LITELLM_MODEL` (chat via OpenRouter)
 
 ## Screenshots
 
-### Dashboard
+### Home
 
-<img src="images/dashboard.png" alt="Peon proect dashboard" width="900">
+<img src="images/dashboard.png" alt="Home: projects and fleet status" width="900">
 
-### Agents graph
-<img src="images/agent-graph.png" alt="Peon proect agent graph view" width="900">
+### Project
 
-### Rules of Engagement
+<img src="images/dashboard2.png" alt="Project overview: agent graph, chat, and activity" width="900">
 
-<img src="images/roe.png" alt="Rules of Engagement and assets" width="900">
+### Agent graph
+
+<img src="images/dashboard3.png" alt="Agent graph of the project crew" width="900">
 
 ### Findings
 
-<img src="images/findings.png" alt="Findings board" width="900">
+<img src="images/findings.png" alt="Findings and objectives" width="900">
 
 ### Attack surface
 
 <img src="images/attack-surface.png" alt="Attack surface asset graph" width="900">
 
-### In-browser terminal
+### Terminal
 
-<img src="images/pty-shell.png" alt="In-browser PTY shell into the project sandbox" width="900">
-
-### Report hub
-
-<img src="images/report-hub.png" alt="Report hub" width="900">
+<img src="images/terminal.png" alt="In-browser terminal in the project sandbox" width="900">
 
 ---
 
