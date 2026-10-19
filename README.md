@@ -107,13 +107,9 @@ Settings: `COGNEE_ENABLED`, `COGNEE_PORT`, `LITELLM_MODEL` (chat via OpenRouter)
 
 <img src="images/dashboard.png" alt="Home: projects and fleet status" width="900">
 
-### Project
+### war room
 
 <img src="images/dashboard2.png" alt="Project overview: agent graph, chat, and activity" width="900">
-
-### Agent graph
-
-<img src="images/dashboard3.png" alt="Agent graph of the project crew" width="900">
 
 ### Findings
 
