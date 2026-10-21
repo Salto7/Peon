@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""In-sandbox MCP supervisor (official mcp SDK client).
+"""In-sandbox MCP supervisor (FastMCP client over the official mcp SDK).
 
 Shipped with Peon and baked into the sandbox image at
 ``/opt/peon-mcp/supervisor.py``. The worker launches this file with the
@@ -8,8 +8,17 @@ image MCP client venv; it is a normal Python module (not an embedded string).
 Protocol: one NDJSON request per Unix-socket connection, one NDJSON reply.
 Each connection is served on its own thread, so a long tool call never blocks
 other agents. Each MCP server is owned by one long-lived asyncio task that
-enters and exits the SDK contexts itself (anyio cancel scopes must be closed
+enters and exits the connection itself (anyio cancel scopes must be closed
 by the task that opened them).
+
+Connection layer: ``fastmcp.Client`` wrapping a ``StdioTransport`` — the one
+addition over the raw SDK that matters here is ``log_file``, which the raw
+SDK's own ``stdio_client`` also accepts (as ``errlog``) but FastMCP's own
+reconnect/session bookkeeping already manages for us. Every call to the
+server goes through the ``*_mcp`` methods (``list_tools_mcp``,
+``call_tool_mcp``, ...), which return the same raw ``mcp.types`` objects the
+old hand-rolled ``ClientSession`` call returned — so the dump/spill helpers
+below, and the socket-RPC shapes ``provision.py`` depends on, are unchanged.
 """
 from __future__ import annotations
 
@@ -24,8 +33,8 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from fastmcp import Client
+from fastmcp.client.transports import StdioTransport
 
 # Fixed sandbox paths (not env-driven — avoids host-controlled path injection).
 SOCK = "/tmp/peon-mcp/supervisor.sock"
@@ -234,7 +243,7 @@ class Server:
         self.mcp_id = mcp_id
         self.fp = _fingerprint(spec)
         self.spec = spec
-        self.session: ClientSession | None = None
+        self.client: Client | None = None
         self.ready = asyncio.Event()
         self.stop = asyncio.Event()
         self.error: BaseException | None = None
@@ -245,34 +254,38 @@ class Server:
         cwd = str(spec.get("cwd") or "/workspace")
         Path(cwd).mkdir(parents=True, exist_ok=True)
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        params = StdioServerParameters(
+        transport = StdioTransport(
             command=str(spec.get("command") or ""),
             args=[str(a) for a in (spec.get("args") or [])],
-            cwd=cwd,
             env=_child_env(spec),
+            cwd=cwd,
+            # This Server owns exactly one connection for its whole life; the
+            # transport must tear the child down on disconnect, not keep it
+            # warm for a future caller (there is no future caller — Hub is
+            # the only thing holding this transport).
+            keep_alive=False,
+            log_file=LOG_DIR / f"{_safe_token(self.mcp_id)}.log",
         )
+        # First start may include ``uv run`` syncing deps or ``npx`` downloading
+        # the package, so allow much longer than a call before the handshake
+        # (init_timeout bounds the initialize negotiation, same as the old
+        # wait_for(session.initialize(), ...) did).
+        client = Client(transport, init_timeout=STARTUP_SECONDS)
         try:
-            with open(LOG_DIR / f"{_safe_token(self.mcp_id)}.log", "a", encoding="utf-8") as errlog:
-                async with AsyncExitStack() as stack:
-                    read, write = await stack.enter_async_context(
-                        stdio_client(params, errlog=errlog)
-                    )
-                    session = await stack.enter_async_context(ClientSession(read, write))
-                    # First start may include ``uv run`` syncing deps or ``npx``
-                    # downloading the package, so allow much longer than a call.
-                    await asyncio.wait_for(session.initialize(), timeout=STARTUP_SECONDS)
-                    self.session = session
-                    self.ready.set()
-                    await self.stop.wait()
+            async with AsyncExitStack() as stack:
+                await stack.enter_async_context(client)
+                self.client = client
+                self.ready.set()
+                await self.stop.wait()
         except BaseException as exc:  # noqa: BLE001 — surfaced to waiters
             self.error = exc
         finally:
-            self.session = None
+            self.client = None
             self.ready.set()
 
     @property
     def alive(self) -> bool:
-        return self.session is not None and not self.task.done()
+        return self.client is not None and not self.task.done()
 
     async def shutdown(self) -> None:
         self.stop.set()
@@ -286,7 +299,14 @@ _DISCONNECT_TYPES = frozenset({"ClosedResourceError", "BrokenResourceError", "En
 
 
 def _is_disconnect(exc: BaseException) -> bool:
-    """True when the stdio pipe to the server is gone (not a tool-level error)."""
+    """True when the stdio pipe to the server is gone (not a tool-level error).
+
+    FastMCP's ``Client`` re-raises whatever the underlying session/anyio
+    streams raised instead of wrapping it (confirmed by reading
+    ``_await_with_session_monitoring`` — it does ``raise exc`` on the
+    original exception), so the exception types a dead pipe produces are
+    unchanged from the raw-SDK days and this matching does not need to grow.
+    """
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
@@ -318,7 +338,7 @@ class Hub:
         if server is not None:
             await server.shutdown()
 
-    async def session_for(self, spec: dict) -> ClientSession:
+    async def client_for(self, spec: dict) -> Client:
         mcp_id = str(spec.get("mcp_id") or "").strip()
         if not mcp_id:
             raise ValueError("mcp_id is required")
@@ -338,7 +358,7 @@ class Hub:
                 server = Server(mcp_id, spec)
                 self._servers[mcp_id] = server
         await server.ready.wait()
-        if server.session is None:
+        if server.client is None:
             async with self._lock:
                 if self._servers.get(mcp_id) is server:
                     self._servers.pop(mcp_id, None)
@@ -348,44 +368,45 @@ class Hub:
                 f"MCP server {mcp_id!r} failed to start ({detail})"
                 + (f"\n--- server stderr ---\n{tail}" if tail else "")
             )
-        return server.session
+        return server.client
 
     async def run(self, spec: dict, call) -> Any:
-        """Run ``call(session)``; restart the server once if its pipe died."""
+        """Run ``call(client)``; restart the server once if its pipe died."""
         mcp_id = str(spec.get("mcp_id") or "")
         try:
-            return await call(await self.session_for(spec))
+            return await call(await self.client_for(spec))
         except Exception as exc:
             if not _is_disconnect(exc):
                 raise
         # Child exited (crash, OOM, killed): start a fresh one and retry once.
         await self.close(mcp_id)
-        return await call(await self.session_for(spec))
+        return await call(await self.client_for(spec))
 
     async def list_tools(self, spec: dict) -> list[dict[str, Any]]:
         result = await self.run(
-            spec, lambda s: asyncio.wait_for(s.list_tools(), timeout=_timeout(spec, 60))
+            spec, lambda c: asyncio.wait_for(c.list_tools_mcp(), timeout=_timeout(spec, 60))
         )
         return [_tool_dict(tool) for tool in (getattr(result, "tools", None) or [])]
 
     async def call_tool(self, spec: dict, tool: str, arguments: dict) -> Any:
         result = await self.run(
             spec,
-            lambda s: asyncio.wait_for(
-                s.call_tool(tool, arguments=arguments), timeout=_timeout(spec, 90)
+            lambda c: asyncio.wait_for(
+                c.call_tool_mcp(tool, arguments=arguments), timeout=_timeout(spec, 90)
             ),
         )
         return _maybe_spill(str(spec.get("mcp_id") or ""), "tool", tool, _dump(result))
 
     async def list_resources(self, spec: dict) -> list[dict[str, Any]]:
         result = await self.run(
-            spec, lambda s: asyncio.wait_for(s.list_resources(), timeout=_timeout(spec, 60))
+            spec, lambda c: asyncio.wait_for(c.list_resources_mcp(), timeout=_timeout(spec, 60))
         )
         return [_resource_dict(item) for item in (getattr(result, "resources", None) or [])]
 
     async def read_resource(self, spec: dict, uri: str) -> Any:
         result = await self.run(
-            spec, lambda s: asyncio.wait_for(s.read_resource(uri), timeout=_timeout(spec, 90))
+            spec,
+            lambda c: asyncio.wait_for(c.read_resource_mcp(uri), timeout=_timeout(spec, 90)),
         )
         return _maybe_spill(str(spec.get("mcp_id") or ""), "resource", uri, _dump(result))
 

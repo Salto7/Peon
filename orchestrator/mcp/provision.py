@@ -1,8 +1,9 @@
 """Start and call MCP servers inside the bound project sandbox.
 
 The worker does not speak MCP. It materializes the catalog row and talks to
-a supervisor that uses the official ``mcp`` Python SDK (``ClientSession`` +
-``stdio_client``) inside the same container as the servers.
+a supervisor that uses ``fastmcp``'s ``Client``/``StdioTransport`` (itself
+built on the official ``mcp`` Python SDK) inside the same container as the
+servers.
 
 Supervisor SoT: ``supervisor_runtime.py``, baked at ``/opt/peon-mcp/supervisor.py``.
 Stale/missing image copies are materialized to ``/workspace/.peon/mcp/supervisor.py``.
@@ -46,9 +47,16 @@ _PACKAGE_SUPERVISOR = Path(__file__).with_name("supervisor_runtime.py")
 _FALLBACK_VENV = "/workspace/.peon/mcp-venvs/_mcp_client"
 _FALLBACK_PYTHON = f"{_FALLBACK_VENV}/bin/python"
 _FALLBACK_MARKER = f"{_FALLBACK_VENV}/.peon-mcp-sdk"
-# Supervisor uses ClientSession/stdio_client; verified on 1.x and 2.x.
-_MCP_SDK_SPEC = "mcp>=1.10,<3"
-_MCP_IMPORT = "from mcp import ClientSession, StdioServerParameters"
+# Supervisor uses fastmcp's Client/StdioTransport, itself layered on mcp's
+# ClientSession/stdio_client; the mcp pin is verified on 1.x and 2.x. Kept as
+# a tuple (not one string) so each requirement is quoted separately for pip.
+_MCP_SDK_SPECS = ("mcp>=1.10,<3", "fastmcp>=2.0,<3")
+_MCP_SDK_SPEC = " ".join(_MCP_SDK_SPECS)
+_MCP_IMPORT = (
+    "from mcp import ClientSession, StdioServerParameters; "
+    "from fastmcp import Client; "
+    "from fastmcp.client.transports import StdioTransport"
+)
 _FINDINGS_QUEUE = "/workspace/workspace/findings_queue.jsonl"
 _ARTIFACT_DIR = "/workspace/workspace/mcp/artifacts"
 _PATH_RUNNERS = frozenset({"node", "npm", "npx", "uv", "uvx"})
@@ -140,10 +148,28 @@ def mcp_prompt_block(role_id: str) -> str:
     ]
     for rec in records:
         required = ", ".join(name for name, req in rec.env_schema if req) or "(none)"
+        filt = _binding_tools_filter(role_id, rec.mcp_id)
+        curation = _tools_filter_summary(filt)
         lines.append(
             f"- `{rec.mcp_id}`: {rec.description or rec.command}. Required env: {required}."
+            + (f" {curation}" if curation else "")
         )
     return "\n".join(lines)
+
+
+def _tools_filter_summary(filt: dict | None) -> str:
+    """Human-readable note for a prompt line; empty when no filter applies."""
+    if not isinstance(filt, dict):
+        return ""
+    values = [str(v) for v in (filt.get("values") or ()) if str(v)]
+    if not values:
+        return ""
+    mode = str(filt.get("mode") or "")
+    if mode == "include":
+        return f"Only these tools are enabled: {', '.join(values)}."
+    if mode == "exclude":
+        return f"All tools except these are enabled: {', '.join(values)}."
+    return ""
 
 
 def ensure_mcp_runtime(session=None) -> str:
@@ -173,9 +199,16 @@ def _invoke(
     session = Session.current()
     if (session.info.mode or "").strip().lower() == "openshell":
         return "Error: MCP servers need the Docker sandbox."
-    rec = _record_for_role(name, job_role_id(required=False))
+    role_id = job_role_id(required=False)
+    rec = _record_for_role(name, role_id)
     if isinstance(rec, str):
         return rec
+    tools_filter = _binding_tools_filter(role_id, rec.mcp_id)
+    if op == "call" and not _tool_allowed(tool, tools_filter):
+        return (
+            f"Error: tool {tool!r} on MCP server {rec.mcp_id!r} is not enabled "
+            f"for role {role_id!r} (binding tool filter)."
+        )
     project_id = str(session.info.project_id or "").strip()
     env, missing = _project_env(project_id, rec)
     if missing:
@@ -234,7 +267,13 @@ def _invoke(
         _PREPARED.pop((session.info.name, rec.mcp_id), None)
         return f"Error: {reply.get('error') or 'MCP call failed'}"
     if op == "list_tools":
-        return _format_catalog(rec.mcp_id, "tools", reply.get("tools") or [])
+        tools = [
+            item
+            for item in (reply.get("tools") or [])
+            if not isinstance(item, dict)
+            or _tool_allowed(str(item.get("name") or ""), tools_filter)
+        ]
+        return _format_catalog(rec.mcp_id, "tools", tools)
     if op == "list_resources":
         return _format_catalog(rec.mcp_id, "resources", reply.get("resources") or [])
     return json.dumps(reply.get("result"), default=str)
@@ -347,6 +386,38 @@ def _bound(role_id: str):
     except Exception as exc:
         logger.warning("mcp bindings lookup failed for role %s: %s", rid, exc)
         return []
+
+
+def _binding_tools_filter(role_id: str, mcp_id: str) -> dict | None:
+    """The ``{"mode", "values"}`` tool curation for one role<->server binding.
+
+    ``None`` means every tool the server advertises is callable — the
+    default, and the only option before this filter existed.
+    """
+    try:
+        from peon.projects.platform_catalog import PlatformCatalog
+
+        rows = PlatformCatalog.shared().list_bindings(
+            role_id=role_id, owner_kind="mcp", owner_id=mcp_id
+        )
+    except Exception as exc:
+        logger.warning("mcp tool-filter lookup failed for %s/%s: %s", role_id, mcp_id, exc)
+        return None
+    for row in rows:
+        if isinstance(row.tools, dict):
+            return row.tools
+    return None
+
+
+def _tool_allowed(name: str, filt: dict | None) -> bool:
+    if not isinstance(filt, dict):
+        return True
+    values = {str(v) for v in (filt.get("values") or ())}
+    if not values:
+        return True
+    if str(filt.get("mode") or "") == "include":
+        return name in values
+    return name not in values
 
 
 def _record_for_role(name: str, role_id: str):
@@ -702,7 +773,7 @@ def _ensure_mcp_sdk(session) -> tuple[str, str]:
             f"python3 -m venv {shlex.quote(_FALLBACK_VENV)}",
             f"{shlex.quote(_FALLBACK_PYTHON)} -m pip install "
             "--disable-pip-version-check "
-            f"{shlex.quote(_MCP_SDK_SPEC)}",
+            + " ".join(shlex.quote(spec) for spec in _MCP_SDK_SPECS),
             f"printf %s {shlex.quote(digest)} > {shlex.quote(_FALLBACK_MARKER)}",
         ]
     )

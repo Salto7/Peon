@@ -38,6 +38,10 @@ class Binding:
     owner_id: str
     score: float = 1.0
     lead: bool = False
+    # Per-binding tool curation for MCP owners: {"mode": "include"|"exclude",
+    # "values": [tool names]}. None (the default) means every tool the
+    # server advertises is callable — unset, not an empty allow-list.
+    tools: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,27 @@ class McpRecord:
     # Full per-field metadata (type/description/default/choices) behind
     # env_schema's plain (name, required) pairs — see orchestrator/mcp/parse.py.
     env_schema_full: tuple[dict[str, Any], ...] = ()
+
+
+def _normalize_tools_filter(raw: Any) -> dict[str, Any] | None:
+    """Validate a per-binding tool filter; ``None`` means "no filter"."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("binding tools filter must be an object")
+    mode = str(raw.get("mode") or "").strip().lower()
+    if mode not in {"include", "exclude"}:
+        raise ValueError("binding tools filter mode must be include or exclude")
+    values = raw.get("values")
+    if not isinstance(values, (list, tuple)):
+        raise ValueError("binding tools filter values must be a list")
+    cleaned = sorted({str(v).strip() for v in values if str(v or "").strip()})
+    if not cleaned:
+        # No tool names given is never an intentional "block everything"
+        # (include) or a no-op (exclude) — treat it as the operator not
+        # having curated anything yet, i.e. unset.
+        return None
+    return {"mode": mode, "values": cleaned}
 
 
 def _bump() -> float:
@@ -400,6 +425,7 @@ class PlatformCatalog:
                     owner_id=str(row.owner_id),
                     score=float(row.score),
                     lead=bool(row.lead),
+                    tools=dict(row.tools) if isinstance(row.tools, dict) else None,
                 )
                 for row in rows
             )
@@ -442,7 +468,10 @@ class PlatformCatalog:
             if score < 0 or score > 1:
                 raise ValueError("score must be between 0 and 1")
             cleaned.append(
-                Binding(rid, kind, oid, score, bool(raw.get("lead")))
+                Binding(
+                    rid, kind, oid, score, bool(raw.get("lead")),
+                    tools=_normalize_tools_filter(raw.get("tools")),
+                )
             )
         leads = [b for b in cleaned if b.lead]
         if len(leads) > 1:
@@ -457,6 +486,7 @@ class PlatformCatalog:
                         owner_id=oid,
                         score=b.score,
                         lead=b.lead,
+                        tools=b.tools,
                     )
                     for b in cleaned
                 ]
@@ -506,6 +536,7 @@ class PlatformCatalog:
                             "role_id": b.role_id,
                             "score": b.score,
                             "lead": b.lead,
+                            "tools": b.tools,
                         }
                         for b in carried
                     ],

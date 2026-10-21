@@ -321,7 +321,7 @@ def _mcp_card(rec) -> dict:
         "enabled": rec.enabled,
         "env": [name for name, _required in rec.env_schema],
         "bindings": [
-            {"role_id": b.role_id, "score": b.score, "lead": b.lead}
+            {"role_id": b.role_id, "score": b.score, "lead": b.lead, "tools": b.tools}
             for b in rec.bindings
         ],
     }
@@ -464,7 +464,7 @@ def api_mcp_detail(request: HttpRequest, mcp_id: str) -> JsonResponse:
                 },
                 "files": rec.files,
                 "bindings": [
-                    {"role_id": b.role_id, "score": b.score, "lead": b.lead}
+                    {"role_id": b.role_id, "score": b.score, "lead": b.lead, "tools": b.tools}
                     for b in rec.bindings
                 ],
             }

@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && uv --version \
     && uvx --version \
     && python3 -m venv /opt/peon-mcp-client \
-    && /opt/peon-mcp-client/bin/pip install --no-cache-dir 'mcp>=1.10,<3' \
+    && /opt/peon-mcp-client/bin/pip install --no-cache-dir 'mcp>=1.10,<3' 'fastmcp>=2.0,<3' \
     && mkdir -p /etc/peon /opt/peon-mcp /workspace
 
 # Playwright for every skill / MCP in the sandbox.

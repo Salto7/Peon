@@ -1211,6 +1211,10 @@ class CatalogBinding(models.Model):
     owner_id = models.CharField(max_length=128)
     score = models.FloatField(default=1.0)
     lead = models.BooleanField(default=False)
+    # MCP tool curation for this role<->server binding:
+    # {"mode": "include"|"exclude", "values": [...]}. Null = every tool the
+    # server advertises is callable. Unused for skill bindings.
+    tools = models.JSONField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
