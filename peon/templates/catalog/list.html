@@ -8,7 +8,7 @@
   {% url 'catalog_api_proposals' as proposals_list_url %}{% url 'catalog_api_proposal_decide' as proposal_decide_url %}
   <a href="#roles" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Roles <c-badge>{{ roles|length }}</c-badge>{% island "proposal-badge" element_id="roles-nav-pending" listUrl=proposals_list_url kind="role" %}</a>
   <a href="#skills" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Skills <c-badge>{{ skills|length }}</c-badge>{% island "proposal-badge" element_id="skills-nav-pending" listUrl=proposals_list_url kind="skill" %}</a>
-  <a href="#mcp" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">MCP servers <c-badge>{{ mcps|length }}</c-badge></a>
+  <a href="#mcp" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">MCP servers <c-badge>{{ mcps|length }}</c-badge>{% island "proposal-badge" element_id="mcp-nav-pending" listUrl=proposals_list_url kind="mcp_binding" %}</a>
   <a href="#tools" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Tools <c-badge>{{ tools|length }}</c-badge></a>
   <a href="#marketplace" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Marketplace <c-badge>{{ marketplace_sources|length }}</c-badge></a>
 </nav>
@@ -161,6 +161,7 @@
     {% else %}
     <c-card><c-empty icon="server" title="No MCP servers">Install one above or define a new server.</c-empty></c-card>
     {% endif %}
+    {% island "pending-proposals" element_id="mcp-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="mcp_binding" %}
   </section>
 
   {# ── Tools ── #}

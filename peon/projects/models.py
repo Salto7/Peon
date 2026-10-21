@@ -1234,15 +1234,19 @@ class CatalogBinding(models.Model):
 
 
 class CatalogProposal(models.Model):
-    """Dream-suggested role/skill change, staged for human review.
+    """Dream-suggested catalog change, staged for human review.
 
     Dream never calls ``PlatformCatalog.upsert_role``/``upsert_skill``
     directly — it writes one of these, and a human approves or rejects it
-    from the Dream page before the catalog itself changes.
+    from the Dream page before the catalog itself changes. ``mcp_binding``
+    is the same queue used for a different producer: an MCP server install
+    whose role auto-bind scored every role below the confidence threshold
+    (see ``PlatformCatalog._stage_binding_review``); approving applies the
+    staged below-threshold candidates as real bindings.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    kind = models.CharField(max_length=16, help_text="role | skill")
+    kind = models.CharField(max_length=16, help_text="role | skill | mcp_binding")
     action = models.CharField(max_length=16, help_text="create | update")
     target_id = models.CharField(
         max_length=128, blank=True, default="", help_text="Existing role_id/skill_id, blank for create"

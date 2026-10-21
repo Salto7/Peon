@@ -561,6 +561,25 @@ def apply_proposal(proposal_id: str, *, decision: str) -> dict[str, Any]:
                 skill_md=str(row.payload.get("skill_md") or ""),
                 skill_id=row.target_id,
             )
+        elif row.kind == "mcp_binding":
+            payload = row.payload or {}
+            owner_id = str(payload.get("owner_id") or row.target_id or "")
+            if not owner_id:
+                raise ValueError("mcp_binding proposal has no owner_id")
+            candidates = payload.get("candidates") or []
+            catalog.replace_bindings(
+                owner_kind=str(payload.get("owner_kind") or "mcp"),
+                owner_id=owner_id,
+                bindings=[
+                    {
+                        "role_id": c.get("role_id"),
+                        "score": c.get("score", 1.0),
+                        "lead": bool(c.get("lead")),
+                    }
+                    for c in candidates
+                    if isinstance(c, dict) and c.get("role_id")
+                ],
+            )
         else:
             raise ValueError(f"unknown proposal kind {row.kind!r}")
     except Exception as exc:  # noqa: BLE001

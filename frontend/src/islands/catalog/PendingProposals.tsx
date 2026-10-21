@@ -14,10 +14,18 @@ type Proposal = {
   rationale: string;
 };
 
-type Props = { listUrl: string; decideUrl: string; kind: "role" | "skill" };
+type Props = { listUrl: string; decideUrl: string; kind: "role" | "skill" | "mcp_binding" };
+
+const APPROVED_MESSAGE: Record<Props["kind"], string> = {
+  role: "Role created",
+  skill: "Skill created",
+  mcp_binding: "Binding applied",
+};
 
 /**
  * Pending role/skill proposals (Dream-suggested or marketplace-discovered),
+ * and pending mcp_binding proposals (an MCP install whose role auto-bind
+ * scored every role below threshold — see PlatformCatalog._stage_binding_review),
  * shown as cards in the same section as the real ones — tagged "Pending",
  * never assignable until approved here. Shares the ["catalog-proposals"]
  * query with ProposalBadge/MarketplacePanel (one QueryClient per page), so
@@ -41,7 +49,7 @@ export default function PendingProposals({ listUrl, decideUrl, kind }: Props) {
         return;
       }
       if (decision === "approve") {
-        toast.success(`${kind === "role" ? "Role" : "Skill"} created`);
+        toast.success(APPROVED_MESSAGE[kind]);
         // The new row is server-rendered; reload so it shows up in the grid.
         window.setTimeout(() => window.location.reload(), 400);
         return;

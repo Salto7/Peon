@@ -264,8 +264,15 @@ def infer_catalog_bindings(
     description: str = "",
     body: str = "",
     tags: Iterable[str] = (),
-) -> list[dict[str, Any]]:
-    """Auto role bindings for catalog save. Keyword first, LLM if empty."""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Auto role bindings for catalog save. Keyword first, LLM if empty.
+
+    Returns ``(applied, candidates)``: ``applied`` scored at or above
+    ``AFFINITY_THRESHOLD`` and is safe to bind automatically. ``candidates``
+    scored above zero but below threshold — too weak to trust unattended,
+    but real enough to put in front of a human instead of discarding
+    (callers may stage these for review rather than just logging them).
+    """
     keyed = keyword_role_bindings(
         name=owner_id,
         description=description,
@@ -280,18 +287,23 @@ def infer_catalog_bindings(
             description=description,
             body=body or description,
         )
-    rows = [
+    applied = [
         {"role_id": b.role_id, "score": b.score, "lead": bool(b.lead)}
         for b in affinity.bindings
         if float(b.score) >= AFFINITY_THRESHOLD
     ]
+    candidates = [
+        {"role_id": b.role_id, "score": b.score, "lead": False}
+        for b in affinity.bindings
+        if float(b.score) < AFFINITY_THRESHOLD
+    ]
     # Catalog allows at most one lead across the whole owner.
-    leads = [row for row in rows if row["lead"]]
+    leads = [row for row in applied if row["lead"]]
     if len(leads) > 1:
         winner = max(leads, key=lambda row: (float(row["score"]), row["role_id"]))
-        for row in rows:
+        for row in applied:
             row["lead"] = row is winner
-    return rows
+    return applied, candidates
 
 
 def classify_skill_affinity(

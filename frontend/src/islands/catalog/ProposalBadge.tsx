@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 
 type Proposal = { kind: string; payload: { role?: { role_id?: string } } };
 
-type Props = { listUrl: string; kind: "role" | "skill" };
+type Props = { listUrl: string; kind: "role" | "skill" | "mcp_binding" };
 
 /**
  * "+N pending" next to a Catalog nav tab — stays visible until someone

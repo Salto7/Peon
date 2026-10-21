@@ -75,6 +75,40 @@ class McpRecord:
     env_schema_full: tuple[dict[str, Any], ...] = ()
 
 
+_README_NAMES = frozenset({"readme.md", "readme.rst", "readme.txt", "readme"})
+_MCP_ENTRY_NAMES = frozenset({"mcp_server.py", "server.py", "main.py", "index.js"})
+
+
+def _mcp_affinity_corpus(file_map: dict[str, str], spec) -> str:
+    """Best available text describing what an MCP server actually does.
+
+    Role affinity (keyword match, then LLM fallback) needs real prose, not
+    a launch command: a brand-named security tool's command/args/env names
+    rarely share a token with any role id, while its README almost always
+    names what it does in plain language. The pack's README (or, failing
+    that, its entrypoint source — tool docstrings/registrations are still
+    signal) is already captured in ``file_map`` by the installer; this just
+    reads it instead of leaving it unused. Falls back to the command text
+    only when neither is present.
+    """
+    for rel, text in sorted(file_map.items()):
+        if Path(rel).name.lower() in _README_NAMES:
+            return text
+    wanted = {str(a) for a in spec.args} | {str(spec.command or "")}
+    for rel, text in sorted(file_map.items()):
+        name = Path(rel).name
+        if name in wanted or name.lower() in _MCP_ENTRY_NAMES:
+            return text
+    return " ".join(
+        (
+            spec.command,
+            " ".join(spec.args),
+            spec.cwd,
+            " ".join(n for n, _req in spec.env_schema),
+        )
+    )
+
+
 def _normalize_tools_filter(raw: Any) -> dict[str, Any] | None:
     """Validate a per-binding tool filter; ``None`` means "no filter"."""
     if raw is None:
@@ -545,7 +579,7 @@ class PlatformCatalog:
         try:
             from orchestrator.skills.affinity import infer_catalog_bindings
 
-            inferred = infer_catalog_bindings(
+            applied, candidates = infer_catalog_bindings(
                 owner_id=infer_id or owner_id,
                 owner_kind=owner_kind,
                 description=infer_description,
@@ -556,18 +590,64 @@ class PlatformCatalog:
             logger.warning(
                 "auto-bind failed for %s %s: %s", owner_kind, owner_id, exc
             )
-            inferred = []
-        if inferred:
+            applied, candidates = [], []
+        if applied:
             try:
                 self.replace_bindings(
-                    owner_kind=owner_kind, owner_id=owner_id, bindings=inferred
+                    owner_kind=owner_kind, owner_id=owner_id, bindings=applied
                 )
                 return
             except ValueError as exc:
                 logger.warning(
                     "auto-bind rejected for %s %s: %s", owner_kind, owner_id, exc
                 )
+        # No role scored confidently enough to bind unattended. Rather than
+        # discard a weak-but-real signal (e.g. every role scored just under
+        # threshold), flag it for a human via the same review queue
+        # marketplace_ops.import_agent already uses for role proposals —
+        # one mechanism, not a second review system for MCP bindings.
+        if owner_kind == OWNER_MCP and candidates:
+            self._stage_binding_review(owner_id=owner_id, candidates=candidates)
         _invalidate()
+
+    def _stage_binding_review(
+        self, *, owner_id: str, candidates: list[dict[str, Any]]
+    ) -> None:
+        """Flag an MCP server with no confident auto-bind for human review."""
+        from peon.projects.models import CatalogProposal
+
+        try:
+            already_pending = CatalogProposal.objects.filter(
+                status="pending", kind="mcp_binding", action="create", target_id=owner_id
+            ).exists()
+            if already_pending:
+                return
+            names = ", ".join(
+                f"{c['role_id']} ({float(c['score']):.2f})"
+                for c in sorted(candidates, key=lambda c: -float(c["score"]))
+            )
+            CatalogProposal.objects.create(
+                kind="mcp_binding",
+                action="create",
+                target_id=owner_id,
+                title=f"No confident role match for MCP server: {owner_id}",
+                # The review card only renders title/rationale (no payload UI),
+                # so the candidates have to be readable here, not just in
+                # payload — approving blind would defeat the review step.
+                rationale=(
+                    "Auto-binding scored every role below the confidence "
+                    f"threshold. Closest unconfirmed matches: {names}. "
+                    "Approve to bind all of them, or reject and bind "
+                    "manually from this server's own page instead."
+                ),
+                payload={
+                    "owner_kind": OWNER_MCP,
+                    "owner_id": owner_id,
+                    "candidates": candidates,
+                },
+            )
+        except Exception as exc:
+            logger.warning("mcp binding review stage failed for %s: %s", owner_id, exc)
 
     # --- skills ------------------------------------------------------------
 
@@ -923,14 +1003,7 @@ class PlatformCatalog:
                 rename_from=previous,
                 infer_id=spec.mcp_id,
                 infer_description=spec.description,
-                infer_body=" ".join(
-                    (
-                        spec.command,
-                        " ".join(spec.args),
-                        spec.cwd,
-                        " ".join(name for name, _req in spec.env_schema),
-                    )
-                ),
+                infer_body=_mcp_affinity_corpus(file_map, spec),
                 infer_tags=(),
             )
         if previous:
