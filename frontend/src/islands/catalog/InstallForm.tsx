@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { FolderOpen, Loader2, Upload } from "lucide-react";
 import { useId, useRef, useState, type DragEvent } from "react";
 import { toast } from "sonner";
@@ -42,6 +42,7 @@ type Props = {
  */
 export default function InstallForm({ kind, installUrl, uploadUrl, sources, submitLabel, help }: Props) {
   const ids = useId();
+  const qc = useQueryClient();
   const [source, setSource] = useState<Source["value"]>(sources[0]?.value ?? "git");
   const [value, setValue] = useState("");
   const [revision, setRevision] = useState("");
@@ -53,6 +54,11 @@ export default function InstallForm({ kind, installUrl, uploadUrl, sources, subm
 
   const onDone = (data: { ids?: string[] }) => {
     toast.success(`Installed ${(data.ids ?? []).join(", ") || submitLabel.toLowerCase()}`);
+    // A fresh role/skill proposal (or a direct bind) from this install can
+    // exist in the DB the instant the request above returns — the install
+    // itself ran the auto-bind synchronously. Show it now, not after the
+    // page-reload-for-the-new-card finishes a moment later.
+    qc.invalidateQueries({ queryKey: ["catalog-proposals"] });
     window.setTimeout(() => window.location.reload(), 600);
   };
   const onError = (err: Error) => toast.error(err.message);

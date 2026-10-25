@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-
 from typing import Any
 
 from django.urls import reverse
@@ -257,7 +256,7 @@ def failure_exhausted_prompt(job: Job, error: str, *, fails: int, max_r: int) ->
 def resolve_operator_prompt(prompt: OperatorPrompt, reply: str) -> dict[str, Any]:
     """Apply operator approve/edit/deny text and steer the waiting job(s)."""
     from peon.projects.lifecycle import enqueue_job_directive, queue_job
-    from peon.projects.models import JobDirectiveKind, TERMINAL_JOB_STATUSES
+    from peon.projects.models import TERMINAL_JOB_STATUSES, JobDirectiveKind
     from peon.projects.streaming import (
         anchor_job,
         emit_job_stream,

@@ -77,6 +77,15 @@ function sourceUrl(urls: Urls, kind: Kind, id: string) {
   }[kind];
 }
 
+function deleteUrl(urls: Urls, kind: Kind, id: string) {
+  return {
+    skill: fill(urls.skill_delete, id),
+    tool: fill(urls.tool_source, id),
+    mcp: fill(urls.mcp_source, id),
+    role: fill(urls.role_write, id),
+  }[kind];
+}
+
 function toDraft(kind: Kind, id: string, d: SourcePayload): Draft {
   return {
     kind,
@@ -137,13 +146,28 @@ export default function CatalogEditor({
   });
 
   const remove = useMutation({
-    mutationFn: ({ kind, id }: { kind: Kind; id: string }) => {
-      const url =
-        kind === "skill" ? fill(urls.skill_delete, id) : kind === "mcp" ? fill(urls.mcp_source, id) : fill(urls.role_write, id);
-      return api(url, { method: "DELETE", json: {} });
-    },
+    mutationFn: ({ kind, id }: { kind: Kind; id: string }) =>
+      api(deleteUrl(urls, kind, id), { method: "DELETE", json: {} }),
     onSuccess: () => {
       toast.success("Deleted");
+      window.setTimeout(() => window.location.reload(), 400);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  // Bulk delete across sections/kinds. Keyed "kind:id" so selection survives
+  // across roles/skills/mcp/tools without a Set<object> comparison headache.
+  const [selected, setSelected] = useState<Map<string, { kind: Kind; id: string }>>(new Map());
+  const bulkRemove = useMutation({
+    mutationFn: async (items: { kind: Kind; id: string }[]) => {
+      const results = await Promise.allSettled(
+        items.map((item) => api(deleteUrl(urls, item.kind, item.id), { method: "DELETE", json: {} })),
+      );
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed) throw new Error(`${failed} of ${items.length} failed to delete`);
+    },
+    onSuccess: () => {
+      toast.success("Deleted selected items");
       window.setTimeout(() => window.location.reload(), 400);
     },
     onError: (err: Error) => toast.error(err.message),
@@ -168,9 +192,36 @@ export default function CatalogEditor({
         });
       }
     };
+    const onChange = (e: Event) => {
+      const el = e.target as HTMLInputElement;
+      if (!el.matches?.("[data-catalog-select]")) return;
+      const kind = el.dataset.catalogSelect as Kind;
+      const id = el.dataset.id ?? "";
+      const key = `${kind}:${id}`;
+      setSelected((prev) => {
+        const next = new Map(prev);
+        if (el.checked) next.set(key, { kind, id });
+        else next.delete(key);
+        return next;
+      });
+    };
     document.addEventListener("click", onClick);
-    return () => document.removeEventListener("click", onClick);
+    document.addEventListener("change", onChange);
+    return () => {
+      document.removeEventListener("click", onClick);
+      document.removeEventListener("change", onChange);
+    };
   }, [loadItem, removeItem]);
+
+  const selectedItems = [...selected.values()];
+  const clearSelection = () => {
+    setSelected(new Map());
+    document
+      .querySelectorAll<HTMLInputElement>("[data-catalog-select]:checked")
+      .forEach((el) => {
+        el.checked = false;
+      });
+  };
 
   const save = useMutation({
     mutationFn: async (d: Draft) => {
@@ -224,6 +275,37 @@ export default function CatalogEditor({
       {load.isPending && (
         <div className="fixed right-4 bottom-4 z-[var(--z-toast)] flex items-center gap-2 rounded-md border bg-popover px-3 py-2 text-sm shadow-md">
           <Loader2 className="size-4 animate-spin" /> Loading…
+        </div>
+      )}
+      {selectedItems.length > 0 && (
+        <div className="fixed inset-x-0 bottom-4 z-[var(--z-toast)] mx-auto flex w-fit items-center gap-3 rounded-full border bg-popover px-4 py-2 text-sm shadow-lg">
+          <span>
+            {selectedItems.length} selected
+          </span>
+          <Button variant="ghost" size="sm" onClick={clearSelection}>
+            Clear
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={bulkRemove.isPending}
+            onClick={() =>
+              requestConfirm({
+                title: `Delete ${selectedItems.length} item(s)?`,
+                message:
+                  "These will be removed from the platform catalog: " +
+                  selectedItems.map((i) => i.id).join(", "),
+                onConfirm: () => bulkRemove.mutate(selectedItems),
+              })
+            }
+          >
+            {bulkRemove.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Trash2 className="size-4" />
+            )}
+            Delete selected
+          </Button>
         </div>
       )}
       <Sheet open={!!draft} onOpenChange={(o) => !o && setDraft(null)}>

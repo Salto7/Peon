@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Callable, Iterator
 from functools import wraps
-from collections.abc import AsyncIterator, Iterator
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from django.contrib import messages
 from django.db import models
-from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http import Http404, HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect
 
 from orchestrator.utils.strings import as_str_list
@@ -38,9 +38,13 @@ def with_project_context(view: _V) -> _V:
     @wraps(view)
     def _wrapped(request: HttpRequest, pk, *args: Any, **kwargs: Any):
         from peon.projects.db import using_project
+        from peon.projects.models import Project
 
-        with using_project(pk):
-            return view(request, pk, *args, **kwargs)
+        try:
+            with using_project(pk):
+                return view(request, pk, *args, **kwargs)
+        except Project.DoesNotExist as exc:
+            raise Http404("Project not found") from exc
 
     return _wrapped  # type: ignore[return-value]
 

@@ -19,6 +19,20 @@ services:
     entrypoint: ["/bin/true"]
     restart: "no"
 
+  # The lab only (Toolsmith install tests + OpenCode authoring) —
+  # peon-sandbox:local plus a pinned OpenCode CLI
+  # baked in at build time (no network fetch at authoring time). Never used
+  # for engagement project sandboxes or OpenShell.
+  sandbox-lab:
+    build:
+      context: .
+      dockerfile: Docker/sandbox-lab/Dockerfile
+    image: peon-sandbox-lab:local
+    depends_on:
+      - sandbox
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
   # Message broker for Dramatiq — queues long-running job actors for the worker.
   redis:
     image: redis:7-alpine
@@ -62,7 +76,7 @@ services:
     volumes:
       - peon_workspaces:/workspaces
       - peon_sockets:/tmp/peon
-      # Learn install-lab create/test/delete (AJAX). Project sandbox cleanup stays on worker.
+      # Lab create/test/delete (AJAX). Project sandbox cleanup stays on worker.
       - /var/run/docker.sock:/var/run/docker.sock
       # Live-edit UI / control plane without rebuild (uvicorn --reload).
       - ./peon:/app/peon

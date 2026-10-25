@@ -6,8 +6,9 @@ in-memory shape, seed defaults, and validation helpers.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from orchestrator.skills.common import SKILL_NAME_RE
 

@@ -95,7 +95,7 @@ class ToolCards(CatalogCardsBase):
 
     @classmethod
     def summaries(cls, *, include_image: bool = False) -> list[dict]:
-        """Compact id/binary/name rows (Learn Toolsmith picker)."""
+        """Compact id/binary/name rows (Toolsmith picker)."""
         return [
             {
                 "id": t.id,

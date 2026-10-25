@@ -192,4 +192,4 @@ Prefer **`custom`** in new YAML.
 
 - Loader / provisioner: `orchestrator/tools/catalog/catalog.py`
 - Missing-CLI cascade (catalog → planner): `orchestrator/tools/install.py`
-- Toolsmith: Lab page drafts catalog YAML and skill packs (`peon/projects/learn.py`)
+- Toolsmith: Lab page drafts catalog YAML and skill packs (`peon/projects/toolsmith.py`)

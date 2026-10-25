@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
-from django.shortcuts import render
-from django.urls import include, path
+from django.shortcuts import redirect, render
+from django.urls import include, path, reverse
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from orchestrator.crew.dreaming import DreamingService
@@ -19,6 +19,12 @@ def lab_index(request: HttpRequest) -> HttpResponse:
         "lab/index.html",
         {"nav": "lab", "lab_section": ""},
     )
+
+
+@require_GET
+def lab_roles_page(request: HttpRequest) -> HttpResponse:
+    """Lab → Roles: roles are edited in the shared catalog; keep the old URL working."""
+    return redirect(reverse("catalog") + "#roles")
 
 
 @require_GET
@@ -136,8 +142,8 @@ def lab_dream_clear(request: HttpRequest) -> JsonResponse:
 
 urlpatterns = [
     path("", lab_index, name="lab"),
-    path("toolsmith/", include("peon.projects.learn")),
-    path("roles/", include("peon.projects.lab_roles")),
+    path("toolsmith/", include("peon.projects.toolsmith")),
+    path("roles/", lab_roles_page, name="lab_roles"),
     path("dream/", lab_dream_page, name="lab_dream"),
     path("dream/api/status/", lab_dream_status, name="lab_dream_status"),
     path("dream/api/catalog/", lab_dream_catalog, name="lab_dream_catalog"),

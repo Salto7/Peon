@@ -25,13 +25,13 @@ def _run() -> int:
         print("usage: provide a tool request as argv", file=sys.stderr)
         return 2
 
-    out_dir = workspace_path() / "learn"
+    out_dir = workspace_path() / "toolsmith"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        from orchestrator.learn.authoring import LearnAuthoring
+        from orchestrator.toolsmith import PeonAuthoring
 
-        result = LearnAuthoring.shared().suggest_tool(prompt)
+        result = PeonAuthoring.shared().suggest_tool(prompt)
     except Exception as exc:  # noqa: BLE001 — surface to skill stream
         (out_dir / "notes.md").write_text(
             f"# tools-suggestor failed\n\n```\n{exc}\n```\n",

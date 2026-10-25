@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from orchestrator.crew.roles.model import RoleSpec
 from orchestrator.crew.tools.catalog import canonicalize_crew_tools

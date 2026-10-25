@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
+from typing import Any
 
-from typing import Any, Iterable
-
+from peon.projects.asset_graph import AssetGraphEngine
 from peon.projects.models import Project, RulesOfEngagement
 from peon.projects.target_discovery import SubjectCanonicalizer
 from peon.projects.target_shapes import (
@@ -14,7 +15,6 @@ from peon.projects.target_shapes import (
     extract_targets,
     is_subject_type,
 )
-from peon.projects.asset_graph import AssetGraphEngine
 
 logger = logging.getLogger(__name__)
 

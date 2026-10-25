@@ -13,10 +13,10 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Iterable
 from typing import Any
 
 import httpx
-
 from django.conf import settings
 
 from orchestrator.utils.service import SharedServiceBase
@@ -285,10 +285,11 @@ class CogneeBackend(SharedServiceBase):
             logger.warning("cognee clear_dataset(%s) failed: %s", name, exc)
         return removed
 
-    def clear_all(self) -> dict[str, Any]:
-        """Delete every dataset (documents, graph and vectors) the sidecar holds."""
+    def delete_datasets(self, names: Iterable[str] | None = None) -> dict[str, Any]:
+        """Delete datasets (documents, graph and vectors); every one when ``names`` is None."""
         if not self.enabled():
             return {"ok": False, "skipped": True, "reason": "disabled", "deleted": []}
+        wanted = None if names is None else {str(n) for n in names}
         rows = self.datasets().get("datasets") or []
         deleted: list[str] = []
         errors: list[str] = []
@@ -296,6 +297,8 @@ class CogneeBackend(SharedServiceBase):
             if not isinstance(row, dict) or not row.get("id"):
                 continue
             name = str(row.get("name") or row["id"])
+            if wanted is not None and name not in wanted:
+                continue
             try:
                 code, _ = self._request("DELETE", f"/api/v1/datasets/{row['id']}")
             except Exception as exc:  # noqa: BLE001
@@ -306,6 +309,10 @@ class CogneeBackend(SharedServiceBase):
             else:
                 errors.append(f"{name}: HTTP {code}")
         return {"ok": not errors, "deleted": deleted, "errors": errors}
+
+    def clear_all(self) -> dict[str, Any]:
+        """Delete every dataset the sidecar holds."""
+        return self.delete_datasets()
 
     def datasets(self) -> dict[str, Any]:
         if not self.enabled():

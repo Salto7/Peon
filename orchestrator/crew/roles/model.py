@@ -6,8 +6,9 @@ affinity-bound skill packs.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from orchestrator.config import get_config
 from orchestrator.crew.tools import build_tools, with_collab_tools
@@ -182,6 +183,11 @@ def build_crew_agent(
             "`platform`, with no targets/IPs/emails/URLs), and the reason "
             "behind decisions. Operator feedback overrides your own "
             "preference. Retire notes you find wrong with `forget_memory`."
+            "\n\n## Credentials\n"
+            "`list_credentials` shows what this project's key store holds "
+            "(name/kind/username/domain only). `get_credential` returns the "
+            "plaintext of one, by name, for use in a command — never paste a "
+            "secret value into a message, finding, or memory note."
         ).strip()
     if dispatch_only and tools is None:
         backstory = (

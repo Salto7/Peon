@@ -14,8 +14,8 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator
 
 from agent_runtime.api import TerminalHandle
 from peon.projects.sandbox import ProjectSandbox

@@ -1,7 +1,7 @@
 """Optional LiteLLM OpenAI-compatible proxy lifecycle (Settings toggle).
 
 Peon agent traffic stays in-process. This gateway is for external clients
-(OpenCode in Learn lab). Intent lives in ``PeonSettings``; process side starts
+(OpenCode in the Toolsmith lab). Intent lives in ``PeonSettings``; process side starts
 or stops the ``peon-litellm`` container on the Compose network.
 """
 

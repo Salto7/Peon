@@ -11,16 +11,16 @@ from django.utils import timezone as dj_tz
 from orchestrator.utils.schedule_time import aware_utc, compute_next_run
 from peon.projects.checkpoints import write_job_checkpoint
 from peon.projects.models import (
+    INACTIVE_PROJECT_STATUSES,
+    TERMINAL_JOB_STATUSES,
     Job,
     JobStatus,
     Objective,
     ObjectiveStatus,
     Project,
-    INACTIVE_PROJECT_STATUSES,
     ProjectKind,
     ProjectSchedule,
     ScheduleKind,
-    TERMINAL_JOB_STATUSES,
 )
 from peon.projects.objectives import ObjectiveScheduler
 from peon.projects.tasks import enqueue_job

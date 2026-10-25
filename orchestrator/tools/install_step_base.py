@@ -4,6 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
+
 class InstallStepBase(ABC):
     """One catalog install action (custom / apt / github_release / pip / git_clone)."""
 

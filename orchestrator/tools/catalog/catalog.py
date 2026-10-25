@@ -426,7 +426,7 @@ class CatalogProvisioner(SharedServiceBase):
 
     @staticmethod
     def run_verify(tool: CatalogTool) -> dict[str, Any]:
-        """Run verify commands and return structured output for Learn / logs."""
+        """Run verify commands and return structured output for Toolsmith / logs."""
         steps_out: list[dict[str, Any]] = []
         any_ok = False
         chunks: list[str] = []

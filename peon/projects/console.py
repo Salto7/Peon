@@ -3,26 +3,29 @@
 from __future__ import annotations
 
 import logging
+
 from django.core.exceptions import ObjectDoesNotExist
 from django.http import JsonResponse
 from django.urls import reverse
+
 from orchestrator.utils.llm import LLM_NOT_CONFIGURED, chat_json, chat_text, llm_configured
 from peon.projects.crew_control import instruct_project, pause_project, replan_project
-from peon.projects.http_helpers import json_or_redirect, request_values, wants_json as request_wants_json
-from peon.projects.lifecycle import project_allows_operator
-from peon.projects.roe_ops import authorize_operator_scope
 from peon.projects.hitl import first_open_prompt, resolve_operator_prompt
+from peon.projects.http_helpers import json_or_redirect, request_values
+from peon.projects.http_helpers import wants_json as request_wants_json
+from peon.projects.lifecycle import project_allows_operator
 from peon.projects.models import (
     AgentMessage,
     Finding,
     Job,
     JobStatus,
     ObjectiveStatus,
+    OperatorPrompt,
     Project,
     ProjectStatus,
-    OperatorPrompt,
     StreamMessage,
 )
+from peon.projects.roe_ops import authorize_operator_scope
 from peon.projects.streaming import (
     anchor_job,
     audit_project_stream,

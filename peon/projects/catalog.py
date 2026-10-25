@@ -11,9 +11,12 @@ from django.urls import path, reverse
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from orchestrator.crew.roles.catalog import ROLE_KINDS
-from orchestrator.crew.router import RoleRouter
 from orchestrator.crew.roles.registry import RoleRegistry
+from orchestrator.crew.router import RoleRouter
+from orchestrator.skills.registry import SkillRegistry
 from orchestrator.tools.catalog import ToolCatalog
+from orchestrator.utils.strings import as_str_list
+from peon.projects import marketplace_ops
 from peon.projects.catalog_cards import (
     CatalogCardsBase,
     McpCards,
@@ -22,16 +25,14 @@ from peon.projects.catalog_cards import (
     ToolCards,
 )
 from peon.projects.catalog_edit import (
+    delete_tool_source,
     load_skill_source,
     load_tool_source,
     save_skill_source,
     save_tool_source,
 )
-from orchestrator.utils.strings import as_str_list
-from peon.projects import marketplace_ops
 from peon.projects.http_helpers import json_errors, parse_json_body
 from peon.projects.platform_catalog import PlatformCatalog
-from orchestrator.skills.registry import SkillRegistry
 
 __all__ = [
     "CatalogCardsBase",
@@ -274,11 +275,19 @@ def api_skill_source(request: HttpRequest, skill_id: str) -> JsonResponse:
     return JsonResponse(result, status=status)
 
 
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["GET", "POST", "DELETE"])
 @json_errors
 def api_tool_source(request: HttpRequest, tool_id: str) -> JsonResponse:
     if request.method == "GET":
         return _source_response(load_tool_source, tool_id)
+    if request.method == "DELETE":
+        try:
+            delete_tool_source(tool_id)
+        except FileNotFoundError:
+            return JsonResponse({"ok": False, "error": "not found"}, status=404)
+        except ValueError as exc:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+        return JsonResponse({"ok": True, "id": tool_id})
     body = parse_json_body(request, strict=False) or {}
     return JsonResponse(
         save_tool_source(
@@ -337,6 +346,7 @@ def _bindings_from_body(body: dict) -> list[dict] | None:
 
 
 @require_http_methods(["GET", "POST", "DELETE"])
+@json_errors
 def api_role_write(request: HttpRequest, name: str) -> JsonResponse:
     catalog = PlatformCatalog.shared()
     if request.method == "GET":
@@ -366,64 +376,48 @@ def api_role_write(request: HttpRequest, name: str) -> JsonResponse:
             }
         )
     if request.method == "DELETE":
-        try:
-            catalog.delete_role(name)
-        except KeyError:
-            return JsonResponse({"ok": False, "error": "not found"}, status=404)
-        except ValueError as exc:
-            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+        catalog.delete_role(name)
         return JsonResponse({"ok": True, "id": name})
     body = parse_json_body(request, strict=False) or {}
-    try:
-        saved = catalog.upsert_role(
-            role_id=str(body.get("role_id") or name),
-            kind=str(body.get("kind") or ""),
-            aliases=body.get("aliases") or [],
-            protected=body.get("protected") if "protected" in body else None,
-            previous_id="" if name in {"", "__new__"} else name,
-            goal=str(body.get("goal") or ""),
-            backstory=str(body.get("backstory") or ""),
-        )
-    except ValueError as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    saved = catalog.upsert_role(
+        role_id=str(body.get("role_id") or name),
+        kind=str(body.get("kind") or ""),
+        aliases=body.get("aliases") or [],
+        protected=body.get("protected") if "protected" in body else None,
+        previous_id="" if name in {"", "__new__"} else name,
+        goal=str(body.get("goal") or ""),
+        backstory=str(body.get("backstory") or ""),
+    )
     return JsonResponse({"ok": True, "id": saved.id, "kind": saved.kind})
 
 
 @require_http_methods(["POST"])
+@json_errors
 def api_role_create(request: HttpRequest) -> JsonResponse:
     body = parse_json_body(request, strict=False) or {}
-    try:
-        saved = PlatformCatalog.shared().upsert_role(
-            role_id=str(body.get("role_id") or ""),
-            kind=str(body.get("kind") or "technical"),
-            aliases=body.get("aliases") or [],
-            goal=str(body.get("goal") or ""),
-            backstory=str(body.get("backstory") or ""),
-        )
-    except ValueError as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    saved = PlatformCatalog.shared().upsert_role(
+        role_id=str(body.get("role_id") or ""),
+        kind=str(body.get("kind") or "technical"),
+        aliases=body.get("aliases") or [],
+        goal=str(body.get("goal") or ""),
+        backstory=str(body.get("backstory") or ""),
+    )
     return JsonResponse({"ok": True, "id": saved.id})
 
 
 @require_http_methods(["DELETE"])
+@json_errors
 def api_skill_delete(request: HttpRequest, skill_id: str) -> JsonResponse:
-    try:
-        PlatformCatalog.shared().delete_skill(skill_id)
-    except KeyError:
-        return JsonResponse({"ok": False, "error": "not found"}, status=404)
-    except ValueError as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    PlatformCatalog.shared().delete_skill(skill_id)
     return JsonResponse({"ok": True, "id": skill_id})
 
 
 @require_http_methods(["GET", "POST", "DELETE"])
+@json_errors
 def api_mcp_detail(request: HttpRequest, mcp_id: str) -> JsonResponse:
     catalog = PlatformCatalog.shared()
     if request.method == "DELETE":
-        try:
-            catalog.delete_mcp(mcp_id)
-        except KeyError:
-            return JsonResponse({"ok": False, "error": "not found"}, status=404)
+        catalog.delete_mcp(mcp_id)
         return JsonResponse({"ok": True, "id": mcp_id})
     if request.method == "GET":
         if mcp_id in {"", "__new__"}:
@@ -474,17 +468,14 @@ def api_mcp_detail(request: HttpRequest, mcp_id: str) -> JsonResponse:
     files = body.get("files") or {}
     if not isinstance(files, dict):
         return JsonResponse({"ok": False, "error": "files must be an object"}, status=400)
-    try:
-        bindings = _bindings_from_body(body)
-        saved = catalog.save_mcp_document(
-            document,
-            files={str(k): str(v) for k, v in files.items()},
-            bindings=bindings,
-            enabled=body.get("enabled") if "enabled" in body else None,
-            rename_from="" if mcp_id in {"", "__new__"} else mcp_id,
-        )
-    except ValueError as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    bindings = _bindings_from_body(body)
+    saved = catalog.save_mcp_document(
+        document,
+        files={str(k): str(v) for k, v in files.items()},
+        bindings=bindings,
+        enabled=body.get("enabled") if "enabled" in body else None,
+        rename_from="" if mcp_id in {"", "__new__"} else mcp_id,
+    )
     return JsonResponse(
         {"ok": True, "id": saved[-1].mcp_id, "ids": [rec.mcp_id for rec in saved]}
     )
@@ -620,6 +611,7 @@ def api_mcp_upload(request: HttpRequest) -> HttpResponse:
 
 
 @require_http_methods(["GET", "POST"])
+@json_errors
 def api_marketplace_sources(request: HttpRequest) -> JsonResponse:
     if request.method == "GET":
         return JsonResponse({"ok": True, "sources": marketplace_ops.list_sources()})
@@ -630,17 +622,14 @@ def api_marketplace_sources(request: HttpRequest) -> JsonResponse:
         if int(upload.size or 0) > _MAX_UPLOAD_BYTES:
             return JsonResponse({"ok": False, "error": "Upload is larger than 20 MB"}, status=400)
         archive_bytes = upload.read()
-    try:
-        source = marketplace_ops.create_source(
-            name=body.get("name") or request.POST.get("name") or "",
-            source_type=body.get("source_type") or request.POST.get("source_type") or "",
-            url=body.get("url") or request.POST.get("url") or "",
-            ref=body.get("ref") or request.POST.get("ref") or "",
-            subpath=body.get("subpath") or request.POST.get("subpath") or "",
-            archive_bytes=archive_bytes,
-        )
-    except ValueError as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    source = marketplace_ops.create_source(
+        name=body.get("name") or request.POST.get("name") or "",
+        source_type=body.get("source_type") or request.POST.get("source_type") or "",
+        url=body.get("url") or request.POST.get("url") or "",
+        ref=body.get("ref") or request.POST.get("ref") or "",
+        subpath=body.get("subpath") or request.POST.get("subpath") or "",
+        archive_bytes=archive_bytes,
+    )
     return JsonResponse({"ok": True, "source": source})
 
 

@@ -441,6 +441,36 @@ def _record_for_role(name: str, role_id: str):
     return full
 
 
+def _resolve_credentials(project_id: str, rec, stored: dict[str, str]) -> dict[str, str]:
+    """Replace each ``credential``-type field's stored name with the plaintext.
+
+    Resolved only here, right before the MCP subprocess launches — the
+    referenced name is what the catalog/UI ever stores or displays.
+    """
+    fields = {f["name"]: f for f in rec.env_schema_full}
+    credential_fields = {
+        name for name, spec in fields.items() if spec.get("type") == "credential"
+    }
+    if not credential_fields or not project_id:
+        return stored
+    from peon.projects import credentials as credential_store
+
+    resolved = dict(stored)
+    for name in credential_fields:
+        ref = stored.get(name)
+        if not ref:
+            continue
+        found = credential_store.get_credential_secret(project_id, ref)
+        if found is None:
+            logger.warning(
+                "mcp %s: credential %r not found for project %s", rec.mcp_id, ref, project_id
+            )
+            resolved.pop(name, None)
+            continue
+        resolved[name] = found.as_env(fields[name].get("credential_part") or "secret")
+    return resolved
+
+
 def _project_env(project_id: str, rec) -> tuple[dict[str, str], list[str]]:
     stored: dict[str, str] = {}
     if project_id:
@@ -466,6 +496,12 @@ def _project_env(project_id: str, rec) -> tuple[dict[str, str], list[str]]:
     missing = [name for name, required in rec.env_schema if required and not stored.get(name)]
     allowed = {name for name, _req in rec.env_schema}
     env = {key: value for key, value in stored.items() if not allowed or key in allowed}
+    env = _resolve_credentials(project_id, rec, env)
+    missing += [
+        name
+        for name, required in rec.env_schema
+        if required and name not in missing and name not in env
+    ]
     return env, missing
 
 

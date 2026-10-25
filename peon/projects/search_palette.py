@@ -56,7 +56,7 @@ def search_json(request: HttpRequest) -> JsonResponse:
             "label": "Lab",
             "group": "Navigate",
             "href": reverse("lab"),
-            "keywords": "learn lab toolsmith dream cognee author skill tool yaml",
+            "keywords": "lab toolsmith dream cognee author skill tool yaml",
         },
         {
             "id": "nav-lab-toolsmith",

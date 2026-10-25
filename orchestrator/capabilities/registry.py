@@ -5,15 +5,15 @@ Called capabilities (not “tools”) to avoid confusion with ``tools/catalog``.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Iterable
+from enum import StrEnum
+from typing import Any
 
 _REGISTERED = False
 
 
-class CapabilityGroup(str, Enum):
+class CapabilityGroup(StrEnum):
     SANDBOX = "sandbox"
     ENGAGEMENT = "engagement"
 

@@ -1,7 +1,23 @@
-"""OpenCode authoring inside the Learn lab (via LiteLLM proxy).
+"""OpenCode — the other ``CodeWritingEngine``, inside the Toolsmith lab only.
 
-Replaces thin ``chat_json`` scaffolding for Toolsmith create flows with a real
-coding agent that edits files on disk in the lab workspace.
+See ``orchestrator.toolsmith.engine.CodeWritingEngine`` for the shared
+contract and every prompt both engines use; see ``orchestrator.toolsmith
+.peon_engine.PeonAuthoring`` for the plain-``chat_json`` one. OpenCode's own
+job is narrower than "authoring": it writes and runs the actual provisioning
+code a tool or a skill's script needs, inside a real sandbox, so the draft
+is something that has actually executed — not just plausible-looking
+YAML/shell text.
+
+Scope fence, deliberate and not just incidental: this module is reached only
+from Toolsmith (``peon/projects/toolsmith.py``). Nothing here runs against
+an engagement project or its sandbox, and nothing in ``job_run.py`` or any
+``orchestrator/crew/runtimes/*`` may import it — if a future change wants
+OpenCode driving real project work, that is a different, much bigger
+decision than this module makes today.
+
+OpenCode itself is baked into the lab image (``Docker/sandbox-lab/``) at a
+pinned version — never fetched here at authoring time. See ``Lab`` for the
+one-container lifecycle both this module and install-testing share.
 """
 
 from __future__ import annotations
@@ -16,23 +32,10 @@ from typing import Any
 import yaml
 from django.conf import settings
 
-from orchestrator.learn.authoring import LearnAuthoring
-from orchestrator.learn.draft import (
-    authoring_prompt,
-    catalog_summaries,
-    filter_catalog,
-    finalize_skill_payload,
-    propose_missing_tool,
-    skill_prompt,
-    skill_result_dict,
-    tool_replan_human,
-    tool_suggest_human,
-    tool_suggestion_from_payload,
-    valid_skill_name,
-)
-from orchestrator.learn.system_skills import skill_writer_skill, tools_suggestor_skill
+from orchestrator.toolsmith.draft import finalize_skill_payload, skill_result_dict, valid_skill_name
+from orchestrator.toolsmith.engine import CodeWritingEngine
 from orchestrator.utils.service import SharedServiceBase
-from peon.projects.learn_lab import LearnLab
+from peon.projects.lab_runtime import Lab
 from peon.projects.llm_proxy import LlmProxy
 
 logger = logging.getLogger(__name__)
@@ -42,21 +45,28 @@ PROXY_REQUIRED_MSG = (
     "Enable LLM_PROXY_ENABLED in Settings, then retry."
 )
 
-_OPENCODE_INSTALL = (
-    'export PATH="$HOME/.opencode/bin:/usr/local/bin:$PATH"; '
-    "if command -v opencode >/dev/null 2>&1; then command -v opencode; exit 0; fi; "
-    "export DEBIAN_FRONTEND=noninteractive; "
-    "apt-get update -qq && "
-    "apt-get install -y --no-install-recommends ca-certificates curl bash "
-    ">/dev/null && "
-    "curl -fsSL https://opencode.ai/install | bash && "
-    'export PATH="$HOME/.opencode/bin:$PATH"; '
-    "command -v opencode"
-)
+# One generic harness instruction for every kind: the skill-specific ./out/
+# guidance is harmless noise for a tool/replan task (nothing to put there),
+# so one template beats three near-identical ones.
+_AGENTS_MD = """# Peon Toolsmith authoring task
+
+Read SYSTEM.md and REQUEST.md, then do what REQUEST.md asks.
+
+If the task is a skill: author it under ./out/ as real files (SKILL.md, a
+shebang script when a CLI is required, references/ when linked) — not just
+described in result.json.
+
+Write result.json at the workspace root when done, with the keys REQUEST.md
+asked for. For a skill, result.json's own content can be a summary; the
+files under ./out/ are what's kept. Do not ask questions. Use only relative
+paths under this workspace.
+"""
 
 
-class OpenCodeAuthoring(SharedServiceBase):
-    """Run OpenCode in the Learn lab against Peon's LiteLLM /v1 proxy."""
+class OpenCodeEngine(CodeWritingEngine, SharedServiceBase):
+    """``CodeWritingEngine`` that runs OpenCode in the Toolsmith lab."""
+
+    engine_id = "opencode"
 
     def require_proxy(self) -> None:
         if not LlmProxy.intent_enabled():
@@ -72,114 +82,9 @@ class OpenCodeAuthoring(SharedServiceBase):
                     "Check Settings → LLM proxy, or docker logs for peon-litellm."
                 )
 
-    def suggest_tool(self, prompt: str) -> dict[str, Any]:
-        text = (prompt or "").strip()
-        if not text:
-            raise ValueError("prompt is required")
+    def _run(self, *, kind: str, system: str, human: str) -> dict[str, Any]:
         self.require_proxy()
-        payload = self._run_json_task(
-            kind="tool",
-            system=skill_prompt(tools_suggestor_skill()),
-            human=tool_suggest_human(text),
-            result_hint=(
-                "Write result.json with keys: id, yaml, install_script, notes. "
-                "yaml must be a full catalog tool YAML string."
-            ),
-        )
-        return tool_suggestion_from_payload(
-            payload,
-            author="opencode",
-        )
-
-    def write_skill(self, prompt: str, *, tools: list[str] | None = None) -> dict[str, Any]:
-        text = (prompt or "").strip()
-        if not text:
-            raise ValueError("prompt is required")
-        self.require_proxy()
-        catalog = filter_catalog(
-            catalog_summaries(),
-            tools,
-        )
-
-        tool_suggestion, proposed, install_recipes = propose_missing_tool(
-            text, LearnAuthoring.suggest_tool
-        )
-
-        payload = self._run_json_task(
-            kind="skill",
-            system=skill_prompt(skill_writer_skill()),
-            human=authoring_prompt(
-                text,
-                catalog,
-                proposed=proposed,
-                tool_recipes=install_recipes or None,
-            ),
-            result_hint=(
-                "Author a Claude Agent Skill under ./out/ (SKILL.md, a shebang "
-                "script when a CLI is required, references/ when linked). "
-                "Also write result.json with keys: "
-                "name, skill_md, files (object of relative path → content), "
-                "notes, suggested_tools. Prefer real files under ./out/ — "
-                "result.json must still include the full contents."
-            ),
-        )
-        if not isinstance(payload, dict):
-            raise RuntimeError("OpenCode returned non-object JSON for skill")
-
-        name, skill_md, files, suggested, mode, lint = finalize_skill_payload(
-            payload,
-            prompt=text,
-            proposed=proposed,
-            install_recipes=install_recipes,
-        )
-        return skill_result_dict(
-            name=name,
-            skill_md=skill_md,
-            files=files,
-            notes=str(payload.get("notes") or "").strip(),
-            suggested=suggested,
-            mode=mode,
-            lint=lint,
-            tool_suggestion=tool_suggestion,
-            author="opencode",
-        )
-
-    def replan_tool(
-        self,
-        *,
-        prompt: str,
-        yaml_text: str,
-        install_script: str = "",
-        error: str = "",
-        feedback: str = "",
-    ) -> dict[str, Any]:
-        self.require_proxy()
-        payload = self._run_json_task(
-            kind="tool-replan",
-            system=skill_prompt(tools_suggestor_skill()),
-            human=tool_replan_human(
-                prompt=prompt,
-                yaml_text=yaml_text,
-                install_script=install_script,
-                error=error,
-                feedback=feedback,
-            ),
-            result_hint=("Write result.json with keys: id, yaml, install_script, notes."),
-        )
-        return tool_suggestion_from_payload(
-            payload,
-            author="opencode",
-        )
-
-    def _run_json_task(
-        self,
-        *,
-        kind: str,
-        system: str,
-        human: str,
-        result_hint: str,
-    ) -> dict[str, Any]:
-        lab = LearnLab.shared()
+        lab = Lab.shared()
         staging = lab.staging_root()
         draft = Path(tempfile.mkdtemp(prefix=f"opencode-{kind}-", dir=str(staging)))
         rel = draft.relative_to(staging).as_posix()
@@ -187,24 +92,15 @@ class OpenCodeAuthoring(SharedServiceBase):
             (draft / "SYSTEM.md").write_text(system.rstrip() + "\n", encoding="utf-8")
             (draft / "REQUEST.md").write_text(human.rstrip() + "\n", encoding="utf-8")
             (draft / "out").mkdir(parents=True, exist_ok=True)
-            (draft / "AGENTS.md").write_text(
-                (
-                    "# Peon Toolsmith authoring task\n\n"
-                    "Read SYSTEM.md and REQUEST.md.\n"
-                    f"{result_hint}\n"
-                    "Do not ask questions. Write result.json at the workspace root.\n"
-                    "Use only relative paths under this workspace.\n"
-                ),
-                encoding="utf-8",
-            )
+            (draft / "AGENTS.md").write_text(_AGENTS_MD, encoding="utf-8")
             self._write_opencode_config(draft)
 
-            info = lab.ensure_for_authoring(workspace_host=str(staging))
-            session = lab.connect(authoring=True)
-            bootstrap = session.exec(_OPENCODE_INSTALL, timeout=300, shell=True)
-            if bootstrap.code != 0:
-                detail = (bootstrap.stderr or bootstrap.stdout or "").strip()[:500]
-                raise RuntimeError(f"OpenCode install failed in Learn lab: {detail}")
+            # Always a freshly-reset lab: OpenCode is baked into the image
+            # (no install step needed), so there is no reuse-for-speed
+            # tradeoff left to make — every authoring task gets a known-clean
+            # container, the same guarantee an install test gets.
+            lab._ensure_clean()
+            session = lab.connect()
 
             model = (
                 str(getattr(settings, "OPENCODE_MODEL", None) or "peon/default").strip()
@@ -244,27 +140,52 @@ class OpenCodeAuthoring(SharedServiceBase):
                 raise RuntimeError(f"OpenCode result.json is invalid: {exc}") from exc
             if not isinstance(payload, dict):
                 raise RuntimeError("OpenCode result.json must be an object")
-            out_files = self._collect_files(draft / "out")
-            if out_files and kind.startswith("skill"):
-                files = dict(payload.get("files") or {})
-                files.update(out_files)
-                if "SKILL.md" in out_files and not payload.get("skill_md"):
-                    payload["skill_md"] = out_files["SKILL.md"]
-                payload["files"] = {k: v for k, v in files.items() if k != "SKILL.md"}
-                if not payload.get("name"):
-                    for child in (draft / "out").iterdir():
-                        if child.is_dir() and valid_skill_name(child.name):
-                            payload["name"] = child.name
-                            break
+            # Stash the ./out/ files for _finish_skill — a tool/replan kind
+            # never writes any, so this is a no-op for those.
+            payload["_out_files"] = self._collect_files(draft / "out")
+            payload["_out_dir"] = str(draft / "out")
             logger.info(
                 "opencode authoring ok kind=%s lab=%s draft=%s",
                 kind,
-                info.name,
+                lab.container_name(),
                 draft,
             )
             return payload
         finally:
             shutil.rmtree(draft, ignore_errors=True)
+
+    def _finish_skill(self, payload: dict[str, Any], **context: Any) -> dict[str, Any]:
+        out_files = payload.pop("_out_files", {}) or {}
+        out_dir = Path(payload.pop("_out_dir", ""))
+        if out_files:
+            files = dict(payload.get("files") or {})
+            files.update(out_files)
+            if "SKILL.md" in out_files and not payload.get("skill_md"):
+                payload["skill_md"] = out_files["SKILL.md"]
+            payload["files"] = {k: v for k, v in files.items() if k != "SKILL.md"}
+            if not payload.get("name") and out_dir.is_dir():
+                for child in out_dir.iterdir():
+                    if child.is_dir() and valid_skill_name(child.name):
+                        payload["name"] = child.name
+                        break
+
+        name, skill_md, files, suggested, mode, lint = finalize_skill_payload(
+            payload,
+            prompt=context["prompt"],
+            proposed=context["proposed"],
+            install_recipes=context["install_recipes"],
+        )
+        return skill_result_dict(
+            name=name,
+            skill_md=skill_md,
+            files=files,
+            notes=str(payload.get("notes") or "").strip(),
+            suggested=suggested,
+            mode=mode,
+            lint=lint,
+            tool_suggestion=context["tool_suggestion"],
+            author=self.engine_id,
+        )
 
     def _write_opencode_config(self, draft: Path) -> None:
         proxy = LlmProxy.shared()
@@ -329,6 +250,8 @@ class OpenCodeAuthoring(SharedServiceBase):
                 "files": files,
                 "notes": "Recovered from OpenCode ./out (no result.json).",
                 "suggested_tools": [],
+                "_out_files": {},
+                "_out_dir": "",
             }
         for key in ("tool.yaml", "catalog.yaml", "result.yaml"):
             if key in files:

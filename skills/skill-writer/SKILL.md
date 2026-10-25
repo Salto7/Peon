@@ -5,7 +5,7 @@ allowed-tools: Bash Read
 ---
 
 ## Goal
-Produce a **skills-ref-clean** Claude Agent Skill under `workspace/learn/skill/<name>/`:
+Produce a **skills-ref-clean** Claude Agent Skill under `workspace/toolsmith/skill/<name>/`:
 
 - SKILL.md — Agent Skills frontmatter (name, description, allowed-tools Bash and Read)
 - a bash entry with a shebang that execs the required CLI

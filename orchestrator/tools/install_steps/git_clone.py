@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator.tools.install_step_base import InstallStepBase
-from orchestrator.tools.install_steps.apt import AptInstallStep
 from orchestrator.tools.install_steps import util as _iu
+from orchestrator.tools.install_steps.apt import AptInstallStep
 from orchestrator.tools.install_steps.util import _REPO_RE
 
 

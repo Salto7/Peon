@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from orchestrator.skills.runtime.bodies import run_skill_script_body
 

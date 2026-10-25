@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 ToolFactory = Callable[[], Any]
 
@@ -24,6 +25,9 @@ COLLAB_TOOLS: tuple[str, ...] = (
     "recall_memory",
     "save_memory",
     "forget_memory",
+    # Project key store: every role may use project credentials.
+    "list_credentials",
+    "get_credential",
     # A2A: address other agents directly; idle agents wake on messages.
     "list_team",
     "send_message",
@@ -62,6 +66,8 @@ ANALYZER_RUNTIME_TOOLS: tuple[str, ...] = (
     "recall_memory",
     "save_memory",
     "forget_memory",
+    "list_credentials",
+    "get_credential",
     "list_workspace_artifacts",
     "read_workspace_artifact",
     "write_report_note",

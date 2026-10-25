@@ -5,9 +5,10 @@ All packs live under ``skills/``. Type is not chosen by directory split.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from orchestrator.skills.common import split_frontmatter
 from orchestrator.skills.manifest import (

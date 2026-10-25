@@ -9,9 +9,9 @@ from __future__ import annotations
 import shlex
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Callable
 
 from agent_runtime.util import SharedBase
 
@@ -49,7 +49,7 @@ class RuntimeSpec:
     project_id: str = ""
     name: str = ""
     image: str = ""
-    role: str = "project"  # project | shared | learn-lab
+    role: str = "project"  # project | shared | lab
     workspace_host: str = ""
     skills_host: str = ""
     skills_imported_host: str = ""

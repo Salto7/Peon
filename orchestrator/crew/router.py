@@ -12,6 +12,7 @@ from orchestrator.utils.llm import chat_text, llm_configured
 from orchestrator.utils.service import SharedServiceBase
 from orchestrator.utils.strings import extract_json
 
+
 def _project_manager_prompt() -> str:
     """Guidance of the engagement manager role's lead skill (resolved, not named)."""
     manager = RoleRegistry.shared().manager()

@@ -11,7 +11,6 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 import orchestrator as _pkg
-
 from orchestrator.prompts import FINDINGS_GUIDANCE, INSTALL_CASCADE
 
 logger = logging.getLogger(__name__)

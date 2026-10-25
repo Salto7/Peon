@@ -291,7 +291,7 @@ class Server:
         self.stop.set()
         try:
             await asyncio.wait_for(asyncio.shield(self.task), timeout=10)
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             self.task.cancel()
 
 

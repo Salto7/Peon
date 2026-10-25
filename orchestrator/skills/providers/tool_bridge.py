@@ -6,7 +6,9 @@ Known Peon / CrewAI tool names pass through unchanged.
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
+
+from orchestrator.utils.strings import unique
 
 # Token before "(" , lowercased, → canonical crew tool names.
 CLAUDE_TOOL_BRIDGE: dict[str, tuple[str, ...]] = {
@@ -31,17 +33,6 @@ def tool_key(raw: str) -> str:
     return text.strip().lower()
 
 
-def _unique(names: Sequence[str]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for name in names:
-        key = str(name or "").strip()
-        if key and key not in seen:
-            seen.add(key)
-            out.append(key)
-    return tuple(out)
-
-
 def classify_claude_tools(raw_tools: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return ``(crew_tools, unmapped_raw)``."""
     from orchestrator.crew.tools.catalog import canonicalize_crew_tools, known_tool_names
@@ -62,4 +53,4 @@ def classify_claude_tools(raw_tools: Sequence[str]) -> tuple[tuple[str, ...], tu
             crew.extend(canonicalize_crew_tools([token]) or (key,))
             continue
         unknown.append(token)
-    return _unique(crew), _unique(unknown)
+    return tuple(unique(crew)), tuple(unique(unknown))

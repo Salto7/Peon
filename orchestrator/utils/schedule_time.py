@@ -8,27 +8,27 @@ Day-of-month and day-of-week must both match (AND), as Peon has always done.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from croniter import croniter
 
 
 def aware_utc(dt: datetime | None = None) -> datetime:
     """Return an aware UTC datetime (``dt`` or now)."""
-    now = dt or datetime.now(timezone.utc)
+    now = dt or datetime.now(UTC)
     if now.tzinfo is None:
-        return now.replace(tzinfo=timezone.utc)
+        return now.replace(tzinfo=UTC)
     return now
 
 
 def next_cron_after(expr: str, after: datetime, *, max_days: int = 366) -> datetime:
     """Return the next UTC-aware instant matching ``expr`` strictly after ``after``."""
     if after.tzinfo is None:
-        after = after.replace(tzinfo=timezone.utc)
+        after = after.replace(tzinfo=UTC)
     text = (expr or "").strip()
     if len(text.split()) != 5:
         raise ValueError("cron must have 5 fields: minute hour day month weekday")
-    start = after.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    start = after.astimezone(UTC).replace(second=0, microsecond=0)
     nxt = croniter(text, start, day_or=False).get_next(datetime)
     if nxt > after + timedelta(days=max_days):
         raise ValueError(f"no cron match within {max_days} days for {expr!r}")
@@ -40,10 +40,10 @@ def next_interval_after(
 ) -> datetime:
     sec = max(1, int(interval_seconds or 0))
     if after.tzinfo is None:
-        after = after.replace(tzinfo=timezone.utc)
+        after = after.replace(tzinfo=UTC)
     base = anchor or after
     if base.tzinfo is None:
-        base = base.replace(tzinfo=timezone.utc)
+        base = base.replace(tzinfo=UTC)
     # Next boundary strictly after ``after``.
     elapsed = max(0, int((after - base).total_seconds()))
     steps = (elapsed // sec) + 1

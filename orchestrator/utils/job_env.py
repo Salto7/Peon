@@ -9,9 +9,9 @@ read via ``JobEnv.get`` (ContextVar first, then ``os.environ``).
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Iterator
 
 _job_env: ContextVar[dict[str, str] | None] = ContextVar("job_env", default=None)
 

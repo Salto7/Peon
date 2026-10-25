@@ -389,10 +389,6 @@ class MemoryService(SharedServiceBase):
     # --- Compatibility stubs (CrewAI memory removed) ---
 
     @staticmethod
-    def for_job(job: Any) -> None:
-        del job
-
-    @staticmethod
     def remember_into(target: Any, content: str, meta: dict[str, Any] | None = None) -> bool:
         """Legacy hook: map into peon/project Cognee remember."""
         del target

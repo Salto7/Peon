@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import logging
-
 import re
 import shutil
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
 
 from django.conf import settings
 
@@ -101,7 +100,9 @@ def _rmtree_force(path: Path) -> None:
                 target.chmod(0o600)
             func(p)
         except OSError:
-            raise exc
+            # The retry also failed — re-raise the original error on purpose,
+            # not this one (there is nothing more specific to add to it).
+            raise exc from None
 
     shutil.rmtree(path, onexc=_onexc)
 
@@ -136,7 +137,12 @@ def release_project_handles(project_id: str) -> None:
 
 
 def remove_project_workspace(project_id: str) -> dict:
-    """Delete one project's complete workspace tree."""
+    """Delete one project's complete workspace tree.
+
+    When files resist deletion (e.g. root-owned by a sandbox container) the tree
+    is renamed to ``.deleting-<id>`` so the id is free at once and the leftovers
+    are retried here and by ``prune_orphan_workspaces``.
+    """
     try:
         path = project_workspace_dir(project_id, create=False)
     except ValueError:
@@ -145,33 +151,25 @@ def remove_project_workspace(project_id: str) -> dict:
         return {"action": "missing", "path": str(path)}
     try:
         _remove_path(path)
+        return {"action": "removed" if not path.exists() else "error", "path": str(path)}
     except OSError as exc:
-        trash = path.parent / f"{_DELETING_PREFIX}{path.name}"
-        try:
-            if trash.exists():
-                _remove_path(trash)
-            path.rename(trash)
-            try:
-                _remove_path(trash)
-            except OSError:
-                pass
-            if not path.exists():
-                return {
-                    "action": "removed" if not trash.exists() else "deferred",
-                    "path": str(path),
-                    "trash": str(trash) if trash.exists() else "",
-                    "error": str(exc),
-                }
-        except OSError as rename_exc:
-            return {
-                "action": "error",
-                "path": str(path),
-                "error": f"{exc}; rename failed: {rename_exc}",
-            }
-        return {"action": "error", "path": str(path), "error": str(exc)}
+        error = str(exc)
+    trash = path.parent / f"{_DELETING_PREFIX}{path.name}"
+    try:
+        if trash.exists():
+            _remove_path(trash)
+        path.rename(trash)
+    except OSError as rename_exc:
+        return {"action": "error", "path": str(path), "error": f"{error}; rename failed: {rename_exc}"}
+    try:
+        _remove_path(trash)
+    except OSError:
+        pass
     return {
-        "action": "removed" if not path.exists() else "error",
+        "action": "deferred" if trash.exists() else "removed",
         "path": str(path),
+        "trash": str(trash) if trash.exists() else "",
+        "error": error,
     }
 
 
@@ -296,7 +294,7 @@ def list_reports(project_id: str) -> list[ReportEntry]:
         seen.add(rel)
         try:
             st = path.stat()
-            mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+            mtime = datetime.fromtimestamp(st.st_mtime, tz=UTC)
             size = int(st.st_size)
         except OSError:
             mtime, size = None, 0
@@ -391,7 +389,7 @@ def list_project_inputs(project_id: str) -> list[dict]:
             continue
         try:
             st = path.stat()
-            mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+            mtime = datetime.fromtimestamp(st.st_mtime, tz=UTC)
             size = int(st.st_size)
         except OSError:
             mtime, size = None, 0
@@ -542,8 +540,3 @@ def brief_artifact_section(project_id: str, *, role_id: str = "", limit: int = 8
         f"{index}"
     )
 
-
-def project_db_path(project_id: str):
-    from peon.projects.db import project_db_path as _path
-
-    return _path(project_id)

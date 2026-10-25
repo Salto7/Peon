@@ -1,16 +1,17 @@
 """Engagement transcript records for CrewAI memory + role deduction digests.
 
 Producers emit structured records (never scrape free-text logs). Peon persists
-and mirrors into CrewAI Memory; Learn / propose_work consume digests.
+and mirrors into CrewAI Memory; Toolsmith / propose_work consume digests.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 CATEGORIES: frozenset[str] = frozenset(
     {"action", "method", "outcome", "error", "replan", "handoff", "gap", "checkpoint"}
@@ -39,7 +40,7 @@ class TranscriptRecord:
             object.__setattr__(
                 self,
                 "created_at",
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                datetime.now(UTC).isoformat(timespec="seconds"),
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -124,7 +125,7 @@ def read_jsonl(
 
 
 def digest_markdown(records: list[TranscriptRecord], *, limit: int = 80) -> str:
-    """Human/LLM digest for propose_work and Learn role drafting."""
+    """Human/LLM digest for propose_work and Toolsmith role drafting."""
     if not records:
         return "(no transcript records)"
     lines: list[str] = ["## Engagement transcript digest"]

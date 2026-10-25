@@ -196,9 +196,10 @@ OPENSHELL_IMAGE = _env("OPENSHELL_IMAGE", SANDBOX_IMAGE) or SANDBOX_IMAGE
 # Named Docker volume for the stream socket when the worker runs in Compose.
 SANDBOX_SOCKETS_VOLUME = _env("SANDBOX_SOCKETS_VOLUME", "")
 
-# Isolated Learn-page install lab — same Kali family as project sandboxes.
-LEARN_LAB_IMAGE = _env("LEARN_LAB_IMAGE", SANDBOX_IMAGE) or SANDBOX_IMAGE
-LEARN_LAB_CONTAINER = _env("LEARN_LAB_CONTAINER", "peon-learn-lab")
+# Isolated lab container (Toolsmith install tests + OpenCode authoring) —
+# same Kali family as project sandboxes, nothing else uses it.
+LAB_IMAGE = _env("LAB_IMAGE", "peon-sandbox-lab:local") or "peon-sandbox-lab:local"
+LAB_CONTAINER = _env("LAB_CONTAINER", "peon-lab")
 
 # Dramatiq + Redis (Compose adds redis + worker). Disable in tests (StubBroker).
 REDIS_URL = _env("REDIS_URL", "redis://127.0.0.1:6379/0")
@@ -230,7 +231,7 @@ LLM_PROXY_IMAGE = _env(
 ) or "ghcr.io/berriai/litellm:main-stable"
 LLM_PROXY_NETWORK = _env("LLM_PROXY_NETWORK", "peon_default") or "peon_default"
 LITELLM_MASTER_KEY = _env("LITELLM_MASTER_KEY", "sk-peon-litellm") or "sk-peon-litellm"
-# OpenCode model id (provider/model) used inside the Learn lab.
+# OpenCode model id (provider/model) used inside the lab.
 OPENCODE_MODEL = _env("OPENCODE_MODEL", "peon/default") or "peon/default"
 
 # Agent runtime governors (peon passes these into orchestrator).

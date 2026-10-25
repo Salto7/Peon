@@ -7,7 +7,6 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-
 from agent_runtime.api import Session
 
 _REPO_RE = re.compile(

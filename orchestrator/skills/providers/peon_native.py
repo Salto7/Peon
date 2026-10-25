@@ -6,8 +6,8 @@ pack (sidecar / metadata / frontmatter), not by a second directory tree.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from orchestrator.skills.providers.base import (
     DISCLOSURE_PROGRESSIVE,

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from orchestrator.agent.job import get_job
 from orchestrator.agent.delegation import (
     list_delegations_body,
     list_roles_body,
@@ -14,6 +14,7 @@ from orchestrator.agent.delegation import (
     spawn_work_body,
     wait_for_work_body,
 )
+from orchestrator.agent.job import get_job
 from orchestrator.capabilities.engagement import EngagementTools
 from orchestrator.crew.tools.catalog import crew_tool
 from orchestrator.skills.runtime.bodies import (
@@ -183,6 +184,23 @@ def save_memory(
 )
 def forget_memory(name: str, scope: str = "project") -> str:
     return EngagementTools.forget_memory(name, scope or "project")
+
+
+@crew_tool(
+    "list_credentials",
+    "List credential names/kinds in this project's key store (never values).",
+)
+def list_credentials() -> str:
+    return EngagementTools.list_credentials()
+
+
+@crew_tool(
+    "get_credential",
+    "Plaintext of a stored project credential, by name "
+    "(part: secret | username | domain | full).",
+)
+def get_credential(name: str, part: str = "secret") -> str:
+    return EngagementTools.get_credential(name, part or "secret")
 
 
 @crew_tool(

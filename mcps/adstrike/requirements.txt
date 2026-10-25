@@ -1,0 +1,29 @@
+# AdStrike v5.0 — Python Dependencies
+# Install: pip install -r requirements.txt
+
+# ── Core ──────────────────────────────────────────────────────
+impacket>=0.13.0
+ldap3>=2.9.1
+dnspython>=2.4.0
+pyasn1>=0.5.0
+pycryptodome>=3.19.0
+
+# ── Reporting ─────────────────────────────────────────────────
+jinja2>=3.1.2
+markdown>=3.5.1
+xlsxwriter>=3.2.0
+
+# ── Optional (certipy built-in) ───────────────────────────────
+certipy-ad>=4.8.2
+
+# ── AI Agent ──────────────────────────────────────────────────
+anthropic>=0.40.0
+# MCP server path (docs/mcp.md): run AdStrike's tools inside Claude Code /
+# Cursor with no Ollama and no API key. Not needed for the standalone agent.
+mcp>=1.0.0
+
+# ── Utility ───────────────────────────────────────────────────
+colorama>=0.4.6
+python-dotenv>=1.0.0
+requests>=2.31.0
+chardet<6

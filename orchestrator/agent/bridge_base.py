@@ -147,6 +147,17 @@ class AgentBridgeBase(ABC):
         del name, scope
         return "forget_memory bridge not configured."
 
+    # --- Credentials (project key store) --------------------------------
+
+    def list_credentials(self) -> str:
+        """List credential names/kinds stored for this project (never values)."""
+        return "list_credentials bridge not configured."
+
+    def get_credential(self, name: str, part: str = "secret") -> str:
+        """Plaintext of a stored credential (``secret``|``username``|``domain``|``full``)."""
+        del name, part
+        return "get_credential bridge not configured."
+
     def record_assets(self, assets_json: str, relations_json: str = "") -> str:
         """Add assets/relations to the engagement asset graph (Open Asset Model)."""
         del assets_json, relations_json

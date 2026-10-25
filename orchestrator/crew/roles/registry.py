@@ -19,6 +19,7 @@ from orchestrator.skills.providers.tool_bridge import (
 )
 from orchestrator.skills.registry import SkillRegistry
 from orchestrator.utils.service import SharedServiceBase
+from orchestrator.utils.strings import unique
 
 logger = logging.getLogger(__name__)
 
@@ -33,16 +34,6 @@ def _skill_crew_tools(skill) -> tuple[str, ...]:
         crew, _ = classify_claude_tools(skill.tools)
         return tuple(name for name in crew if name not in PROGRESSIVE_TOOLS)
     return canonicalize_crew_tools(skill.tools or ())
-
-
-def _uniq(items: list[str]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item and item not in seen:
-            seen.add(item)
-            out.append(item)
-    return tuple(out)
 
 
 def _build_role(
@@ -109,7 +100,7 @@ def _build_role(
         allow_delegation = False
         advanced_reasoning = False
         max_iter = 25
-        caps = _uniq(tags) or ("recon", "expert")
+        caps = tuple(unique(tags) or ("recon", "expert"))
         if descriptions:
             backstory = (
                 backstory
@@ -124,8 +115,8 @@ def _build_role(
         crew_role=label,
         goal=goal,
         backstory=backstory,
-        tools=_uniq(list(tools)),
-        allow_binaries=_uniq(binaries),
+        tools=tuple(unique(list(tools))),
+        allow_binaries=tuple(unique(binaries)),
         reports_to=reports_to,
         capabilities=caps,
         skills=skill_ids,

@@ -7,7 +7,6 @@ Job.role_ids holds role catalog ids; skills are the execution units.
 from __future__ import annotations
 
 import logging
-
 import uuid
 
 from django.db import models
@@ -21,48 +20,40 @@ class ProjectScopedModel(models.Model):
     class Meta:
         abstract = True
 
-    def save(self, *args, **kwargs):
+    def _owning_project_id(self, *, via_job: bool = False):
         pid = getattr(self, "project_id", None)
+        if pid or not via_job:
+            return pid
+        # Prefer the related Job instance (create(job=…)) before fan-out get_job.
+        job = getattr(self, "job", None)
+        if job is not None and getattr(job, "project_id", None):
+            return job.project_id
+        job_id = getattr(self, "job_id", None)
+        if job_id:
+            from peon.projects.db import get_job
+
+            try:
+                return get_job(job_id).project_id
+            except Exception:
+                return None
+        return None
+
+    def _write_in_project(self, op, args, kwargs, *, via_job: bool):
+        pid = self._owning_project_id(via_job=via_job)
         if not pid:
-            # Prefer the related Job instance (create(job=…)) before fan-out get_job.
-            job = getattr(self, "job", None)
-            if job is not None and getattr(job, "project_id", None):
-                pid = job.project_id
-            else:
-                job_id = getattr(self, "job_id", None)
-                if job_id:
-                    from peon.projects.db import get_job
-
-                    try:
-                        pid = get_job(job_id).project_id
-                    except Exception:
-                        pid = None
-            if pid:
-                from peon.projects.db import ensure_project_database, using_project
-
-                alias = ensure_project_database(pid)
-                # Force: Manager.create() passes using=router.db (often default).
-                kwargs["using"] = alias
-                with using_project(pid):
-                    return super().save(*args, **kwargs)
-            return super().save(*args, **kwargs)
+            return op(*args, **kwargs)
         from peon.projects.db import ensure_project_database, using_project
 
-        alias = ensure_project_database(pid)
-        kwargs["using"] = alias
+        # Force: Manager.create() passes using=router.db (often default).
+        kwargs["using"] = ensure_project_database(pid)
         with using_project(pid):
-            return super().save(*args, **kwargs)
+            return op(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        return self._write_in_project(super().save, args, kwargs, via_job=True)
 
     def delete(self, *args, **kwargs):
-        pid = getattr(self, "project_id", None)
-        if pid:
-            from peon.projects.db import ensure_project_database, using_project
-
-            alias = ensure_project_database(pid)
-            kwargs["using"] = alias
-            with using_project(pid):
-                return super().delete(*args, **kwargs)
-        return super().delete(*args, **kwargs)
+        return self._write_in_project(super().delete, args, kwargs, via_job=False)
 
 
 class ProjectStatus(models.TextChoices):
@@ -88,10 +79,11 @@ class SandboxRuntime(models.TextChoices):
 
 
 class ProjectKind(models.TextChoices):
-    """Engagement duration model."""
+    """Engagement duration/operating model."""
 
     TIMED = "timed", "Timed"
     DURABLE = "durable", "Durable"
+    ASSUME_BREACH = "assume_breach", "Assume breach"
 
     @classmethod
     def resolve(cls, raw: str | None) -> str:
@@ -1291,6 +1283,68 @@ class ProjectMcpConfig(ProjectScopedModel):
 
     def __str__(self) -> str:
         return f"{self.project_id}:{self.mcp_id}"
+
+
+class CredentialKind(models.TextChoices):
+    """Shape of a stored credential (soft hint — drives form fields, not validation)."""
+
+    PASSWORD = "password", "Password"
+    NTLM_HASH = "ntlm_hash", "NTLM hash"
+    KERBEROS_TICKET = "kerberos_ticket", "Kerberos ticket"
+    SSH_KEY = "ssh_key", "SSH key"
+    API_TOKEN = "api_token", "API token"
+    CERTIFICATE = "certificate", "Certificate"
+    OTHER = "other", "Other"
+
+
+class ProjectCredential(ProjectScopedModel):
+    """Project-scoped credential store ("key store").
+
+    ``secret_enc`` is Fernet-encrypted at rest (``peon.projects.secrets_crypto``)
+    and is never returned to the browser — the UI and MCP config list only
+    show ``is_set``/metadata. Any agent in the project can read the plaintext
+    through the ``get_credential`` tool, same as it can already run commands
+    inside the project sandbox under RoE.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+    )
+    name = models.CharField(max_length=128, help_text="Short handle agents reference it by.")
+    kind = models.CharField(
+        max_length=24,
+        choices=CredentialKind.choices,
+        default=CredentialKind.PASSWORD,
+    )
+    username = models.CharField(max_length=255, blank=True, default="")
+    domain = models.CharField(max_length=255, blank=True, default="")
+    secret_enc = models.TextField(blank=True, default="", help_text="Fernet ciphertext.")
+    notes = models.TextField(blank=True, default="")
+    source = models.CharField(
+        max_length=32,
+        blank=True,
+        default="provided",
+        help_text="provided | harvested | cracked | derived — provenance, not enforced.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Project credential"
+        ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "name"],
+                name="project_credential_unique_name",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.project_id}:{self.name}"
 
 
 class LlmCallLog(models.Model):

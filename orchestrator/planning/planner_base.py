@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from orchestrator.utils.strings import plain_text
 from orchestrator.utils.paths import (
     ensure_workspace_layout,
     provision_job_workspace,
     safe_workspace_key,
 )
+from orchestrator.utils.strings import plain_text
 
 
 class PlannerBase(ABC):
@@ -70,7 +70,7 @@ class PlannerBase(ABC):
                 workspace.relative_to(base)
                 ensure_workspace_layout(workspace)
             plan_dir = workspace / "plans"
-            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+            stamp = datetime.now(UTC).strftime("%Y-%m-%d_%H%M%S")
             body = self.message_text(plan_text).strip() or (plan_text or "").strip()
             md = (
                 f"# {self.plan_title}\n\n"

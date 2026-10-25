@@ -41,6 +41,8 @@ class SkillCards(CatalogCardsBase):
         desc_limit: int | None = None,
         tag_limit: int | None = None,
     ) -> dict:
+        from peon.projects.platform_catalog import CORE_SKILL_IDS
+
         skill_id = cls.text(id)
         return {
             "id": skill_id,
@@ -52,6 +54,7 @@ class SkillCards(CatalogCardsBase):
                 tag_limit=tag_limit,
             ),
             "tools": cls.labels(tools),
+            "deletable": skill_id not in CORE_SKILL_IDS,
         }
 
     @classmethod

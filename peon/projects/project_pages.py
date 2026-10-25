@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from django.contrib import messages
 from django.http import (
     FileResponse,
@@ -15,15 +14,21 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_http_methods
 
-from peon.projects.findings import FindingStore
+from orchestrator.utils.llm import llm_configured
 from peon.projects.asset_graph import AssetGraphEngine
+from peon.projects.catalog_cards.role import RoleCards
+from peon.projects.crew_control import set_crew_status
+from peon.projects.findings import FindingStore
 from peon.projects.http_helpers import (
     scoped_get_or_404,
     with_project_context,
+)
+from peon.projects.http_helpers import (
     wants_json as request_wants_json,
 )
-from orchestrator.utils.llm import llm_configured
+from peon.projects.llm_proxy import LlmProxy
 from peon.projects.models import (
+    CredentialKind,
     FindingSeverity,
     FindingStatus,
     Job,
@@ -34,12 +39,15 @@ from peon.projects.models import (
     StreamMessage,
     StreamMessageType,
 )
-from peon.projects.plan_graph import plan_graph_payload
 from peon.projects.objectives import ObjectiveScheduler
-from peon.projects.sandbox import ProjectSandbox
+from peon.projects.plan_graph import plan_graph_payload
 from peon.projects.planning import create_project_shell, run_llm_plan
-from peon.projects.streaming import project_message_dicts
+from peon.projects.project_status import ProjectOpsPayload
 from peon.projects.roe_ops import roe_add_path
+from peon.projects.role_job_tree import RoleJobTree
+from peon.projects.runtime_settings import PeonSettings
+from peon.projects.sandbox import ProjectSandbox
+from peon.projects.streaming import project_message_dicts
 from peon.projects.target_shapes import (
     format_targets,
     parse_target_lines,
@@ -50,12 +58,6 @@ from peon.projects.workspaces import (
     resolve_report_path,
     save_project_input,
 )
-from peon.projects.project_status import ProjectOpsPayload
-from peon.projects.catalog_cards.role import RoleCards
-from peon.projects.runtime_settings import PeonSettings
-from peon.projects.llm_proxy import LlmProxy
-from peon.projects.crew_control import set_crew_status
-from peon.projects.role_job_tree import RoleJobTree
 
 PROJECT_LIST_LIMIT = 50
 PROJECT_JOBS_LIMIT = 40
@@ -529,6 +531,17 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
             "project mcp configs failed for %s", project.pk, exc_info=True
         )
         mcp_configs = []
+    try:
+        from peon.projects.credentials import list_credentials
+
+        credential_rows = list_credentials(project.pk)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "project credentials failed for %s", project.pk, exc_info=True
+        )
+        credential_rows = []
     console_ctx = {
         "pk": str(project.pk),
         "title": project.title,
@@ -564,6 +577,8 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
             "attack_surface": attack_surface,
             "org_chart": org_chart,
             "mcp_configs": mcp_configs,
+            "credentials": credential_rows,
+            "credential_kinds": CredentialKind.choices,
             "nav": "projects",
             "stream_bootstrap": bootstrap,
         },

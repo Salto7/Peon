@@ -10,12 +10,12 @@ Kali sandbox image. Prefer apt, then a GitHub release, then git clone, then
 pip. Use a custom script only when those do not fit.
 
 ## Scripts
-- `scripts/run.sh` — entry (argv; writes suggestion under `workspace/learn/`)
+- `scripts/run.sh` — entry (argv; writes suggestion under `workspace/toolsmith/`)
 
 ## Output
-- `workspace/learn/tool.yaml` — suggested catalog entry
-- `workspace/learn/tool.sh` — optional custom install script (only when needed)
-- `workspace/learn/notes.md` — short rationale
+- `workspace/toolsmith/tool.yaml` — suggested catalog entry
+- `workspace/toolsmith/tool.sh` — optional custom install script (only when needed)
+- `workspace/toolsmith/notes.md` — short rationale
 
 See [prompt](references/PROMPT.md) for the JSON contract the authoring path uses.
 

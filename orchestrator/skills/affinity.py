@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import yaml
 
@@ -39,7 +40,7 @@ Rules:
 - include every role that reasonably fits; omit roles that do not
 - at most one binding may have lead=true (default lead for that role)
 - engagement-pm / analyzer roles only bind items clearly for that lane
-- Learn/authoring-only packs may return bindings: []
+- Toolsmith/authoring-only packs may return bindings: []
 - MCP servers usually bind to technical expert roles that would call their tools
 - No prose outside JSON
 """
@@ -297,6 +298,23 @@ def infer_catalog_bindings(
         for b in affinity.bindings
         if float(b.score) < AFFINITY_THRESHOLD
     ]
+    # The LLM classifier is told "engagement-pm / analyzer roles only bind
+    # items clearly for that lane" but does not always follow it — a security
+    # tool's own vocabulary ("report", "monitor", "record") can read as a
+    # confident match for the manager/analyzer bookends even though neither
+    # role can ever call a skill/MCP tool (TECHNICAL_RUNTIME_TOOLS is
+    # technical-only). Never auto-bind a bookend with that confidence; demote
+    # it to a weak candidate so a human sees and decides, same as any other
+    # below-threshold match.
+    bookend_kinds = {
+        role.id: role.kind for role in _catalog_roles() if role.kind in {"engagement-pm", "analyzer"}
+    }
+    if bookend_kinds:
+        demoted = [row for row in applied if row["role_id"] in bookend_kinds]
+        if demoted:
+            applied = [row for row in applied if row["role_id"] not in bookend_kinds]
+            for row in demoted:
+                candidates.append({**row, "lead": False})
     # Catalog allows at most one lead across the whole owner.
     leads = [row for row in applied if row["lead"]]
     if len(leads) > 1:
@@ -304,6 +322,12 @@ def infer_catalog_bindings(
         for row in applied:
             row["lead"] = row is winner
     return applied, candidates
+
+
+def _catalog_roles():
+    from orchestrator.crew.roles.catalog import load_role_catalog
+
+    return load_role_catalog()
 
 
 def classify_skill_affinity(

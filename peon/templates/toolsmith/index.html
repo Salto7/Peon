@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% load static ui %}
+{% block title %}Toolsmith · Lab · Peon{% endblock %}
+{% block content %}
+<c-page-header title="Toolsmith" description="Draft a catalog tool or a skill for the Kali sandbox, test the install, then save.">
+  <c-slot name="crumbs"><a class="hover:text-foreground" href="{% url 'lab' %}">Lab</a>{% icon "chevron-right" "size-3" %}<span>Toolsmith</span></c-slot>
+</c-page-header>
+
+{% if not llm_ready or not llm_proxy_enabled or not llm_proxy_running %}
+<div class="mb-6 space-y-2">
+  {% if not llm_ready %}
+  <c-alert tone="warning">Configure an LLM API key under <a class="text-link hover:underline" href="{% url 'settings_page' %}">Settings</a> before using Toolsmith.</c-alert>
+  {% endif %}
+  {% if not llm_proxy_enabled %}
+  <c-alert tone="warning" title="LiteLLM proxy required" id="toolsmith-proxy-warning">
+    Enable <strong>LiteLLM proxy enabled</strong> in <a class="text-link hover:underline" href="{% url 'settings_page' %}#LLM_PROXY_ENABLED">Settings</a> to author with OpenCode, then come back.
+  </c-alert>
+  {% elif not llm_proxy_running %}
+  <c-alert tone="warning" title="LiteLLM proxy not running" id="toolsmith-proxy-warning">
+    It's enabled in Settings but the gateway container isn't running. Re-save Settings or check <code class="ui-code">peon-litellm</code> in Docker.
+  </c-alert>
+  {% endif %}
+</div>
+{% endif %}
+
+<div id="toolsmith-app" class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]"
+     data-suggest-tool="{% url 'toolsmith_api_tool' %}"
+     data-suggest-skill="{% url 'toolsmith_api_skill' %}"
+     data-save-tool="{% url 'toolsmith_api_tool_save' %}"
+     data-test-tool="{% url 'toolsmith_api_tool_test' %}"
+     data-replan-tool="{% url 'toolsmith_api_tool_replan' %}"
+     data-lint-skill="{% url 'toolsmith_api_skill_lint' %}"
+     data-save-skill="{% url 'toolsmith_api_skill_save' %}"
+     data-lab-setup="{% url 'toolsmith_api_lab_setup' %}"
+     data-lab-decommission="{% url 'toolsmith_api_lab_decommission' %}"
+     data-lab-reset="{% url 'toolsmith_api_lab_reset' %}"
+     data-lab-status="{% url 'toolsmith_api_lab' %}"
+     data-lab-exists="{% if lab.exists %}1{% else %}0{% endif %}"
+     data-lab-running="{% if lab.running %}1{% else %}0{% endif %}"
+     data-lab-name="{{ lab.name }}"
+     data-llm-proxy-enabled="{% if llm_proxy_enabled %}1{% else %}0{% endif %}"
+     data-authoring-ready="{% if authoring_ready %}1{% else %}0{% endif %}"
+     data-opencode-ready="{% if opencode_ready %}1{% else %}0{% endif %}"
+     data-engine="peon">
+
+  <div class="min-w-0 space-y-6">
+    <c-card title="Prompt" id="toolsmith-prompt-panel">
+      <c-slot name="actions">
+        <div role="tablist" aria-label="Toolsmith mode" class="inline-flex rounded-lg border bg-muted p-0.5">
+          <button type="button" class="toolsmith-mode-btn is-active h-7 cursor-pointer rounded-md px-3 text-xs font-medium text-muted-foreground aria-selected:bg-background aria-selected:text-foreground aria-selected:shadow-sm" data-mode="tool" role="tab" aria-selected="true">Tool</button>
+          <button type="button" class="toolsmith-mode-btn h-7 cursor-pointer rounded-md px-3 text-xs font-medium text-muted-foreground aria-selected:bg-background aria-selected:text-foreground aria-selected:shadow-sm" data-mode="skill" role="tab" aria-selected="false">Skill</button>
+        </div>
+      </c-slot>
+      <form id="toolsmith-generate-form" class="space-y-4">
+        <c-field label="Engine" for="toolsmith-engine" help="Peon: Peon's own LLM, no lab needed. OpenCode: a real coding agent that drafts and runs the provisioning code inside the Toolsmith lab.">
+          <select id="toolsmith-engine" name="engine" class="ui-select sm:max-w-xs">
+            <option value="peon" selected>Peon</option>
+            <option value="opencode" {% if not opencode_ready %}disabled{% endif %}>OpenCode{% if not opencode_ready %} (enable LiteLLM proxy){% endif %}</option>
+          </select>
+        </c-field>
+        <c-field label="Describe what to author" for="toolsmith-prompt">
+          <textarea id="toolsmith-prompt" name="prompt" rows="4" class="ui-textarea"
+                    placeholder="e.g. Add ProjectDiscovery nuclei for authorized vulnerability scanning"
+                    {% if not authoring_ready %}disabled{% endif %}></textarea>
+        </c-field>
+        <div id="skill-tools-wrap" class="toolsmith-skill-only" hidden>
+          <c-field label="Prefer catalog tools" for="skill-tools" help="Optional. Ctrl/⌘-click to select several.">
+            <select id="skill-tools" name="tools" multiple size="6" class="ui-select h-auto bg-none py-1" {% if not authoring_ready %}disabled{% endif %}>
+              {% for t in tools %}<option class="rounded px-1 py-0.5" value="{{ t.id }}">{{ t.id }}{% if t.binary and t.binary != t.id %} ({{ t.binary }}){% endif %}</option>{% endfor %}
+            </select>
+          </c-field>
+        </div>
+        <div class="flex items-center justify-end gap-3">
+          <div id="toolsmith-thinking" hidden aria-live="polite" class="flex items-center gap-2 text-sm text-muted-foreground">
+            <span class="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden="true"></span>
+            <span class="toolsmith-thinking-label">Thinking…</span>
+          </div>
+          {% if authoring_ready %}<c-button type="submit" id="toolsmith-generate-btn">Suggest tool</c-button>{% else %}<c-button type="submit" id="toolsmith-generate-btn" disabled>Suggest tool</c-button>{% endif %}
+        </div>
+      </form>
+    </c-card>
+
+    <c-card title="Tool draft" description="Catalog YAML for the Kali sandbox. Prefer apt, then a GitHub release, a clone, or pip. Test the install before saving." id="tool-result" class="toolsmith-tool-only" hidden>
+      <div class="space-y-4">
+        <c-field label="Catalog YAML" for="tool-yaml">
+          <textarea id="tool-yaml" rows="16" spellcheck="false" class="ui-textarea font-mono"></textarea>
+        </c-field>
+        <c-field label="Install script" for="tool-script" help="Only needed for type: custom with a .sh file.">
+          <textarea id="tool-script" rows="8" spellcheck="false" class="ui-textarea font-mono" placeholder="#!/usr/bin/env bash"></textarea>
+        </c-field>
+        <div id="tool-notes" class="text-xs text-muted-foreground"></div>
+
+        <div id="toolsmith-lab-panel" class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border bg-muted/40 px-4 py-3">
+          <span class="text-sm font-medium">Lab <code class="ui-code" id="tool-lab-name">{{ lab.name }}</code></span>
+          <div class="flex gap-2">
+            <c-button type="button" id="tool-lab-setup-btn" variant="outline" size="sm" {% if not lab.docker %}disabled{% endif %}>Setup</c-button>
+            <c-button type="button" id="tool-lab-decommission-btn" variant="outline" size="sm" {% if not lab.docker %}disabled{% endif %}>Decommission</c-button>
+            <c-button type="button" id="tool-lab-reset-btn" variant="outline" size="sm" {% if not lab.docker %}disabled{% endif %}>Reset</c-button>
+          </div>
+          <p id="tool-lab-status" class="w-full text-xs text-muted-foreground">
+            {% if lab.error %}{{ lab.error }}{% elif lab.running %}Running on image <code class="ui-code">{{ lab.image }}</code>{% elif lab.exists %}Exists but stopped · image <code class="ui-code">{{ lab.image }}</code>{% elif not lab.docker %}Docker unavailable from web{% else %}Not created · image <code class="ui-code">{{ lab.image }}</code>{% endif %}
+          </p>
+        </div>
+
+        <div class="flex justify-end gap-2">
+          <c-button variant="outline" id="tool-test-btn">{% icon "play" %} Test installation</c-button>
+          <c-button id="tool-save-btn">Save tool</c-button>
+        </div>
+
+        <pre id="tool-test-log" hidden class="max-h-96 overflow-auto rounded-lg border bg-muted p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap"></pre>
+
+        <div id="tool-replan-panel" hidden class="space-y-3 rounded-lg border border-warning/30 bg-warning/5 p-4">
+          <div>
+            <h3 class="text-sm font-semibold">Replan installation</h3>
+            <p class="ui-help">The install test failed. Adjust the prompt (and the YAML/script above), then replan.</p>
+          </div>
+          <textarea id="tool-replan-prompt" rows="5" class="ui-textarea" aria-label="Replan prompt" placeholder="Describe how to fix the install recipe…"></textarea>
+          <div class="flex justify-end"><c-button variant="outline" id="tool-replan-btn">{% icon "refresh-cw" %} Replan</c-button></div>
+        </div>
+      </div>
+    </c-card>
+
+    <c-card title="Skill draft" description="SKILL.md plus a normal script. Agents call it with run_skill_script. Role bindings are inferred when the pack is saved." id="skill-result" class="toolsmith-skill-only" hidden>
+      <div class="space-y-4">
+        <c-field label="Skill name" for="skill-name">
+          <input id="skill-name" type="text" autocomplete="off" spellcheck="false" class="ui-input font-mono">
+        </c-field>
+        <p id="skill-lint" class="text-xs text-muted-foreground"></p>
+        <c-field label="SKILL.md" for="skill-md">
+          <textarea id="skill-md" rows="16" spellcheck="false" class="ui-textarea font-mono"></textarea>
+        </c-field>
+        <div id="skill-files"></div>
+        <div id="skill-notes" class="text-xs text-muted-foreground"></div>
+        <div class="flex justify-end gap-2">
+          <c-button variant="outline" id="skill-lint-btn">Lint</c-button>
+          <c-button id="skill-save-btn">Save skill</c-button>
+        </div>
+      </div>
+    </c-card>
+  </div>
+
+  <aside id="docs" aria-labelledby="docs-heading" class="space-y-3 xl:sticky xl:top-8 xl:self-start">
+    <c-card title="Catalog format">
+      <div class="space-y-3 text-xs text-muted-foreground">
+        <p>Full reference in <code class="ui-code">tools/CATALOG.md</code>. Prefer apt on Kali, then a GitHub release, then git clone, then pip. A custom script is a last resort; if one is present, install tries it first and falls through when verify fails.</p>
+        <p>Install tests and OpenCode drafts run in a freshly-reset throwaway container of <code class="ui-code">{{ lab.image }}</code> — the project sandbox image plus a pinned OpenCode CLI, never used for engagement projects.</p>
+        <pre class="overflow-x-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground">{% verbatim %}id: example-cli
+description: What the CLI does.
+binary: example-cli
+install:
+  - type: apt
+    packages: [example-cli]
+verify:
+  - command: example-cli --version{% endverbatim %}</pre>
+      </div>
+    </c-card>
+    <c-card title="Skill pack">
+      <div class="space-y-3 text-xs text-muted-foreground">
+        <p><code class="ui-code">scripts/run.sh</code> is a shebang that execs the CLI. The body tells the agent to call <code class="ui-code">run_skill_script</code>.</p>
+        <p>Saved packs land in <code class="ui-code">skills/</code>. Role affinity is inferred from the text; collaboration and memory tools come from the role, not the pack.</p>
+      </div>
+    </c-card>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{% static 'js/toolsmith.js' %}"></script>
+{% endblock %}

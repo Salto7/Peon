@@ -20,7 +20,8 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from a2a.types import DataPart, Message, Part, Role, TaskState, TextPart
 from django.db import transaction

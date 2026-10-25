@@ -14,18 +14,26 @@ type Proposal = {
   rationale: string;
 };
 
-type Props = { listUrl: string; decideUrl: string; kind: "role" | "skill" | "mcp_binding" };
+type Props = {
+  listUrl: string;
+  decideUrl: string;
+  kind: "role" | "skill" | "mcp_binding" | "mcp_role_skill";
+};
 
 const APPROVED_MESSAGE: Record<Props["kind"], string> = {
   role: "Role created",
   skill: "Skill created",
   mcp_binding: "Binding applied",
+  mcp_role_skill: "Role + skill created",
 };
 
 /**
  * Pending role/skill proposals (Dream-suggested or marketplace-discovered),
- * and pending mcp_binding proposals (an MCP install whose role auto-bind
- * scored every role below threshold — see PlatformCatalog._stage_binding_review),
+ * pending mcp_binding proposals (an MCP install whose role auto-bind scored
+ * every role below threshold — see PlatformCatalog._stage_binding_review),
+ * and pending mcp_role_skill proposals (same trigger, but a dedicated role +
+ * skill drafted from the server's own description instead of reusing an
+ * existing role — see PlatformCatalog._stage_role_skill_proposal),
  * shown as cards in the same section as the real ones — tagged "Pending",
  * never assignable until approved here. Shares the ["catalog-proposals"]
  * query with ProposalBadge/MarketplacePanel (one QueryClient per page), so

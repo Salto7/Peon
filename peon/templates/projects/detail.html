@@ -328,6 +328,51 @@
       {% endif %}
     </c-card>
   </div>
+
+  {# ── Project key store (credentials any role in the project can use) ── #}
+  <div data-war-pane="settings" hidden>
+    <c-card title="Key store" description="Credentials any agent in this project can use (list_credentials / get_credential). Secret values are never shown again once saved.">
+      {% if credentials %}
+      <table class="ui-table mb-4">
+        <thead><tr><th>Name</th><th>Kind</th><th>Username</th><th>Domain</th><th>Set</th><th></th></tr></thead>
+        <tbody>
+          {% for c in credentials %}
+          <tr>
+            <td class="font-mono">{{ c.name }}</td>
+            <td>{{ c.kind }}</td>
+            <td>{{ c.username|default:"—" }}</td>
+            <td>{{ c.domain|default:"—" }}</td>
+            <td>{% if c.is_set %}<c-badge tone="success">Yes</c-badge>{% else %}<c-badge tone="warning">No</c-badge>{% endif %}</td>
+            <td>
+              <form method="post" action="{% url 'project_credentials' project.pk %}" onsubmit="return confirm('Delete credential {{ c.name }}?');">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="delete">
+                <input type="hidden" name="name" value="{{ c.name }}">
+                <c-button variant="outline" size="sm" type="submit">Delete</c-button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+      <form method="post" action="{% url 'project_credentials' project.pk %}" class="grid gap-3 sm:grid-cols-2">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="save">
+        <c-field label="Name" for="cred-name"><input id="cred-name" name="name" required placeholder="svc-sql01" class="ui-input font-mono"></c-field>
+        <c-field label="Kind" for="cred-kind">
+          <select id="cred-kind" name="kind" class="ui-select">
+            {% for value, label in credential_kinds %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+          </select>
+        </c-field>
+        <c-field label="Username" for="cred-user"><input id="cred-user" name="username" class="ui-input"></c-field>
+        <c-field label="Domain" for="cred-domain"><input id="cred-domain" name="domain" class="ui-input"></c-field>
+        <c-field label="Secret" for="cred-secret" help="Password, hash, ticket, key, or token."><input id="cred-secret" name="secret" type="password" autocomplete="off" class="ui-input"></c-field>
+        <c-field label="Notes" for="cred-notes"><input id="cred-notes" name="notes" class="ui-input"></c-field>
+        <div class="sm:col-span-2 flex justify-end"><c-button type="submit">Save credential</c-button></div>
+      </form>
+    </c-card>
+  </div>
 </div>
 {% csrf_token %}
 {% endblock %}

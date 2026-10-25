@@ -633,26 +633,44 @@ def resume_project(project: Project, *, resume_jobs: bool = True) -> Project:
 
 
 def delete_project(project: Project) -> dict:
-    """Cancel jobs, delete workspace + DB row; queue sandbox docker rm on the worker."""
+    """Cancel jobs, drop the registry row, then every per-project resource.
+
+    The registry row goes first: ``ensure_project_database`` refuses unknown
+    projects, so late streams/workers cannot recreate the workspace while it is
+    being removed. Leftovers (workspace trash, orphan containers) are collected
+    by ``prune_project_resources``.
+    """
     pid = str(project.id)
     title = project.title
     runtime_id = str(project.sandbox_runtime or "")
     for job in project.jobs.exclude(status__in=TERMINAL_JOB_STATUSES):
         apply_directive(job, "kill")
 
-    release_project_handles(pid)
-    disk = remove_project_workspace(pid)
-    if disk.get("action") == "error":
-        raise RuntimeError(f"Project workspace cleanup failed: {disk.get('error') or disk}")
     with transaction.atomic():
         Project.objects.filter(pk=pid).delete()
-    sandbox = enqueue_sandbox_cleanup(pid, runtime_id=runtime_id)
+    release_project_handles(pid)
+    disk = remove_project_workspace(pid)
+    if disk.get("action") in {"error", "deferred"}:
+        logger.warning("project %s workspace not fully removed: %s", pid, disk)
     return {
         "title": title,
         "project_id": pid,
-        "sandbox": sandbox,
+        "sandbox": enqueue_sandbox_cleanup(pid, runtime_id=runtime_id),
         "workspace": disk,
+        "memory": _delete_project_memory(pid),
     }
+
+
+def _delete_project_memory(project_id: str) -> dict:
+    """Drop the project's Cognee dataset (best effort; the SQLite rows went with the workspace)."""
+    from orchestrator.crew.cognee_backend import CogneeBackend
+    from orchestrator.crew.memory import project_dataset
+
+    try:
+        return CogneeBackend.shared().delete_datasets([project_dataset(project_id)])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("project %s memory cleanup failed: %s", project_id, exc)
+        return {"ok": False, "error": str(exc)[:200]}
 
 
 def replan_from_prompt(project: Project, message: str = "") -> dict:
@@ -682,59 +700,49 @@ def _projects(ids: Iterable[str]) -> list[Project]:
     return [by_id[i] for i in wanted if i in by_id]
 
 
-def bulk_pause_projects(ids: Iterable[str]) -> int:
-    from peon.projects.crew_control import pause_project
-
+def _bulk_apply(ids: Iterable[str], op, *, statuses=None, tolerate=Exception) -> int:
+    """Run ``op`` on each project (optionally only in ``statuses``); count successes."""
     n = 0
     for project in _projects(ids):
-        if project.status == ProjectStatus.ACTIVE:
-            pause_project(project)
-            n += 1
-    return n
-
-
-def bulk_resume_projects(ids: Iterable[str]) -> int:
-    from peon.projects.crew_control import resume_project
-
-    n = 0
-    for project in _projects(ids):
-        if project.status == ProjectStatus.PAUSED:
-            resume_project(project)
-            n += 1
-    return n
-
-
-def bulk_stop_projects(ids: Iterable[str]) -> int:
-    from peon.projects.crew_control import stop_project
-
-    n = 0
-    for project in _projects(ids):
-        if project.status in {ProjectStatus.ACTIVE, ProjectStatus.PAUSED}:
-            stop_project(project)
-            n += 1
-    return n
-
-
-def bulk_restart_projects(ids: Iterable[str]) -> int:
-    from peon.projects.crew_control import restart_project
-
-    n = 0
-    for project in _projects(ids):
+        if statuses is not None and project.status not in statuses:
+            continue
         try:
-            restart_project(project)
-        except (RuntimeError, ValueError) as exc:
-            logger.warning("restart %s failed: %s", project.pk, exc)
+            op(project)
+        except tolerate as exc:
+            logger.warning("%s %s failed: %s", op.__name__, project.pk, exc)
             continue
         n += 1
     return n
 
 
+def bulk_pause_projects(ids: Iterable[str]) -> int:
+    from peon.projects.crew_control import pause_project
+
+    return _bulk_apply(ids, pause_project, statuses={ProjectStatus.ACTIVE})
+
+
+def bulk_resume_projects(ids: Iterable[str]) -> int:
+    from peon.projects.crew_control import resume_project
+
+    return _bulk_apply(ids, resume_project, statuses={ProjectStatus.PAUSED})
+
+
+def bulk_stop_projects(ids: Iterable[str]) -> int:
+    from peon.projects.crew_control import stop_project
+
+    return _bulk_apply(
+        ids, stop_project, statuses={ProjectStatus.ACTIVE, ProjectStatus.PAUSED}
+    )
+
+
+def bulk_restart_projects(ids: Iterable[str]) -> int:
+    from peon.projects.crew_control import restart_project
+
+    return _bulk_apply(ids, restart_project, tolerate=(RuntimeError, ValueError))
+
+
 def bulk_delete_projects(ids: Iterable[str]) -> int:
-    n = 0
-    for project in _projects(ids):
-        delete_project(project)
-        n += 1
-    return n
+    return _bulk_apply(ids, delete_project)
 
 
 def apply_directive(job: Job, action: str, *, cascade: bool = True) -> Job:

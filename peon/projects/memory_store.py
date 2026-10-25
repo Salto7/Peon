@@ -407,7 +407,7 @@ def search(
     if q and any(docs):
         scores = list(BM25Okapi([d or ["_"] for d in docs]).get_scores(q))
     ranked: list[tuple[MemoryEntry, float]] = []
-    for e, s in zip(entries, scores):
+    for e, s in zip(entries, scores, strict=True):
         boost = 1.0
         if role_id and e.role_id == role_id:
             boost += 0.25

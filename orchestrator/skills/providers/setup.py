@@ -20,7 +20,6 @@ from orchestrator.skills.manifest import (
 )
 from orchestrator.skills.providers.base import SkillSetup
 
-
 # Ordered from the most explicit/portable file to the broad package marker.
 _SETUP_FILES: tuple[tuple[str, str], ...] = (
     ("pip", "requirements.txt"),

@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+
 def render_prompt_block(
     skill_id: str, description: str, instructions: str, *, body_limit: int = 8000
 ) -> str:

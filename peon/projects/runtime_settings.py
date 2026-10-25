@@ -86,8 +86,8 @@ SPECS: dict[str, _S] = {
     _S('DURABLE_SCHEDULER_ENABLED', 'bool', 1, 'queue', 'Durable scheduler enabled', 'Fire due ProjectSchedule rows via Dramatiq.'),
     _S('DURABLE_SCHEDULER_INTERVAL_MS', 'int', 60000, 'queue', 'Durable scheduler interval (ms)', 'Delay between due-scan passes. Requires Peon restart to re-arm cadence.', lo=15000, hi=3600000, restart=True),
     # authoring
-    _S('AUTHORING_TOOLS_SKILL', 'str', 'tools-suggestor', 'agent', 'Authoring: tool-recipe skill', 'Catalog skill id whose prompt drafts tool-catalog recipes (Learn).'),
-    _S('AUTHORING_SKILL_WRITER', 'str', 'skill-writer', 'agent', 'Authoring: skill-writer skill', 'Catalog skill id whose prompt drafts new skills (Learn).'),
+    _S('AUTHORING_TOOLS_SKILL', 'str', 'tools-suggestor', 'agent', 'Authoring: tool-recipe skill', 'Catalog skill id whose prompt drafts tool-catalog recipes (Toolsmith).'),
+    _S('AUTHORING_SKILL_WRITER', 'str', 'skill-writer', 'agent', 'Authoring: skill-writer skill', 'Catalog skill id whose prompt drafts new skills (Toolsmith).'),
     # agent
     _S('AGENT_MODULE', 'choice', 'crewai', 'agent', 'Agent module', 'Orchestration module (crewai). Requires Peon restart.', choices=('crewai',), restart=True),
     _S('AGENT_MAX_FAILURE_REPLANS', 'int', 2, 'agent', 'Agent failure replans', 'PM recovery replans allowed after failed specialist objective jobs.', lo=0, hi=20),
@@ -127,7 +127,7 @@ SPECS: dict[str, _S] = {
     # sandbox
     _S('SANDBOX_IMAGE', 'str', 'peon-sandbox:local', 'sandbox', 'Sandbox image', 'Docker image for project sandboxes. Requires Peon restart.', restart=True),
     _S('OPENSHELL_IMAGE', 'str', 'peon-sandbox:local', 'sandbox', 'OpenShell image', 'Docker image for OpenShell runtime. Requires Peon restart.', restart=True),
-    _S('LEARN_LAB_IMAGE', 'str', 'peon-sandbox:local', 'sandbox', 'Learn lab image', 'Docker image for Lab Toolsmith install tests. Requires Peon restart.', restart=True),
+    _S('LAB_IMAGE', 'str', 'peon-sandbox-lab:local', 'sandbox', 'Lab image', 'Docker image for the lab (Toolsmith install tests + OpenCode authoring). peon-sandbox:local plus a pinned OpenCode CLI — never used for project sandboxes. Requires Peon restart.', restart=True),
     _S('PROJECT_SANDBOX_PREFIX', 'str', 'peon-project', 'sandbox', 'Project sandbox prefix', 'Docker container name prefix. Requires Peon restart.', restart=True),
     # paths
     _S('PROJECT_WORKSPACES_DIR', 'str', 'workspaces', 'paths', 'Project workspaces dir', 'Root for project + platform workspaces. Requires Peon restart.', restart=True),

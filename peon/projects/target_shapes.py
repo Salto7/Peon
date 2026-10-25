@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import urlparse
 
 from orchestrator.utils.paths import format_target_lines

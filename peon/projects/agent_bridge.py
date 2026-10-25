@@ -838,6 +838,39 @@ class JobAgentBridge(AgentBridgeBase):
             else f"No active {scope_s} memory named {name!r}."
         )
 
+    # --- Credentials (project key store) --------------------------------
+
+    def list_credentials(self) -> str:
+        from peon.projects import credentials as credential_store
+
+        if not self._job.project_id:
+            return "No project on this job."
+        rows = credential_store.list_credentials(self._job.project_id)
+        if not rows:
+            return "No credentials stored for this project."
+        lines = ["Project credentials (use get_credential(name) for the value):"]
+        for row in rows:
+            who = f" {row['username']}" if row["username"] else ""
+            at = f"@{row['domain']}" if row["domain"] else ""
+            lines.append(f"- {row['name']} [{row['kind']}]{who}{at}")
+        return "\n".join(lines)
+
+    def get_credential(self, name: str, part: str = "secret") -> str:
+        from peon.projects import credentials as credential_store
+
+        if not self._job.project_id:
+            return "Error: no project on this job."
+        key = (name or "").strip()
+        if not key:
+            return "Error: credential name is required."
+        part_norm = (part or "secret").strip().lower()
+        if part_norm not in {"secret", "username", "domain", "full"}:
+            return "Error: part must be secret, username, domain, or full."
+        found = credential_store.get_credential_secret(self._job.project_id, key)
+        if found is None:
+            return f"Error: no credential named {key!r} for this project."
+        return found.as_env(part_norm)
+
     # --- A2A ----------------------------------------------------------
 
     def other_agents_alive(self) -> bool:

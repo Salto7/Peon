@@ -13,15 +13,16 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
+from collections.abc import Iterable
 from functools import partial
-from typing import Any, Iterable
+from typing import Any
 
 from django.utils import timezone as dj_tz
 
 from peon.projects.asset_model import (
     GROUPS,
-    classify,
     class_by_slug,
+    classify,
     parent_fqdn_candidates,
     relation_status,
     relation_title,
@@ -38,7 +39,6 @@ from peon.projects.target_shapes import (
     split_typed_line,
     url_host,
 )
-
 
 logger = logging.getLogger(__name__)
 

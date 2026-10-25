@@ -1,7 +1,7 @@
 # Generated for AssetGraph (OAM-inspired open asset / relation store)
 
-from django.db import migrations, models
 import django.db.models.deletion
+from django.db import migrations, models
 
 
 class Migration(migrations.Migration):

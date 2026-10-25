@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, ClassVar
+from typing import ClassVar
 
 from orchestrator.config import get_config
 from orchestrator.skills.providers.base import (
@@ -15,7 +17,6 @@ from orchestrator.skills.providers.base import (
     SkillProvider,
 )
 from orchestrator.skills.providers.claude_agent import ClaudeAgentSkillsProvider
-from orchestrator.skills.mounts import extra_skill_mount
 from orchestrator.skills.providers.peon_native import PeonNativeProvider
 from orchestrator.skills.registry_scan import discover_skill_manifests
 from orchestrator.utils.paths import safe_join
@@ -24,6 +25,17 @@ from orchestrator.utils.service import SharedServiceBase
 logger = logging.getLogger(__name__)
 
 __all__ = ["SkillRegistry", "discover_skill_manifests"]
+
+
+def extra_skill_mount(index: int, root: Path) -> str:
+    """Return the container directory used for one configured external root.
+
+    The index prevents two roots with the same basename from colliding while
+    the basename keeps ``docker inspect`` and error messages understandable.
+    """
+
+    label = re.sub(r"[^a-z0-9._-]+", "-", root.name.lower()).strip("-") or "root"
+    return f"/skills-extra/{int(index):02d}-{label}"
 
 
 def _document_from_record(rec) -> SkillDocument:
@@ -120,7 +132,7 @@ class SkillRegistry(SharedServiceBase):
     """Scan configured providers and cache documents by ``SkillId.key``."""
 
     _provider_factories: ClassVar[
-        list[Callable[["SkillRegistry"], SkillProvider]]
+        list[Callable[[SkillRegistry], SkillProvider]]
     ] = []
 
     def __init__(self) -> None:

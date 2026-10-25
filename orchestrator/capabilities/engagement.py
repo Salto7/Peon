@@ -54,6 +54,14 @@ class EngagementTools:
         return get_job().bridge.forget_memory(name, scope)
 
     @staticmethod
+    def list_credentials() -> str:
+        return get_job().bridge.list_credentials()
+
+    @staticmethod
+    def get_credential(name: str, part: str = "secret") -> str:
+        return get_job().bridge.get_credential(name, part)
+
+    @staticmethod
     def send_message(
         to: str, content: str, kind: str = "inform", reply_to: str = ""
     ) -> str:

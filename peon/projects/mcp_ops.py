@@ -54,6 +54,7 @@ def list_project_mcp_configs(project_id: object) -> list[dict[str, Any]]:
                     else stored.get(f["name"], f.get("default") or "")
                 ),
                 "secret": f.get("type") == "secret",
+                "credential": f.get("type") == "credential",
                 "is_set": bool(stored.get(f["name"])),
             }
             for f in rec.env_schema_full

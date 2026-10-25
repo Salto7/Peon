@@ -40,9 +40,8 @@ def save_skill_source(
     files: dict[str, str] | None = None,
     bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    from orchestrator.learn import LearnAuthoring
     from orchestrator.skills.providers.base import SkillId
-
+    from orchestrator.toolsmith import lint_skill
     from peon.projects.platform_catalog import PlatformCatalog
 
     hinted = str(skill_id or "").strip()
@@ -60,9 +59,7 @@ def save_skill_source(
     checked: dict[str, Any] = {"compatible": True}
     if lint_name:
         try:
-            checked = LearnAuthoring.shared().lint_skill(
-                name=lint_name, skill_md=md, files=file_map
-            )
+            checked = lint_skill(name=lint_name, skill_md=md, files=file_map)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
     if checked.get("compatible") is False:
@@ -144,3 +141,18 @@ def save_tool_source(
         "path": str(path),
         "script_path": str(script_path) if script else "",
     }
+
+
+def delete_tool_source(tool_id: str) -> None:
+    tid = str(tool_id or "").strip()
+    if not tid or "/" in tid or ".." in tid:
+        raise ValueError("invalid tool id")
+    catalog = Path(settings.TOOLS_CATALOG_DIR)
+    path = catalog / f"{tid}.yaml"
+    if not path.is_file():
+        raise FileNotFoundError(f"tool {tid!r} not found")
+    path.unlink()
+    script_path = catalog / f"{tid}.sh"
+    if script_path.is_file():
+        script_path.unlink()
+    ToolCatalog.shared().invalidate()

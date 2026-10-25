@@ -6,9 +6,10 @@ import fcntl
 import logging
 import threading
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from django.conf import settings
 from django.db import connections
@@ -52,6 +53,7 @@ PROJECT_MODEL_NAMES = frozenset(
         "AssetGraph",
         "JobCheckpoint",
         "ProjectMcpConfig",
+        "ProjectCredential",
     }
 )
 
@@ -67,10 +69,15 @@ def alias_for(project_id: object) -> str:
     return f"project_{normalize_project_id(project_id).replace('-', '')}"
 
 
-def project_db_path(project_id: object) -> Path:
+def project_db_path(project_id: object, *, create: bool = False) -> Path:
+    """Path of the project's SQLite file. Never creates the workspace unless asked.
+
+    Creating on every lookup resurrected deleted projects: any late stream tick,
+    worker write or page hit under ``using_project`` recreated the folder.
+    """
     from peon.projects.workspaces import project_workspace_dir
 
-    root = project_workspace_dir(normalize_project_id(project_id), create=True)
+    root = project_workspace_dir(normalize_project_id(project_id), create=create)
     return (root / "db.sqlite3").resolve()
 
 
@@ -160,7 +167,6 @@ def register_project_database(project_id: object) -> str:
     pid = normalize_project_id(project_id)
     alias = alias_for(pid)
     path = project_db_path(pid)
-    path.parent.mkdir(parents=True, exist_ok=True)
     databases = settings.DATABASES
     cfg = _sqlite_config(path)
     existing = databases.get(alias)
@@ -216,34 +222,40 @@ def ensure_project_database(project_id: object) -> str:
     edits. Remirroring on every ensure was a write storm (claim slot checks,
     stream fan-out, finish→enqueue) that held the SQLite writer lock and aborted
     objective dispatch with ``database is locked``.
+
+    Raises ``Project.DoesNotExist`` once the registry row is gone, so deleted
+    projects are never recreated on disk by stragglers.
     """
     pid = normalize_project_id(project_id)
-    alias = register_project_database(pid)
+    alias = alias_for(pid)
+    if alias in _migrated_aliases and project_db_path(pid).parent.is_dir():
+        return register_project_database(pid)
     from django.core.management import call_command
 
-    lock_path = project_db_path(pid).with_name(f".{pid}.migrate.lock")
-    with _migrate_lock, _file_lock(lock_path):
-        if alias not in _migrated_aliases:
-            try:
-                call_command(
-                    "migrate",
-                    "projects",
-                    database=alias,
-                    run_syncdb=False,
-                    verbosity=0,
-                    interactive=False,
-                )
-            except Exception:
-                logger.exception(
-                    "project db migrate failed project_id=%s alias=%s", pid, alias
-                )
-                raise
-            try:
-                mirror_project_row(pid)
-            except Exception:
-                logger.exception("project mirror failed project_id=%s", pid)
-                raise
-            _migrated_aliases.add(alias)
+    from peon.projects.models import Project
+
+    with _migrate_lock:
+        if not Project.objects.using("default").filter(pk=pid).exists():
+            drop_project_database(pid)
+            raise Project.DoesNotExist(f"project {pid} no longer exists")
+        alias = register_project_database(pid)
+        lock_path = project_db_path(pid, create=True).with_name(f".{pid}.migrate.lock")
+        with _file_lock(lock_path):
+            if alias not in _migrated_aliases:
+                try:
+                    call_command(
+                        "migrate",
+                        "projects",
+                        database=alias,
+                        run_syncdb=False,
+                        verbosity=0,
+                        interactive=False,
+                    )
+                    mirror_project_row(pid)
+                except Exception:
+                    logger.exception("project db prepare failed project_id=%s", pid)
+                    raise
+                _migrated_aliases.add(alias)
     return alias
 
 
@@ -254,6 +266,7 @@ def drop_project_database(project_id: object) -> None:
     except ValueError:
         return
     alias = alias_for(pid)
+    _migrated_aliases.discard(alias)
     if alias in connections:
         connections[alias].close()
         del connections[alias]

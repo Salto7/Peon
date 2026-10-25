@@ -25,8 +25,8 @@ class DockerRuntime(Runtime):
 
     @staticmethod
     def mode_for(spec: RuntimeSpec) -> str:
-        if spec.role == "learn-lab":
-            return "learn-lab"
+        if spec.role == "lab":
+            return "lab"
         if spec.role == "shared":
             return "shared"
         return "docker"

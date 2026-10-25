@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 OWNER_SKILL = "skill"
 OWNER_MCP = "mcp"
 _AFFINITY_THRESHOLD = 0.5
+
+# Platform-core skills: load-bearing for every project (project-manager and
+# analyzer are the bookend roles' own skills) or hard-imported by Toolsmith's
+# authoring pipeline (skill-writer, tools-suggestor — see
+# orchestrator/toolsmith/system_skills.py). Deleting one breaks the platform,
+# so — like a protected role — the catalog refuses to.
+CORE_SKILL_IDS = frozenset({"analyzer", "project-manager", "skill-writer", "tools-suggestor"})
 _SKILLS_FINGERPRINT = ""  # last on-disk skill state reconciled by this process
 _revision: float = 0.0
 
@@ -160,13 +167,21 @@ def _safe_rel(rel: str) -> str:
     return rel_s
 
 
+def _format_candidates(candidates: list[dict[str, Any]]) -> str:
+    """``role_id (score)`` list for a review proposal's human-readable rationale."""
+    return ", ".join(
+        f"{c['role_id']} ({float(c['score']):.2f})"
+        for c in sorted(candidates, key=lambda c: -float(c["score"]))
+    )
+
+
 class PlatformCatalog:
     """CRUD for the platform skill, role, and MCP catalogs."""
 
-    _shared: "PlatformCatalog | None" = None
+    _shared: PlatformCatalog | None = None
 
     @classmethod
-    def shared(cls) -> "PlatformCatalog":
+    def shared(cls) -> PlatformCatalog:
         if cls._shared is None:
             cls._shared = cls()
         return cls._shared
@@ -202,7 +217,6 @@ class PlatformCatalog:
 
     def _seed_roles(self) -> int:
         from orchestrator.crew.roles.catalog import DEFAULT_ROLES
-
         from peon.projects.models import EngagementRole
 
         try:
@@ -235,7 +249,6 @@ class PlatformCatalog:
 
     def list_roles(self):
         from orchestrator.crew.roles.catalog import DEFAULT_ROLES, RoleDef
-
         from peon.projects.models import EngagementRole
 
         try:
@@ -285,7 +298,6 @@ class PlatformCatalog:
             normalize_role_id,
             role_def_from_mapping,
         )
-
         from peon.projects.models import EngagementRole
 
         defn = role_def_from_mapping(
@@ -397,7 +409,6 @@ class PlatformCatalog:
 
     def delete_role(self, role_id: str) -> None:
         from orchestrator.crew.roles.catalog import normalize_role_id
-
         from peon.projects.models import CatalogBinding, EngagementRole
 
         rid = normalize_role_id(role_id)
@@ -413,24 +424,6 @@ class PlatformCatalog:
             CatalogBinding.objects.filter(role_id=rid).delete()
             row.delete()
         _invalidate()
-
-    def roles_for_lab(self) -> list[dict[str, Any]]:
-        from orchestrator.crew.roles.registry import RoleRegistry
-
-        registry = RoleRegistry.shared()
-        out: list[dict[str, Any]] = []
-        for defn in self.list_roles():
-            spec = registry.get(defn.id)
-            out.append(
-                {
-                    "id": defn.id,
-                    "kind": defn.kind,
-                    "aliases": list(defn.aliases),
-                    "protected": defn.is_protected,
-                    "skills": list(spec.skills or ()) if spec else [],
-                }
-            )
-        return out
 
     # --- bindings ----------------------------------------------------------
 
@@ -539,13 +532,24 @@ class PlatformCatalog:
         infer_description: str = "",
         infer_body: str = "",
         infer_tags: tuple[str, ...] = (),
+        is_new: bool = True,
     ) -> None:
         """Write explicit bindings, else rename carry, else auto-infer roles.
 
-        ``bindings is None`` → auto-infer (install / omit).
-        Non-empty list → replace with those rows.
-        ``bindings == []`` → clear when mappings already exist; otherwise auto-infer
-        (catalog UI always posts an empty list for new items).
+        ``is_new`` is false for a skill/MCP already in the catalog whose
+        bindings happened to be empty or omitted (editor Save without
+        touching the bindings section, a second install attempt, …) — such
+        a call never auto-infers: re-scoring against *today's* full role
+        list, possibly years after the item's own original install, is what
+        silently rebound an unrelated MCP to a role that did not even exist
+        at its real install time (classifier noise, not a deliberate human
+        choice). Only a genuinely new item gets to have auto-infer — or, for
+        an MCP specifically, the draft-a-role-and-skill path below — decide
+        its role at all.
+
+        ``bindings is None`` or ``[]`` → clear when mappings already exist,
+        else auto-infer (but only when ``is_new``; see above).
+        A non-empty list always replaces with exactly those rows.
         """
         if bindings:
             self.replace_bindings(
@@ -576,6 +580,9 @@ class PlatformCatalog:
                     ],
                 )
                 return
+        if not is_new:
+            _invalidate()
+            return
         try:
             from orchestrator.skills.affinity import infer_catalog_bindings
 
@@ -596,19 +603,190 @@ class PlatformCatalog:
                 self.replace_bindings(
                     owner_kind=owner_kind, owner_id=owner_id, bindings=applied
                 )
+                if owner_kind == OWNER_MCP:
+                    lead = next((b for b in applied if b["lead"]), applied[0])
+                    self._ensure_mcp_skill(
+                        mcp_id=owner_id,
+                        description=infer_description,
+                        corpus=infer_body,
+                        role_id=lead["role_id"],
+                    )
                 return
             except ValueError as exc:
                 logger.warning(
                     "auto-bind rejected for %s %s: %s", owner_kind, owner_id, exc
                 )
-        # No role scored confidently enough to bind unattended. Rather than
-        # discard a weak-but-real signal (e.g. every role scored just under
-        # threshold), flag it for a human via the same review queue
-        # marketplace_ops.import_agent already uses for role proposals —
-        # one mechanism, not a second review system for MCP bindings.
-        if owner_kind == OWNER_MCP and candidates:
-            self._stage_binding_review(owner_id=owner_id, candidates=candidates)
+        if owner_kind == OWNER_MCP:
+            self._resolve_role_skill_for_mcp(
+                mcp_id=owner_id,
+                description=infer_description,
+                corpus=infer_body,
+                weak_candidates=candidates,
+            )
         _invalidate()
+
+    def _resolve_role_skill_for_mcp(
+        self,
+        *,
+        mcp_id: str,
+        description: str,
+        corpus: str,
+        weak_candidates: list[dict[str, Any]],
+    ) -> None:
+        """No role bound confidently to ``mcp_id`` — reuse, create, or ask.
+
+        Unambiguous (nothing existing resembles this server, no id clash):
+        draft a role + skill and create them immediately, no human gate —
+        that is the point of this path, not a safety hole, because every
+        branch below that finds *any* overlap falls back to the existing
+        proposal review queue instead of acting. Ambiguous means: a role
+        already scored *some* affinity against this server's own text
+        (``weak_candidates``) or against the drafted role's own goal/
+        backstory (domains "AdStrike"/"BloodHound"/"ADPulse" all draft as
+        "AD attack" even when their READMEs share no keywords), or the
+        drafted role/skill id collides with something that already exists.
+        """
+        from peon.projects.models import CatalogProposal
+
+        already_pending = CatalogProposal.objects.filter(
+            status="pending", kind="mcp_role_skill", action="create", target_id=mcp_id
+        ).exists()
+        if already_pending:
+            return
+        if weak_candidates:
+            # A human already gets `_stage_binding_review` for this signal;
+            # drafting a competing *new* role on top of a plausible existing
+            # match would just be a second, conflicting way to resolve the
+            # same ambiguity. Let the review queue be the one place that
+            # decides a weak-but-real match.
+            self._stage_binding_review(owner_id=mcp_id, candidates=weak_candidates)
+            return
+        draft = self._draft_mcp_skill(mcp_id=mcp_id, description=description, corpus=corpus)
+        if draft is None:
+            return
+        role_id = draft["role_id"]
+        from orchestrator.mcp.draft import render_skill_md
+
+        skill_md = render_skill_md(mcp_id, draft)
+        payload = {
+            "mcp_id": mcp_id,
+            "role": {
+                "role_id": role_id,
+                "kind": "technical",
+                "aliases": [],
+                "goal": draft["goal"],
+                "backstory": draft["backstory"],
+            },
+            "skill_id": mcp_id,
+            "skill_md": skill_md,
+        }
+        conflict = self._role_skill_conflict(mcp_id=mcp_id, role_id=role_id, draft=draft)
+        if conflict:
+            CatalogProposal.objects.create(
+                kind="mcp_role_skill",
+                action="create",
+                target_id=mcp_id,
+                title=f"New role + skill for MCP server: {mcp_id}",
+                rationale=conflict,
+                payload=payload,
+            )
+            return
+        # Nothing existing resembles this server and no id clashes — safe to
+        # act without a human in the loop. Record it as an already-approved
+        # proposal so it still shows up as a readable "what did the platform
+        # just do" audit trail on the Catalog page, not a silent write.
+        with transaction.atomic():
+            from peon.projects.gist import apply_proposal
+
+            row = CatalogProposal.objects.create(
+                kind="mcp_role_skill",
+                action="create",
+                target_id=mcp_id,
+                title=f"Auto-created role + skill for MCP server: {mcp_id}",
+                rationale=(
+                    f"No existing role resembled {mcp_id!r} (by its own text or by the "
+                    f"drafted role's goal/backstory) and no id collided, so role "
+                    f"{role_id!r} and skill {mcp_id!r} were created automatically."
+                ),
+                payload=payload,
+                status="pending",
+            )
+            result = apply_proposal(str(row.pk), decision="approve")
+        if not result.get("ok"):
+            logger.warning(
+                "auto-apply of drafted role+skill failed for %s: %s", mcp_id, result.get("error")
+            )
+
+    def _role_skill_conflict(
+        self, *, mcp_id: str, role_id: str, draft: dict[str, Any]
+    ) -> str:
+        """Empty string = clear to auto-apply. Non-empty = reason to ask a human instead."""
+        from peon.projects.models import CatalogSkill, EngagementRole
+
+        if EngagementRole.objects.filter(role_id=role_id).exists():
+            return f"Drafted role id {role_id!r} already exists in the catalog."
+        if CatalogSkill.objects.filter(skill_id=mcp_id).exists():
+            return f"A skill named {mcp_id!r} already exists in the catalog (not from this server)."
+        try:
+            from orchestrator.skills.affinity import infer_catalog_bindings
+
+            applied2, candidates2 = infer_catalog_bindings(
+                owner_id=mcp_id,
+                owner_kind=OWNER_MCP,
+                description=draft["goal"],
+                body=f"{draft['goal']}\n{draft['backstory']}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("role-similarity re-check failed for %s: %s", mcp_id, exc)
+            return ""
+        overlap = applied2 or candidates2
+        if overlap:
+            names = _format_candidates(overlap)
+            return (
+                f"The drafted role for {mcp_id!r} reads similar to an existing role: {names}. "
+                "Approve to create the new role anyway, or reject and bind the server to "
+                "one of those existing roles manually instead."
+            )
+        return ""
+
+    def _ensure_mcp_skill(
+        self, *, mcp_id: str, description: str, corpus: str, role_id: str
+    ) -> None:
+        """A newly bound MCP still gets its own skill even when it bound to an
+        *existing* role (e.g. BloodHound MCP confidently matching the
+        ``ad-attack-expert`` role AdStrike's install already created) — the
+        generic MCP tool-call surface works without one, but a server-specific
+        workflow (ordering, OPSEC, how its own setup/credential call works) is
+        the whole value of a skill. No-op if this MCP already has one.
+        """
+        from peon.projects.models import CatalogSkill
+
+        if CatalogSkill.objects.filter(skill_id=mcp_id).exists():
+            return
+        draft = self._draft_mcp_skill(mcp_id=mcp_id, description=description, corpus=corpus)
+        if draft is None:
+            return
+        from orchestrator.mcp.draft import render_skill_md
+
+        try:
+            self.upsert_skill(
+                skill_md=render_skill_md(mcp_id, draft),
+                skill_id=mcp_id,
+                bindings=[{"role_id": role_id, "score": 1.0, "lead": True}],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp skill create failed for %s: %s", mcp_id, exc)
+
+    @staticmethod
+    def _draft_mcp_skill(*, mcp_id: str, description: str, corpus: str) -> dict[str, Any] | None:
+        """``draft_role_and_skill``, logged and swallowed on failure (never fatal)."""
+        from orchestrator.mcp.draft import draft_role_and_skill
+
+        try:
+            return draft_role_and_skill(mcp_id=mcp_id, description=description, corpus=corpus)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp role/skill draft failed for %s: %s", mcp_id, exc)
+            return None
 
     def _stage_binding_review(
         self, *, owner_id: str, candidates: list[dict[str, Any]]
@@ -622,10 +800,7 @@ class PlatformCatalog:
             ).exists()
             if already_pending:
                 return
-            names = ", ".join(
-                f"{c['role_id']} ({float(c['score']):.2f})"
-                for c in sorted(candidates, key=lambda c: -float(c["score"]))
-            )
+            names = _format_candidates(candidates)
             CatalogProposal.objects.create(
                 kind="mcp_binding",
                 action="create",
@@ -732,7 +907,6 @@ class PlatformCatalog:
         """
         from orchestrator.skills.manifest import ParseProfile, SkillParseError, parse_skill_manifest
         from orchestrator.skills.providers.base import PEON_PROVIDER, SkillId
-
         from peon.projects.models import CatalogFile, CatalogSkill
 
         md = str(skill_md or "").strip()
@@ -850,6 +1024,7 @@ class PlatformCatalog:
                 infer_description=manifest.description,
                 infer_body=manifest.body,
                 infer_tags=tuple(manifest.tags or ()),
+                is_new=not existed,
             )
         if rename_from and rename_from != public:
             self.delete_skill(rename_from)
@@ -865,6 +1040,8 @@ class PlatformCatalog:
         row = CatalogSkill.objects.filter(skill_id=sid).first()
         if row is None:
             raise KeyError(f"unknown skill {sid!r}")
+        if sid in CORE_SKILL_IDS:
+            raise ValueError(f"skill {sid!r} is a platform-core skill and cannot be deleted")
         with transaction.atomic():
             CatalogFile.objects.filter(owner_kind=OWNER_SKILL, owner_id=sid).delete()
             CatalogBinding.objects.filter(owner_kind=OWNER_SKILL, owner_id=sid).delete()
@@ -918,7 +1095,6 @@ class PlatformCatalog:
         keep_bindings: bool = False,
     ) -> McpRecord:
         from orchestrator.mcp.parse import parse_mcp_document
-
         from peon.projects.models import CatalogFile, CatalogMcp
 
         specs = parse_mcp_document(document)
@@ -1005,6 +1181,7 @@ class PlatformCatalog:
                 infer_description=spec.description,
                 infer_body=_mcp_affinity_corpus(file_map, spec),
                 infer_tags=(),
+                is_new=not existed,
             )
         if previous:
             self.delete_mcp(previous)
@@ -1304,7 +1481,7 @@ class PlatformCatalog:
         keep_bindings: bool = False,
         only_if_pristine: bool = False,
         from_disk: bool = True,
-    ) -> "SkillRecord | None":
+    ) -> SkillRecord | None:
         """Upsert one ``SkillCandidate`` (from ``discover_skill_candidates``).
 
         Shared by the disk bootstrap/sync scan and the marketplace importer —
@@ -1447,7 +1624,7 @@ def _setup_from_files(files: dict[str, str]) -> dict[str, str] | None:
     return None
 
 
-_ENV_TYPES = frozenset({"string", "secret", "boolean", "number", "choice"})
+_ENV_TYPES = frozenset({"string", "secret", "boolean", "number", "choice", "credential"})
 _SECRET_HINT = re.compile(
     r"(token|password|secret|api_?key|authorization|access_token|refresh_token)", re.I
 )
@@ -1479,6 +1656,7 @@ def _mcp_from_row(row, bindings: tuple[Binding, ...], files: dict[str, str]) -> 
                     "description": str(extra.get("description") or ""),
                     "default": "" if extra.get("default") is None else str(extra.get("default")),
                     "choices": [str(c) for c in (extra.get("choices") or [])],
+                    "credential_part": str(extra.get("credential_part") or "secret"),
                 }
             )
     install = dict(row.install) if isinstance(row.install, dict) else None

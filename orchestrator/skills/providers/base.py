@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
 
 from orchestrator.skills.common import SKILL_NAME_RE, render_prompt_block
 from orchestrator.utils.paths import normalize_rel_path, safe_join
@@ -117,7 +117,7 @@ class SkillDocument:
     def access_error(self, *, role_id: str = "") -> str:
         """Role-gated access. Matches ``SkillRegistry.usable``.
 
-        Empty ``role_id`` skips the role check for peon (catalog/Learn), but
+        Empty ``role_id`` skips the role check for peon (catalog/Toolsmith), but
         imported skills always require a bound role.
         """
         role = (role_id or "").strip().lower()

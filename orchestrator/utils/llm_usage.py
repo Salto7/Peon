@@ -26,9 +26,10 @@ written immediately after a call, e.g. in a script that calls then exits.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Any, Iterator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

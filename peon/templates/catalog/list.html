@@ -8,7 +8,7 @@
   {% url 'catalog_api_proposals' as proposals_list_url %}{% url 'catalog_api_proposal_decide' as proposal_decide_url %}
   <a href="#roles" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Roles <c-badge>{{ roles|length }}</c-badge>{% island "proposal-badge" element_id="roles-nav-pending" listUrl=proposals_list_url kind="role" %}</a>
   <a href="#skills" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Skills <c-badge>{{ skills|length }}</c-badge>{% island "proposal-badge" element_id="skills-nav-pending" listUrl=proposals_list_url kind="skill" %}</a>
-  <a href="#mcp" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">MCP servers <c-badge>{{ mcps|length }}</c-badge>{% island "proposal-badge" element_id="mcp-nav-pending" listUrl=proposals_list_url kind="mcp_binding" %}</a>
+  <a href="#mcp" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">MCP servers <c-badge>{{ mcps|length }}</c-badge>{% island "proposal-badge" element_id="mcp-nav-pending" listUrl=proposals_list_url kind="mcp_binding,mcp_role_skill" %}</a>
   <a href="#tools" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Tools <c-badge>{{ tools|length }}</c-badge></a>
   <a href="#marketplace" class="inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground">Marketplace <c-badge>{{ marketplace_sources|length }}</c-badge></a>
 </nav>
@@ -33,8 +33,9 @@
     {% if roles %}
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {% for s in roles %}
-      <article id="role-{{ s.name }}" class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm {% if not s.compatible %}opacity-60{% endif %}">
+      <article id="role-{{ s.name }}" class="catalog-block flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm {% if not s.compatible %}opacity-60{% endif %}">
         <div class="flex items-start gap-2">
+          {% if s.deletable %}<input type="checkbox" class="catalog-block-check" data-catalog-select="role" data-id="{{ s.name }}" aria-label="Select {{ s.name }}">{% endif %}
           <div class="min-w-0 flex-1">
             <h3 class="truncate font-mono text-[13px] font-medium">{{ s.name }}</h3>
             {% if s.kind or s.category %}<p class="mt-0.5 text-xs text-muted-foreground">{% firstof s.kind s.category %}</p>{% endif %}
@@ -87,14 +88,18 @@
     {% if skills %}
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {% for s in skills %}
-      <article id="skill-{{ s.id }}" class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
+      <article id="skill-{{ s.id }}" class="catalog-block flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
         <div class="flex items-start gap-2">
+          {% if s.deletable %}<input type="checkbox" class="catalog-block-check" data-catalog-select="skill" data-id="{{ s.id }}" aria-label="Select {{ s.id }}">{% endif %}
           <h3 class="min-w-0 flex-1 truncate font-mono text-[13px] font-medium">{{ s.id }}</h3>
+          {% if not s.deletable %}<c-badge title="Platform-core skill — cannot be deleted">{% icon "lock" "size-3" %} Core</c-badge>{% endif %}
           <c-menu label="Actions for {{ s.id }}">
             <button type="button" class="ui-menu-item" data-catalog-edit="skill" data-id="{{ s.id }}">{% icon "wrench" %} Edit</button>
             <a class="ui-menu-item" href="{% url 'catalog_api_skill' s.id %}" target="_blank" rel="noopener">{% icon "external-link" %} View JSON</a>
+            {% if s.deletable %}
             <div class="ui-menu-sep"></div>
             <button type="button" class="ui-menu-item" data-variant="destructive" data-catalog-delete="skill" data-id="{{ s.id }}">{% icon "trash-2" %} Delete</button>
+            {% endif %}
           </c-menu>
         </div>
         <p class="line-clamp-3 text-sm text-muted-foreground">{{ s.description|default:"No description." }}</p>
@@ -135,8 +140,9 @@
     {% if mcps %}
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {% for s in mcps %}
-      <article id="mcp-{{ s.id }}" class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
+      <article id="mcp-{{ s.id }}" class="catalog-block flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
         <div class="flex items-start gap-2">
+          <input type="checkbox" class="catalog-block-check" data-catalog-select="mcp" data-id="{{ s.id }}" aria-label="Select {{ s.id }}">
           <div class="min-w-0 flex-1">
             <h3 class="truncate font-mono text-[13px] font-medium">{{ s.id }}</h3>
             <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">{{ s.command }}</p>
@@ -162,6 +168,7 @@
     <c-card><c-empty icon="server" title="No MCP servers">Install one above or define a new server.</c-empty></c-card>
     {% endif %}
     {% island "pending-proposals" element_id="mcp-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="mcp_binding" %}
+    {% island "pending-proposals" element_id="mcp-role-skill-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="mcp_role_skill" %}
   </section>
 
   {# ── Tools ── #}
@@ -179,8 +186,9 @@
     {% if tools %}
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {% for t in tools %}
-      <article id="tool-{{ t.id }}" class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
+      <article id="tool-{{ t.id }}" class="catalog-block flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
         <div class="flex items-start gap-2">
+          <input type="checkbox" class="catalog-block-check" data-catalog-select="tool" data-id="{{ t.id }}" aria-label="Select {{ t.id }}">
           <div class="min-w-0 flex-1">
             <h3 class="truncate font-mono text-[13px] font-medium">{{ t.id }}</h3>
             {% if t.binary %}<p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">{{ t.binary }}</p>{% endif %}
@@ -189,6 +197,8 @@
           <c-menu label="Actions for {{ t.id }}">
             <button type="button" class="ui-menu-item" data-catalog-edit="tool" data-id="{{ t.id }}">{% icon "wrench" %} Edit</button>
             <a class="ui-menu-item" href="{% url 'catalog_api_tool' t.id %}" target="_blank" rel="noopener">{% icon "external-link" %} View JSON</a>
+            <div class="ui-menu-sep"></div>
+            <button type="button" class="ui-menu-item" data-variant="destructive" data-catalog-delete="tool" data-id="{{ t.id }}">{% icon "trash-2" %} Delete</button>
           </c-menu>
         </div>
         <p class="line-clamp-3 text-sm text-muted-foreground">{{ t.description|default:"No description." }}</p>

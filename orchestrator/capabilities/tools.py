@@ -28,7 +28,9 @@ __all__ = [
     "record_finding",
     "check_inbox",
     "forget_memory",
+    "get_credential",
     "go_idle",
+    "list_credentials",
     "list_team",
     "record_assets",
     "record_findings",
@@ -156,6 +158,18 @@ def save_memory(
 def forget_memory(name: str, scope: str = "project") -> str:
     """Retire a stale memory entry."""
     return EngagementTools.forget_memory(name, scope or "project")
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def list_credentials() -> str:
+    """List credential names/kinds stored in this project's key store (never values)."""
+    return EngagementTools.list_credentials()
+
+
+@capability(CapabilityGroup.ENGAGEMENT)
+def get_credential(name: str, part: str = "secret") -> str:
+    """Plaintext of a stored credential (part: secret | username | domain | full)."""
+    return EngagementTools.get_credential(name, part or "secret")
 
 
 @capability(CapabilityGroup.ENGAGEMENT)

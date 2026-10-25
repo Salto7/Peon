@@ -25,13 +25,13 @@ def _run() -> int:
         print("usage: provide a skill request as argv", file=sys.stderr)
         return 2
 
-    out_root = workspace_path() / "learn" / "skill"
+    out_root = workspace_path() / "toolsmith" / "skill"
     out_root.mkdir(parents=True, exist_ok=True)
 
     try:
-        from orchestrator.learn.authoring import LearnAuthoring
+        from orchestrator.toolsmith import PeonAuthoring
 
-        result = LearnAuthoring.shared().write_skill(prompt)
+        result = PeonAuthoring.shared().write_skill(prompt)
     except Exception as exc:  # noqa: BLE001
         (out_root / "notes.md").write_text(
             f"# skill-writer failed\n\n```\n{exc}\n```\n",

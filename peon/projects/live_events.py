@@ -87,7 +87,9 @@ def project_fingerprint(project_id: object) -> dict[str, str]:
     alias = project_alias_or_default(project_id)
     out: dict[str, str] = {}
     project = Project.objects.filter(pk=project_id).values("status", "updated_at").first()
-    out["project"] = f"{project['status']}:{project['updated_at']}" if project else "gone"
+    if project is None:
+        return {"project": "gone"}
+    out["project"] = f"{project['status']}:{project['updated_at']}"
     with using_project(project_id):
         out["jobs"] = token(Job.objects.using(alias).filter(project_id=project_id))
         out["objectives"] = token(Objective.objects.using(alias).filter(project_id=project_id))
@@ -175,11 +177,15 @@ def _project_stream(project, cursor: int) -> Iterator[str]:
         yield _sse("ready", {"cursor": cursor}, cursor)
         while time.monotonic() - started < STREAM_LIFETIME_S:
             waker.wait(TICK_S)
+            current = project_fingerprint(project.pk)
+            if current["project"] == "gone":
+                # Deleted: stop streaming (touching its DB would recreate the workspace).
+                yield _sse("gone", {})
+                return
             rows = project_message_dicts(project, after_id=cursor, limit=MESSAGE_BATCH)
             if rows:
                 cursor = int(rows[-1]["id"])
                 yield _sse("messages", rows, cursor)
-            current = project_fingerprint(project.pk)
             changed = sorted(k for k, v in current.items() if fingerprint.get(k) != v)
             if changed:
                 fingerprint = current

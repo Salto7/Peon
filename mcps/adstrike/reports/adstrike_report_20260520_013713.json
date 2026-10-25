@@ -1,0 +1,145 @@
+{
+  "schema_version": "2.0",
+  "generated_by": "AdStrike v5.0",
+  "generated_at": "2026-05-20T01:37:13.710118",
+  "engagement": "Agent-Run",
+  "tester": "tester",
+  "target": {
+    "domain": "corp.local",
+    "dc_ip": "192.168.56.1"
+  },
+  "risk": {
+    "overall_cvss": 9.1,
+    "overall_severity": "Critical"
+  },
+  "summary": {
+    "Critical": 1,
+    "High": 5,
+    "Medium": 0,
+    "Low": 0,
+    "Info": 1
+  },
+  "commands_run": 33,
+  "owned_users": [],
+  "owned_machines": [],
+  "loot_keys": [],
+  "mitre_tactics_covered": [
+    "credential-access",
+    "discovery",
+    "initial-access"
+  ],
+  "findings": [
+    {
+      "id": 3,
+      "name": "Logon Script Abuse Path",
+      "severity": "Critical",
+      "description": "Writable user IT-Admins can be pointed at SYSVOL logon script adstrike_6dba25cf.bat",
+      "recommendation": "Remove write rights on user scriptPath and restrict SYSVOL script writes",
+      "evidence": "",
+      "timestamp": "2026-05-20 01:33:48.686895",
+      "mitre_ids": [
+        "T1552"
+      ],
+      "cvss": {
+        "score": 9.1,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H"
+      }
+    },
+    {
+      "id": 1,
+      "name": "Writable AD Objects",
+      "severity": "High",
+      "description": "bloodyAD get writable found modifiable AD objects; evaluate the matching abuse primitive",
+      "recommendation": "Remove unnecessary GenericWrite/WriteProperty from non-admin users",
+      "evidence": "",
+      "timestamp": "2026-05-20 01:33:47.759295",
+      "mitre_ids": [],
+      "cvss": {
+        "score": 7.5,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N"
+      }
+    },
+    {
+      "id": 2,
+      "name": "SYSVOL Logon Script Path Reachable",
+      "severity": "High",
+      "description": "tester can browse SYSVOL scripts; combine writable user object with scriptPath",
+      "recommendation": "Restrict SYSVOL script write access and monitor scriptPath changes",
+      "evidence": "",
+      "timestamp": "2026-05-20 01:33:47.806285",
+      "mitre_ids": [
+        "T1552"
+      ],
+      "cvss": {
+        "score": 7.5,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N"
+      }
+    },
+    {
+      "id": 4,
+      "name": "AS-REP Roastable Users",
+      "severity": "High",
+      "description": "2 accounts without Kerberos pre-auth",
+      "recommendation": "Enable Kerberos pre-authentication for all accounts",
+      "evidence": "",
+      "timestamp": "2026-05-20 01:33:54.169299",
+      "mitre_ids": [
+        "T1558.004"
+      ],
+      "cvss": {
+        "score": 7.5,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+      }
+    },
+    {
+      "id": 5,
+      "name": "Kerberoastable Accounts",
+      "severity": "High",
+      "description": "4 service accounts with SPNs",
+      "recommendation": "Use gMSA; set 25+ char passwords on service accounts",
+      "evidence": "",
+      "timestamp": "2026-05-20 01:33:57.254558",
+      "mitre_ids": [
+        "T1558.003"
+      ],
+      "cvss": {
+        "score": 6.5,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N"
+      }
+    },
+    {
+      "id": 7,
+      "name": "Coercion Attack Attempted",
+      "severity": "High",
+      "description": "Forced dc01.corp.local to authenticate to 192.168.56.100 \u2014 capture Net-NTLMv2 or relay",
+      "recommendation": "Enable EPA; disable WebClient service; block outbound SMB 445",
+      "evidence": "",
+      "timestamp": "2026-05-20 01:36:54.739548",
+      "mitre_ids": [
+        "T1187"
+      ],
+      "cvss": {
+        "score": 7.5,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N"
+      }
+    },
+    {
+      "id": 6,
+      "name": "BloodHound JSON Collected",
+      "severity": "Info",
+      "description": "BloodHound JSON files collected without zip archive.",
+      "recommendation": "Import JSON files into BloodHound or zip them manually.",
+      "evidence": "",
+      "timestamp": "2026-05-20 01:34:02.816767",
+      "mitre_ids": [
+        "T1069.002",
+        "T1087.002",
+        "T1482"
+      ],
+      "cvss": {
+        "score": 0.0,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"
+      }
+    }
+  ]
+}

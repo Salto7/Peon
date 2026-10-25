@@ -6,10 +6,11 @@ contract: tokenize tools, validate by profile, and never swallow YAML errors.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 
@@ -19,7 +20,7 @@ from orchestrator.skills.common import (
     MAX_NAME_LEN,
     valid_skill_name,
 )
-from orchestrator.utils.strings import as_bool, as_str_list
+from orchestrator.utils.strings import as_bool, as_str_list, unique
 
 # Open Agent Skills top-level fields.
 AGENTSKILLS_FIELDS = frozenset(
@@ -77,7 +78,7 @@ PEON_META_FIELDS = frozenset(
 )
 
 
-class ParseProfile(str, Enum):
+class ParseProfile(StrEnum):
     AGENTSKILLS = "agentskills"
     CLAUDE_CODE = "claude-code"
     PEON = "peon"
@@ -153,7 +154,7 @@ def tokenize_allowed_tools(raw: Any) -> tuple[str, ...]:
         out: list[str] = []
         for item in raw:
             out.extend(tokenize_allowed_tools(item))
-        return _uniq(out)
+        return tuple(unique(out))
     if not isinstance(raw, str):
         text = str(raw).strip()
         return (text,) if text else ()
@@ -186,17 +187,7 @@ def tokenize_allowed_tools(raw: Any) -> tuple[str, ...]:
             continue
         buf.append(ch)
     flush()
-    return _uniq(tokens)
-
-
-def _uniq(items: list[str]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item and item not in seen:
-            seen.add(item)
-            out.append(item)
-    return tuple(out)
+    return tuple(unique(tokens))
 
 
 def _meta_str_map(raw: Any) -> dict[str, str]:

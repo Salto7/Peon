@@ -2,8 +2,7 @@
 
 from django.urls import path
 
-from peon.projects import live_events
-from peon.projects import memory_views
+from peon.projects import live_events, memory_views
 from peon.projects import project_control_views as control
 from peon.projects import project_pages as pages
 from peon.projects import terminal_views as term_views
@@ -90,6 +89,11 @@ urlpatterns = [
     path("projects/<uuid:pk>/jobs/bulk/", control.jobs_bulk, name="jobs_bulk"),
     path("projects/<uuid:pk>/roe/", control.project_roe, name="project_roe"),
     path("projects/<uuid:pk>/mcp/", control.project_mcp, name="project_mcp"),
+    path(
+        "projects/<uuid:pk>/credentials/",
+        control.project_credentials,
+        name="project_credentials",
+    ),
     path("projects/<uuid:pk>/jobs.json", control.project_jobs_json, name="project_jobs_json"),
     path(
         "projects/<uuid:pk>/events/",

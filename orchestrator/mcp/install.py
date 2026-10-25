@@ -195,7 +195,7 @@ def _from_npx(package: str) -> str:
         "args": ["-y", pkg],
         "env_schema": [],
     }
-    return _upsert(document, files=None)
+    return _upsert(document, files=None, check_new=True)
 
 
 def _from_git(source: str, *, revision: str = "") -> list[str]:
@@ -213,12 +213,18 @@ def _from_disk(
     persist: bool = False,
     keep_bindings: bool = False,
 ) -> list[str]:
+    # A disk *refresh* (``persist=False``, from ``refresh_mcp_root``) means
+    # the id is expected to already exist — that is the point. A fresh
+    # *install* (``persist=True``) must not silently clobber an unrelated
+    # server whose inferred id happens to collide.
+    check_new = persist
     target = Path(path).expanduser().resolve()
     if target.is_file():
         ids = _upsert_file(
             target,
             origin=origin or f"disk:{target}",
             keep_bindings=keep_bindings,
+            check_new=check_new,
         )
         if persist and ids:
             _persist_pack(target, ids[0])
@@ -233,6 +239,7 @@ def _from_disk(
                 item,
                 origin=origin or f"disk:{target}",
                 keep_bindings=keep_bindings,
+                check_new=check_new,
             )
             ids.extend(pack_ids)
             if persist and pack_ids:
@@ -245,6 +252,7 @@ def _from_disk(
             target,
             origin=origin or f"disk:{target}",
             keep_bindings=keep_bindings,
+            check_new=check_new,
         )
         if persist:
             _persist_pack(target, mid)
@@ -253,6 +261,7 @@ def _from_disk(
         target,
         origin=origin or f"disk:{target}",
         keep_bindings=keep_bindings,
+        check_new=check_new,
     )
     if inferred:
         if persist:
@@ -297,7 +306,7 @@ def _find_manifests(root: Path) -> list[Path]:
 
 
 def _upsert_file(
-    path: Path, *, origin: str = "", keep_bindings: bool = False
+    path: Path, *, origin: str = "", keep_bindings: bool = False, check_new: bool = False
 ) -> list[str]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -320,7 +329,7 @@ def _upsert_file(
             if origin and not merged.get("description"):
                 merged["description"] = f"Imported from {origin}"
             ids.append(
-                _upsert(merged, files=sibling, keep_bindings=keep_bindings)
+                _upsert(merged, files=sibling, keep_bindings=keep_bindings, check_new=check_new)
             )
         if not ids:
             raise ValueError("mcpServers map is empty")
@@ -328,7 +337,7 @@ def _upsert_file(
     if isinstance(data, dict):
         if origin and not data.get("description"):
             data = {**data, "description": f"Imported from {origin}"}
-        return [_upsert(data, files=sibling, keep_bindings=keep_bindings)]
+        return [_upsert(data, files=sibling, keep_bindings=keep_bindings, check_new=check_new)]
     raise ValueError(f"{path.name} must be an MCP server object or mcpServers map")
 
 
@@ -376,7 +385,7 @@ def _inferred_mcp_id(root: Path, entry: str, *, origin: str = "") -> str:
 
 
 def _from_python_stdio_pack(
-    root: Path, *, origin: str = "", keep_bindings: bool = False
+    root: Path, *, origin: str = "", keep_bindings: bool = False, check_new: bool = False
 ) -> str | None:
     """Infer a stdio MCP when the folder picker omitted hidden ``.mcp.json``."""
     entry = ""
@@ -405,7 +414,7 @@ def _from_python_stdio_pack(
         document["install"] = {"kind": "uv", "manifest": "pyproject.toml"}
     elif "requirements.txt" in files:
         document["install"] = {"kind": "pip", "manifest": "requirements.txt"}
-    return _upsert(document, files=files, keep_bindings=keep_bindings)
+    return _upsert(document, files=files, keep_bindings=keep_bindings, check_new=check_new)
 
 
 def _write_public_manifest(source_root: Path, mcp_id: str) -> None:
@@ -446,7 +455,7 @@ def _write_public_manifest(source_root: Path, mcp_id: str) -> None:
 
 
 def _from_npm_package(
-    root: Path, *, origin: str = "", keep_bindings: bool = False
+    root: Path, *, origin: str = "", keep_bindings: bool = False, check_new: bool = False
 ) -> str:
     package = root / "package.json"
     try:
@@ -470,7 +479,7 @@ def _from_npm_package(
         "install": {"kind": "npm", "manifest": "package.json"},
         "env_schema": [],
     }
-    return _upsert(document, files=files, keep_bindings=keep_bindings)
+    return _upsert(document, files=files, keep_bindings=keep_bindings, check_new=check_new)
 
 
 def _npm_entry(data: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
@@ -569,6 +578,7 @@ def _upsert(
     *,
     files: dict[str, str] | None,
     keep_bindings: bool = False,
+    check_new: bool = False,
 ) -> str:
     # Validate before touching the DB.
     normalized = _normalize_import(document)
@@ -578,7 +588,20 @@ def _upsert(
         raise ValueError(str(exc)) from exc
     if len(specs) != 1:
         raise ValueError("install accepts one MCP server at a time")
+    from peon.projects.models import CatalogMcp
     from peon.projects.platform_catalog import PlatformCatalog
+
+    mcp_id = specs[0].mcp_id
+    if check_new and CatalogMcp.objects.filter(mcp_id=mcp_id).exists():
+        # A fresh install's id is inferred from the repo/package name — two
+        # unrelated servers can easily collide on it (e.g. a different repo
+        # also named "corp-osint"). Refusing beats silently overwriting a
+        # server already bound to roles.
+        raise ValueError(
+            f"an MCP server named {mcp_id!r} already exists in the catalog. "
+            "Rename the one you are installing (edit mcp.json's name/id), or "
+            "remove the existing one first if this is meant to replace it."
+        )
 
     rec = PlatformCatalog.shared().upsert_mcp(
         normalized,

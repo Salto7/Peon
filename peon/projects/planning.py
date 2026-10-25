@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-
 import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -13,7 +12,6 @@ from django.db import transaction
 
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.router import RoleRouter
-from orchestrator.skills.role_memory import role_skills_prompt_block
 from orchestrator.planning import (
     JobPlanner,
     ProjectPlanner,
@@ -21,6 +19,7 @@ from orchestrator.planning import (
     bookend_role_ids,
     parse_project_objectives,
 )
+from orchestrator.skills.role_memory import role_skills_prompt_block
 from orchestrator.utils import llm_usage
 from orchestrator.utils.llm import chat_messages
 from peon.projects.models import (
@@ -45,9 +44,41 @@ from peon.projects.target_shapes import (
     format_targets,
 )
 from peon.projects.tasks import enqueue_job
-from peon.projects.workspaces import platform_workspace_dir, project_workspace_dir, safe_workspace_key
+from peon.projects.workspaces import (
+    platform_workspace_dir,
+    project_workspace_dir,
+    safe_workspace_key,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _assume_breach_context(project: Project) -> str:
+    """Prompt addendum: initial access is granted, objectives follow the brief.
+
+    Credential *names* only (never secrets) so the planner can point an
+    objective at ``get_credential('<name>')`` instead of inventing one.
+    """
+    from peon.projects.credentials import list_credentials
+
+    creds = list_credentials(project.id)
+    cred_lines = "\n".join(
+        f"- {row['name']} [{row['kind']}]"
+        + (f" {row['username']}" if row["username"] else "")
+        + (f"@{row['domain']}" if row["domain"] else "")
+        for row in creds
+    ) or "(none stored yet — the operator brief below may still name assets to target)"
+    return (
+        "\n\n## Assume-breach mode\n"
+        "Initial access is already granted — do NOT plan phishing/initial-access "
+        "objectives. Start from the credentials below as the foothold and build "
+        "objectives the operator's brief actually asks for: network/AD "
+        "enumeration, attack-path analysis, privilege escalation, and lateral "
+        "movement across in-scope subjects. Objectives that need a credential "
+        "reference it by name via the `get_credential` tool (never invent one; "
+        "never put the secret value in the plan text).\n"
+        f"Credentials available in this project's key store:\n{cred_lines}"
+    )
 
 
 @dataclass
@@ -154,6 +185,8 @@ def draft_llm_plan(*,
     prompt = text
     if resolved:
         prompt = f"{text}\n\nPreloaded roles: {', '.join(resolved)}"
+    if mode_norm == "project" and project is not None and project.kind == ProjectKind.ASSUME_BREACH:
+        prompt = f"{prompt}{_assume_breach_context(project)}"
 
     prior_plan = ""
     existing_summary = ""

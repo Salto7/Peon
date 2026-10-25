@@ -286,6 +286,48 @@ def project_mcp(request: HttpRequest, pk) -> HttpResponse:
 
 @require_http_methods(["POST"])
 @with_project_context
+def project_credentials(request: HttpRequest, pk) -> HttpResponse:
+    """Add/update or delete one project credential (key store)."""
+    from peon.projects.credentials import delete_credential, set_credential
+
+    project = get_object_or_404(Project, pk=pk)
+    wants_json = request_wants_json(request)
+    action = (request.POST.get("action") or "save").strip().lower()
+    name = (request.POST.get("name") or "").strip()
+    try:
+        if action == "delete":
+            if not name:
+                raise ValueError("credential name is required")
+            ok = delete_credential(project.pk, name)
+            if wants_json:
+                return JsonResponse({"ok": ok})
+            if ok:
+                messages.success(request, f"Removed credential {name}")
+            else:
+                messages.error(request, "Credential not found.")
+        else:
+            set_credential(
+                project.pk,
+                name,
+                kind=request.POST.get("kind") or "password",
+                username=request.POST.get("username") or "",
+                domain=request.POST.get("domain") or "",
+                secret=request.POST.get("secret") or "",
+                notes=request.POST.get("notes") or "",
+                source=request.POST.get("source") or "provided",
+            )
+            if wants_json:
+                return JsonResponse({"ok": True, "name": name})
+            messages.success(request, f"Saved credential {name}")
+    except ValueError as exc:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+        messages.error(request, str(exc))
+    return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#settings")
+
+
+@require_http_methods(["POST"])
+@with_project_context
 @flash_json
 def project_roe(request: HttpRequest, pk) -> HttpResponseRedirect:
     project = get_object_or_404(Project, pk=pk)
@@ -503,22 +545,20 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
         title = project.title
         info = delete_project(project)
         sandbox = info.get("sandbox") or {}
-        extra = ""
-        if sandbox.get("action") == "removed":
-            extra = f" (sandbox removed: {sandbox.get('name')})"
-        elif sandbox.get("action") == "queued":
-            extra = f" (sandbox cleanup queued: {sandbox.get('name')})"
-        elif sandbox.get("action") == "missing":
-            extra = " (no sandbox container)"
-        elif sandbox.get("action") == "skipped":
-            extra = f" (sandbox skip: {sandbox.get('reason')})"
-        elif sandbox.get("action") == "error":
-            errs = "; ".join(sandbox.get("errors") or []) or "unknown"
-            messages.warning(
-                request,
-                f"Deleted project {title}, but sandbox cleanup failed: {errs}",
-            )
+        problems = []
+        if sandbox.get("action") == "error":
+            problems.append(f"sandbox cleanup failed: {'; '.join(sandbox.get('errors') or []) or 'unknown'}")
+        if (info.get("workspace") or {}).get("action") in {"error", "deferred"}:
+            problems.append("some workspace files remain (run prune_project_resources --apply)")
+        if problems:
+            messages.warning(request, f"Deleted project {title}, but {'; '.join(problems)}")
             return redirect("project_list")
+        extra = {
+            "removed": f" (sandbox removed: {sandbox.get('name')})",
+            "queued": f" (sandbox cleanup queued: {sandbox.get('name')})",
+            "missing": " (no sandbox container)",
+            "skipped": f" (sandbox skip: {sandbox.get('reason')})",
+        }.get(sandbox.get("action"), "")
         messages.success(request, f"Deleted project {title}{extra}")
         return _after_control(request, project, deleted=True)
     messages.error(request, f"Unknown project action: {action or '(empty)'}")

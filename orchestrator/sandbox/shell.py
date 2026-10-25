@@ -152,9 +152,6 @@ class ShellRunner(SharedServiceBase):
             return ShellResult(err, "", msg)
         return self._exec_shell(cmd)
 
-    def run_shell(self, command: str, *, package: str = "") -> int:
-        return self.run_shell_result(command, package=package).code
-
     def run_periodic(
         self,
         command: str,

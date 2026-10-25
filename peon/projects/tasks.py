@@ -28,7 +28,7 @@ from django.db import close_old_connections
 
 from agent_runtime.registry import RuntimeRegistry
 from peon.projects.job_claim import job_slots_available, mark_job_running
-from peon.projects.learn_lab import LearnLab
+from peon.projects.lab_runtime import Lab
 from peon.projects.models import Job, JobStatus, SandboxRuntime
 from peon.projects.sandbox import ProjectSandbox
 
@@ -157,39 +157,54 @@ def enqueue_sandbox_cleanup(project_id: str, *, runtime_id: str = "") -> dict:
 
 
 @dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
-def cleanup_learn_lab() -> None:
-    """Remove the Learn install-test container on the worker.
+def decommission_lab() -> None:
+    """Remove the lab container on the worker.
 
     Same rationale as project sandbox cleanup: ``docker rm`` on web can drop
     the browser connection mid-request.
     """
     close_old_connections()
     try:
-        result = LearnLab.shared().delete()
-        logger.info("cleanup_learn_lab → %s", result)
+        result = Lab.shared().decommission()
+        logger.info("decommission_lab → %s", result)
     except Exception:
-        logger.exception("cleanup_learn_lab failed")
+        logger.exception("decommission_lab failed")
     finally:
         close_old_connections()
 
 
-def enqueue_learn_lab_cleanup() -> dict:
-    """Queue Learn-lab removal on the worker, or run inline when Dramatiq is off."""
-    lab = LearnLab.shared()
-    name = lab.test_container_name()
+@dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
+def reset_lab() -> None:
+    """Decommission then set up fresh, on the worker (same docker-flap rationale)."""
+    close_old_connections()
+    try:
+        result = Lab.shared().reset()
+        logger.info("reset_lab → %s", result)
+    except Exception:
+        logger.exception("reset_lab failed")
+    finally:
+        close_old_connections()
+
+
+def _enqueue_lab_action(actor, inline) -> dict:
+    """Queue a lab lifecycle action on the worker, or run it inline when Dramatiq is off."""
+    lab = Lab.shared()
+    name = lab.container_name()
     if _dramatiq_enabled():
-        cleanup_learn_lab.send()
-        return {
-            "ok": True,
-            "action": "queued",
-            "removed": False,
-            "name": name,
-            "lab": lab.status(),
-        }
-    result = lab.delete()
-    result["action"] = "removed" if result.get("removed") else result.get("reason") or "missing"
+        actor.send()
+        return {"ok": True, "action": "queued", "name": name, "lab": lab.status()}
+    result = inline()
+    result.setdefault("action", "removed" if result.get("removed") else result.get("reason") or "missing")
     result["lab"] = lab.status()
     return result
+
+
+def enqueue_lab_decommission() -> dict:
+    return _enqueue_lab_action(decommission_lab, Lab.shared().decommission)
+
+
+def enqueue_lab_reset() -> dict:
+    return _enqueue_lab_action(reset_lab, Lab.shared().reset)
 
 
 # Self re-arming scanners. Exactly one chain per scanner: ``_arm`` stores a
