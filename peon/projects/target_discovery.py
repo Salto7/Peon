@@ -6,6 +6,7 @@ from typing import Any
 
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.utils.llm import chat_json, llm_configured
+from peon.projects.asset_model import RELATIONS, classify
 from peon.projects.target_shapes import (
     accept_asset,
     canonical_asset_key,
@@ -59,10 +60,37 @@ def _expand_related_assets(asset: dict[str, str]) -> list[dict[str, str]]:
     return out
 
 
+def _item_type_value(item: Any) -> tuple[str, str]:
+    """``(type hint, value)`` for a raw subjects-list entry, str or dict."""
+    if isinstance(item, str):
+        return "", item.strip()
+    if isinstance(item, dict):
+        return str(item.get("type") or ""), str(item.get("value") or "").strip()
+    return "", ""
+
+
+def _sibling_host(raw: list) -> str:
+    """First value in ``raw`` that is a valid ``port`` relation source.
+
+    ``asset_model.RELATIONS["port"]`` is the one place that already declares
+    which classes a port lives on (``ip``/``fqdn`` today) and what it targets
+    (``service``) — reused here rather than re-declared, so this stays
+    correct for whatever that spec covers, with no vocabulary of its own.
+    """
+    sources = RELATIONS["port"].sources
+    for item in raw:
+        hint, value = _item_type_value(item)
+        if value and classify(hint, value).slug in sources:
+            return value
+    return ""
+
+
 def _normalize_subjects(raw: Any) -> list[dict[str, str]]:
     """Coerce an explicit subjects list into typed {type,value[,relation]} rows."""
     if not isinstance(raw, list):
         return []
+    host = _sibling_host(raw)
+    port_targets = RELATIONS["port"].targets
     out: list[dict[str, str]] = []
     for item in raw:
         if isinstance(item, str):
@@ -70,6 +98,16 @@ def _normalize_subjects(raw: Any) -> list[dict[str, str]]:
                 {"type": "other", "value": item.strip()}
             )
         elif isinstance(item, dict):
+            hint, value = _item_type_value(item)
+            if value.isdigit() and classify(hint, value).slug in port_targets:
+                # A bare port number is never a meaningful standalone asset —
+                # pair it with this subjects list's own host (the ``port``
+                # relation's source class), or drop it rather than store an
+                # identity that can never connect to one.
+                service = format_service(host, int(value), "") if host else None
+                if not service:
+                    continue
+                item = {**item, "value": service}
             coerced = coerce_target(item)
         else:
             continue
@@ -117,11 +155,33 @@ def _subjects_from_finding_fields(row: dict[str, Any] | None) -> list[dict[str, 
     """Build engagement subjects from structured finding fields.
 
     Provenance fields (``evidence``, ``evidence_path``) are never subjects.
-    Explicit ``subjects`` / ``metadata.subjects`` / ``metadata.assets`` win.
+    Explicit ``subjects`` / ``metadata.subjects`` / ``metadata.assets`` win
+    over every other field below — but never over this finding's own
+    structured ``host``/``port``: a producer naming other subjects
+    explicitly still gets its host:port pair connected, instead of silently
+    losing it the moment any explicit subject is given.
     Legacy ``host`` / ``host+port`` remain valid subject producers.
     """
     if not isinstance(row, dict):
         return []
+
+    host = str(row.get("host") or "").strip()
+    asset_type = sanitize_label(str(row.get("asset_type") or ""), default="")
+    port = row.get("port")
+    protocol = sanitize_label(str(row.get("protocol") or ""), default="", max_len=16)
+
+    host_port_rows: list[dict[str, str]] = []
+    if host:
+        pair: list[dict[str, str]] = [{"type": asset_type or "host", "value": host}]
+        try:
+            port_i = int(port) if port is not None and str(port).strip() != "" else None
+        except (TypeError, ValueError):
+            port_i = None
+        if port_i is not None and 1 <= port_i <= 65535:
+            service = format_service(host, port_i, protocol)
+            if service:
+                pair.append({"type": "service", "value": service})
+        host_port_rows = _normalize_subjects(pair)
 
     explicit = row.get("subjects")
     if not explicit and isinstance(row.get("metadata"), dict):
@@ -130,9 +190,16 @@ def _subjects_from_finding_fields(row: dict[str, Any] | None) -> list[dict[str, 
             "discovered_assets"
         )
     if explicit:
-        return _normalize_subjects(explicit)
+        merged = _normalize_subjects(explicit)
+        known = {canonical_asset_key(r["type"], r["value"]) for r in merged}
+        merged.extend(
+            r
+            for r in host_port_rows
+            if canonical_asset_key(r["type"], r["value"]) not in known
+        )
+        return merged
 
-    found: list[dict[str, str]] = []
+    found: list[dict[str, str]] = list(host_port_rows)
 
     def _push(typ: str, value: str) -> None:
         accepted = accept_asset(value, typ)
@@ -146,21 +213,6 @@ def _subjects_from_finding_fields(row: dict[str, Any] | None) -> list[dict[str, 
                     "relation": "affected",
                 }
             )
-
-    host = str(row.get("host") or "").strip()
-    asset_type = sanitize_label(str(row.get("asset_type") or ""), default="")
-    port = row.get("port")
-    protocol = sanitize_label(str(row.get("protocol") or ""), default="", max_len=16)
-    if host:
-        _push(asset_type or "host", host)
-        try:
-            port_i = int(port) if port is not None and str(port).strip() != "" else None
-        except (TypeError, ValueError):
-            port_i = None
-        if port_i is not None and 1 <= port_i <= 65535:
-            service = format_service(host, port_i, protocol)
-            if service:
-                _push("service", service)
 
     # Explicit engagement URLs / digests / packages only — never evidence_path.
     for key, default_typ in (

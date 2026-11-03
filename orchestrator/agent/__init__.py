@@ -14,9 +14,9 @@ from orchestrator.agent.bridges import NullAgentBridge
 from orchestrator.agent.config import AgentRunConfig, agent_run_config_from_mapping
 from orchestrator.agent.job import JobScope, bind_job, get_agent_config, get_job
 from orchestrator.agent.runtime_base import (
+    AgentExecutorBase,
     AgentRunRequest,
     AgentRunResult,
-    AgentRuntimeBase,
     get_agent_runtime,
     run_agent,
     set_agent_runtime,
@@ -28,7 +28,7 @@ __all__ = [
     "AgentRunConfig",
     "AgentRunRequest",
     "AgentRunResult",
-    "AgentRuntimeBase",
+    "AgentExecutorBase",
     "JobScope",
     "NullAgentBridge",
     "agent_run_config_from_mapping",

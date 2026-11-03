@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from orchestrator.skills.install.dragdrop import install_directory
+from orchestrator.skills.install.dragdrop import InstallOutcome, install_directory
 from orchestrator.skills.install.openskills import install_openskills
 
 _GIT_URL = re.compile(
@@ -17,18 +17,20 @@ _GIT_URL = re.compile(
 _OWNER_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
-def install_skill_source(kind: str, value: str, *, revision: str = "") -> list[str]:
+def install_skill_source(
+    kind: str, value: str, *, revision: str = "", on_conflict: str = "ask"
+) -> InstallOutcome:
     """Install one or more skill packs. ``kind`` is disk | git | npx."""
     mode = str(kind or "").strip().lower()
     raw = str(value or "").strip()
     if not raw:
         raise ValueError("source value is required")
     if mode == "disk":
-        return install_directory(_safe_dir(raw), origin=f"disk:{raw}")
+        return install_directory(_safe_dir(raw), on_conflict=on_conflict)
     if mode == "git":
-        return _install_git(raw, revision=revision)
+        return _install_git(raw, revision=revision, on_conflict=on_conflict)
     if mode in {"npx", "openskills", "marketplace"}:
-        return install_openskills(raw, revision=revision)
+        return install_openskills(raw, on_conflict=on_conflict)
     raise ValueError("kind must be disk, git, or npx")
 
 
@@ -42,12 +44,14 @@ def _safe_dir(raw: str) -> Path:
     return path
 
 
-def _install_git(source: str, *, revision: str = "") -> list[str]:
+def _install_git(
+    source: str, *, revision: str = "", on_conflict: str = "ask"
+) -> InstallOutcome:
     origin = _normalize_git(source)
     with tempfile.TemporaryDirectory(prefix="peon-skill-git-") as tmp:
         dest = Path(tmp) / "repo"
         _git_clone(origin, dest, revision=revision)
-        return install_directory(dest, origin=f"git:{origin}")
+        return install_directory(dest, on_conflict=on_conflict)
 
 
 def _normalize_git(source: str) -> str:

@@ -2,7 +2,6 @@
 {% load static ui %}
 {% block title %}New project · Peon{% endblock %}
 {% block content %}
-<div class="mx-auto max-w-3xl">
 <c-page-header title="New project" description="Choose how the engagement runs, then describe its goal, scope and crew.">
   <c-slot name="crumbs"><a class="hover:text-foreground" href="{% url 'project_list' %}">Projects</a>{% icon "chevron-right" "size-3" %}<span>New</span></c-slot>
 </c-page-header>
@@ -28,20 +27,29 @@
 
   <c-card title="Details">
     <div class="space-y-4">
-      <c-field label="Title" for="title"><input id="title" name="title" required placeholder="ACME external perimeter" autofocus class="ui-input"></c-field>
-      <c-field label="Summary" for="summary" help="What does success look like?"><textarea id="summary" name="summary" rows="3" class="ui-textarea"></textarea></c-field>
-      <c-field label="Runtime" for="sandbox_runtime">
-        <select id="sandbox_runtime" name="sandbox_runtime" class="ui-select sm:max-w-xs">
-          <option value="sandbox" selected>Sandbox</option>
-          <option value="openshell">OpenShell</option>
-        </select>
-      </c-field>
+      <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_16rem] xl:items-end">
+        <c-field label="Title" for="title"><input id="title" name="title" required placeholder="ACME external perimeter" autofocus class="ui-input"></c-field>
+        <c-field label="Runtime" for="sandbox_runtime">
+          <select id="sandbox_runtime" name="sandbox_runtime" class="ui-select">
+            <option value="sandbox" selected>Sandbox</option>
+            <option value="openshell">OpenShell</option>
+          </select>
+        </c-field>
+      </div>
+      <div data-manual-section>
+        <c-field label="Summary" for="summary" help="What does success look like?"><textarea id="summary" name="summary" rows="3" class="ui-textarea"></textarea></c-field>
+      </div>
       <p class="ui-help" role="note">OpenShell is for untrusted software: jobs run as a normal user (no sudo, no package installs) and network access stays closed unless a host is allowed. Use Sandbox for web pentests and open recon.</p>
     </div>
   </c-card>
 
+  {% if workflow_list_url %}
+    {% island "workflow-picker" element_id="workflow-picker" listUrl=workflow_list_url %}
+  {% endif %}
+
+  <div data-manual-section>
   <c-card title="Scope" description="Values listed here authorize agents to act on them.">
-    <div class="space-y-4">
+    <div class="grid gap-4 xl:grid-cols-2">
       <c-field label="In-scope targets" for="in_scope" help="One per line. type:value hints are OK.">
         <textarea id="in_scope" name="in_scope" rows="4" class="ui-textarea font-mono" placeholder="domain:app.lab&#10;person:Alice&#10;path:/tmp/sample.bin"></textarea>
       </c-field>
@@ -50,17 +58,19 @@
       </c-field>
     </div>
   </c-card>
+  </div>
 
+  <div data-manual-section>
   <c-card title="Crew">
     {% include "includes/role_picker.html" with available_roles=available_roles selected_roles=selected_roles %}
   </c-card>
+  </div>
 
   <div class="flex justify-end gap-2">
     <c-button variant="ghost" href="{% url 'project_list' %}">Cancel</c-button>
     <c-button type="submit" id="project-create-submit">Create project</c-button>
   </div>
 </form>
-</div>
 
 <dialog id="project-create-dialog" aria-labelledby="create-status-title"
         class="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-xl outline-none border bg-popover p-6 text-popover-foreground shadow-lg backdrop:bg-black/60">

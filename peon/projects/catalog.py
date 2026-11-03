@@ -32,6 +32,7 @@ from peon.projects.catalog_edit import (
     save_tool_source,
 )
 from peon.projects.http_helpers import json_errors, parse_json_body
+from peon.projects.models import SkillRelationKind
 from peon.projects.platform_catalog import PlatformCatalog
 
 __all__ = [
@@ -111,6 +112,7 @@ def catalog_page(request: HttpRequest) -> HttpResponse:
         "role_source": "/catalog/api/roles/{id}/",
         "role_write": "/catalog/api/roles/{id}/edit/",
         "role_create": reverse("catalog_api_role_create"),
+        "role_confirm": "/catalog/api/roles/{id}/confirm/",
     }
     marketplace_urls = {
         "delete": "/catalog/api/marketplace/{id}/",
@@ -122,6 +124,11 @@ def catalog_page(request: HttpRequest) -> HttpResponse:
     proposal_urls = {
         "list": reverse("catalog_api_proposals"),
         "decide": reverse("catalog_api_proposal_decide"),
+    }
+    relation_urls = {
+        "list": reverse("catalog_api_skill_relations"),
+        "write": reverse("catalog_api_skill_relation_write"),
+        "delete": "/catalog/api/skill-relations/{id}/",
     }
     catalog = PlatformCatalog.shared()
     return render(
@@ -145,6 +152,9 @@ def catalog_page(request: HttpRequest) -> HttpResponse:
             "marketplace_sources": marketplace_ops.list_sources(),
             "marketplace_urls": marketplace_urls,
             "proposal_urls": proposal_urls,
+            "relation_urls": relation_urls,
+            "relation_kinds": SkillRelationKind.values,
+            "skill_ids": sorted(s["id"] for s in SkillCards.catalog()),
             "nav": "catalog",
         },
     )
@@ -370,6 +380,7 @@ def api_role_write(request: HttpRequest, name: str) -> JsonResponse:
                 "kind": role.kind,
                 "aliases": list(role.aliases),
                 "protected": role.is_protected,
+                "pending": role.pending,
                 "goal": role.goal,
                 "backstory": role.backstory,
                 "bindings": bindings,
@@ -384,11 +395,22 @@ def api_role_write(request: HttpRequest, name: str) -> JsonResponse:
         kind=str(body.get("kind") or ""),
         aliases=body.get("aliases") or [],
         protected=body.get("protected") if "protected" in body else None,
+        # A real edit through this form is itself a human review of the
+        # role — never leave it flagged pending after someone saved it.
+        pending=False,
         previous_id="" if name in {"", "__new__"} else name,
         goal=str(body.get("goal") or ""),
         backstory=str(body.get("backstory") or ""),
     )
     return JsonResponse({"ok": True, "id": saved.id, "kind": saved.kind})
+
+
+@require_POST
+@json_errors
+def api_role_confirm(request: HttpRequest, name: str) -> JsonResponse:
+    """Clear a drafted role's pending flag without opening the editor."""
+    PlatformCatalog.shared().confirm_role(name)
+    return JsonResponse({"ok": True, "id": name})
 
 
 @require_http_methods(["POST"])
@@ -499,6 +521,14 @@ def _install_request(request: HttpRequest) -> tuple[str, str, str]:
     return kind, value, revision
 
 
+def _on_conflict(request: HttpRequest, *, default: str = "ask") -> str:
+    body = parse_json_body(request, strict=False) or {}
+    raw = str(
+        body.get("on_conflict") or request.POST.get("on_conflict") or ""
+    ).strip().lower()
+    return raw if raw in {"ask", "skip", "overwrite"} else default
+
+
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
@@ -541,11 +571,46 @@ def _install_response(request: HttpRequest, run, *, label: str, anchor: str) -> 
     return redirect(reverse("catalog") + f"#{anchor}")
 
 
-def _ingest_skills(names: list[str]) -> list[str]:
+def _ingest_skills(outcome: dict[str, list]) -> dict[str, list]:
+    """Create catalog records for newly-installed skills; pass the rest of
+    the outcome (skipped/conflicts/errors) through untouched for the caller
+    to report."""
     catalog = PlatformCatalog.shared()
-    ids = [catalog.ingest_imported_skill(name) for name in names]
-    SkillRegistry.shared().invalidate()
-    return ids or names
+    ids = [catalog.ingest_imported_skill(name) for name in outcome["installed"]]
+    if ids:
+        SkillRegistry.shared().invalidate()
+    return {**outcome, "installed": ids or outcome["installed"]}
+
+
+def _skill_install_response(request: HttpRequest, run, *, anchor: str) -> HttpResponse:
+    """Run a skill installer; answer JSON with the full outcome (including
+    any conflicts an operator must resolve), else flash a summary."""
+    wants_json = _wants_json(request)
+    try:
+        outcome = run()
+    except (RuntimeError, ValueError, OSError) as exc:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+        messages.error(request, str(exc))
+        return redirect(reverse("catalog") + f"#{anchor}")
+    if wants_json:
+        return JsonResponse({"ok": True, **outcome})
+    parts = []
+    if outcome["installed"]:
+        parts.append("installed " + ", ".join(outcome["installed"]))
+    if outcome["skipped"]:
+        parts.append("already installed, skipped " + ", ".join(outcome["skipped"]))
+    if outcome["conflicts"]:
+        parts.append(
+            "already exist, not installed (use the Skills page to overwrite): "
+            + ", ".join(outcome["conflicts"])
+        )
+    if outcome["errors"]:
+        parts.append(f"{len(outcome['errors'])} pack(s) failed")
+    flash = "; ".join(parts) or "Nothing to install"
+    flash_level = messages.success if outcome["installed"] else messages.error
+    flash_level(request, flash)
+    return redirect(reverse("catalog") + f"#{anchor}")
 
 
 @require_POST
@@ -554,10 +619,12 @@ def api_skills_install(request: HttpRequest) -> HttpResponse:
     from orchestrator.skills.install import install_skill_source
 
     kind, value, revision = _install_request(request)
-    return _install_response(
+    on_conflict = _on_conflict(request, default="ask" if _wants_json(request) else "skip")
+    return _skill_install_response(
         request,
-        lambda: _ingest_skills(install_skill_source(kind, value, revision=revision)),
-        label="skill",
+        lambda: _ingest_skills(
+            install_skill_source(kind, value, revision=revision, on_conflict=on_conflict)
+        ),
         anchor="skills",
     )
 
@@ -567,17 +634,19 @@ def api_skills_upload(request: HttpRequest) -> HttpResponse:
     """Install a skill pack from a browser folder picker upload or a single .zip."""
     from orchestrator.skills.install.dragdrop import install_relative_files, install_zip
 
-    def run() -> list[str]:
+    on_conflict = _on_conflict(request, default="ask" if _wants_json(request) else "skip")
+
+    def run() -> dict[str, list]:
         uploads = request.FILES.getlist("file")
         if len(uploads) == 1 and (uploads[0].name or "").lower().endswith(".zip"):
             if int(uploads[0].size or 0) > _MAX_UPLOAD_BYTES:
                 raise ValueError("Upload is larger than 20 MB")
-            return _ingest_skills(install_zip(uploads[0].read(), filename=uploads[0].name))
+            return _ingest_skills(install_zip(uploads[0].read(), on_conflict=on_conflict))
         return _ingest_skills(
-            install_relative_files(_upload_pairs(request), origin="catalog-upload")
+            install_relative_files(_upload_pairs(request), on_conflict=on_conflict)
         )
 
-    return _install_response(request, run, label="skill", anchor="skills")
+    return _skill_install_response(request, run, anchor="skills")
 
 
 @require_POST
@@ -726,12 +795,43 @@ def api_proposal_decide(request: HttpRequest) -> JsonResponse:
     return JsonResponse(result, status=200 if result.get("ok") else 400)
 
 
+@require_GET
+def api_skill_relations(request: HttpRequest) -> JsonResponse:
+    """Declared skill<->skill relations, optionally for one skill (either side)."""
+    skill_id = (request.GET.get("skill_id") or "").strip()
+    rows = PlatformCatalog.shared().list_skill_relations(skill_id=skill_id)
+    return JsonResponse({"ok": True, "relations": rows})
+
+
+@require_POST
+@json_errors
+def api_skill_relation_write(request: HttpRequest) -> JsonResponse:
+    """Create or update one relation — the direct, human-driven edit path."""
+    body = parse_json_body(request, strict=False) or {}
+    row = PlatformCatalog.shared().set_skill_relation(
+        skill_id=str(body.get("skill_id") or ""),
+        related_skill_id=str(body.get("related_skill_id") or ""),
+        kind=str(body.get("kind") or ""),
+        note=str(body.get("note") or ""),
+        conditions=str(body.get("conditions") or ""),
+    )
+    return JsonResponse({"ok": True, "relation": row})
+
+
+@require_http_methods(["DELETE"])
+@json_errors
+def api_skill_relation_delete(request: HttpRequest, relation_id: str) -> JsonResponse:
+    PlatformCatalog.shared().delete_skill_relation(relation_id)
+    return JsonResponse({"ok": True, "id": relation_id})
+
+
 urlpatterns = [
     path("", catalog_page, name="catalog"),
     path("api/roles/", api_roles, name="catalog_api_roles"),
     path("api/roles/create/", api_role_create, name="catalog_api_role_create"),
     path("api/roles/reload/", api_roles_reload, name="catalog_api_roles_reload"),
     path("api/roles/<str:name>/edit/", api_role_write, name="catalog_api_role_write"),
+    path("api/roles/<str:name>/confirm/", api_role_confirm, name="catalog_api_role_confirm"),
     path("api/roles/<str:name>/", api_role_detail, name="catalog_api_role"),
     path("api/skills/", api_skills, name="catalog_api_skills"),
     path("api/skills/reload/", api_skills_reload, name="catalog_api_skills_reload"),
@@ -770,6 +870,17 @@ urlpatterns = [
     ),
     path("api/proposals/", api_proposals, name="catalog_api_proposals"),
     path("api/proposals/decide/", api_proposal_decide, name="catalog_api_proposal_decide"),
+    path("api/skill-relations/", api_skill_relations, name="catalog_api_skill_relations"),
+    path(
+        "api/skill-relations/write/",
+        api_skill_relation_write,
+        name="catalog_api_skill_relation_write",
+    ),
+    path(
+        "api/skill-relations/<str:relation_id>/",
+        api_skill_relation_delete,
+        name="catalog_api_skill_relation_delete",
+    ),
     path("api/tools/", api_tools, name="catalog_api_tools"),
     path("api/tools/reload/", api_tools_reload, name="catalog_api_tools_reload"),
     path(

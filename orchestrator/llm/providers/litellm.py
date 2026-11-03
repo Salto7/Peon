@@ -19,6 +19,15 @@ class LiteLLMProvider(LLMProviderBase):
 
     def configured(self) -> bool:
         cfg = get_config()
+        model = (cfg.litellm_model or "").strip()
+        if not model:
+            return False
+        mid = model.lower()
+        # Local Ollama (and other OpenAI-compatible bases) need no cloud API key.
+        if mid.startswith(("ollama/", "ollama_chat/")):
+            return True
+        if (cfg.litellm_api_base or "").strip():
+            return True
         return bool((cfg.litellm_api_key or "").strip())
 
     def _completion_opts(self) -> dict[str, Any]:

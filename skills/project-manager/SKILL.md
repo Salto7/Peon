@@ -14,7 +14,8 @@ Obey RoE. Operator focus tags / skill picks are **starting focus only**.
 ## Role selection
 When Peon asks which roles to run, pick only ids from the Peon role catalog
 (allowed list in the prompt). Prefer the smallest useful set. Full engagements
-always include `project-manager` and `analyzer`. Never invent role ids. Reply
+always include an engagement-PM role and an analyzer (reporting) role from
+that catalog. Never invent role ids. Reply
 JSON only: `{"roles":["id",...],"reason":"short"}`.
 
 ## Governance model

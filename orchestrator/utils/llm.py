@@ -10,7 +10,8 @@ from orchestrator.llm import get_llm_provider
 from orchestrator.utils.strings import extract_json
 
 LLM_NOT_CONFIGURED = (
-    "LLM not configured — set OPENROUTER_API_KEY (or OpenAI/LiteLLM)."
+    "LLM not configured — set LLM_PROVIDER and LITELLM_MODEL in .env "
+    "(plus OPENROUTER_API_KEY for OpenRouter, or LITELLM_API_BASE for Ollama)."
 )
 
 

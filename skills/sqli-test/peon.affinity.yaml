@@ -1,5 +1,0 @@
-bindings:
-- role_id: sql-injection-expert
-  score: 1.0
-  lead: true
-source: seed

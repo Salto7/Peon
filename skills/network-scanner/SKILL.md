@@ -14,11 +14,11 @@ Authorized **nmap** scans under RoE. Scan the authorized scope **as given**
 1. `sandbox_status` / provision nmap as needed.
 2. Run one (or a few) scan commands covering the authorized target set.
 3. Stream as you scan: when web ports (80/443/8080/8443/…) land, immediately
-   `send_message` them to the live HTTP prober / `web` agent (`list_team` → its
+   `send_message` them to this role's live HTTP-probing agent (`list_team` → its
    `OBJ-n` or role id) so it probes while this scan continues — batch per host,
-   do not wait for the whole scan. `spawn_work` a prober only if none exists.
-   Other services (LDAP/SMB/…) go the same way to `network-service-recon`.
-   Do not bounce to the PM for work already in this expert's skill group.
+   do not wait for the whole scan. `spawn_work` one only if none exists.
+   Other services (LDAP/SMB/…) go the same way to this role's service-recon
+   agent. Do not bounce to the PM for work already in this expert's skill group.
 
 ## Output format (required)
 - Write **greppable** output only: `-oG workspace/<label>.gnmap`

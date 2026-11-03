@@ -1,27 +1,27 @@
-"""Runtime id → backend."""
+"""Sandbox driver id → backend."""
 
 from __future__ import annotations
 
-from agent_runtime.api import Runtime
-from agent_runtime.docker.runtime import DockerRuntime
-from agent_runtime.openshell.runtime import OpenShellRuntime
+from agent_runtime.api import SandboxDriver
+from agent_runtime.docker.runtime import DockerSandboxDriver
+from agent_runtime.openshell.runtime import OpenShellSandboxDriver
 from agent_runtime.util import SharedBase
 
 
-class RuntimeRegistry(SharedBase):
+class SandboxDriverRegistry(SharedBase):
     """Process registry for sandbox backends."""
 
     def __init__(self) -> None:
-        self._runtimes: dict[str, Runtime] = {}
+        self._runtimes: dict[str, SandboxDriver] = {}
         self._builtin_done = False
 
-    def register(self, runtime: Runtime) -> None:
+    def register(self, runtime: SandboxDriver) -> None:
         rid = (getattr(runtime, "id", "") or "").strip()
         if not rid:
             raise ValueError("runtime.id is required")
         self._runtimes[rid] = runtime
 
-    def get(self, runtime_id: str) -> Runtime:
+    def get(self, runtime_id: str) -> SandboxDriver:
         rid = (runtime_id or "").strip() or "sandbox"
         try:
             return self._runtimes[rid]
@@ -37,6 +37,6 @@ class RuntimeRegistry(SharedBase):
     def register_builtin(self) -> None:
         if self._builtin_done:
             return
-        self.register(DockerRuntime())
-        self.register(OpenShellRuntime())
+        self.register(DockerSandboxDriver())
+        self.register(OpenShellSandboxDriver())
         self._builtin_done = True

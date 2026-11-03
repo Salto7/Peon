@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from orchestrator.skills.runtime.bodies import run_skill_script_body
 
 
-class DockerSkillRuntime:
+class DockerSkillExecutor:
     """Compatibility wrapper. Prefer ``SandboxTools.script`` with argv."""
 
     def run(

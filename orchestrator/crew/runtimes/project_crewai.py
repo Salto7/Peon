@@ -10,15 +10,15 @@ from orchestrator.agent.job import JobScope, bind_job
 from orchestrator.crew.flows.engagement import build_engagement_crew
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtime_base import (
+    CrewOrchestratorBase,
     CrewRunRequest,
     CrewRunResult,
-    CrewRuntimeBase,
 )
 from orchestrator.utils import llm_usage
 from orchestrator.utils.stream_events import envelope
 
 
-class ProjectCrewRuntime(CrewRuntimeBase):
+class ProjectCrewOrchestrator(CrewOrchestratorBase):
     """Run manager → specialists → analyzer for one project."""
 
     def start(self, request: CrewRunRequest) -> CrewRunResult:
@@ -28,7 +28,7 @@ class ProjectCrewRuntime(CrewRuntimeBase):
         if scope is None:
             return CrewRunResult(
                 ok=False,
-                error="ProjectCrewRuntime requires metadata['scope'] (JobScope)",
+                error="ProjectCrewOrchestrator requires metadata['scope'] (JobScope)",
                 status="stopped",
                 flow_id=request.flow_id,
             )
@@ -126,7 +126,7 @@ def run_project_crew_from_scope(
     flow_id: str = "",
 ) -> CrewRunResult:
     """Helper used by the job runtime when the manager role owns the project."""
-    runtime = ProjectCrewRuntime()
+    runtime = ProjectCrewOrchestrator()
     return runtime.start(
         CrewRunRequest(
             project_id=scope.project_id,

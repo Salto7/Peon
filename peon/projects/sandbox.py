@@ -10,8 +10,8 @@ from typing import Any
 
 from django.conf import settings
 
-from agent_runtime.api import Runtime, RuntimeSpec, Session, SessionInfo
-from agent_runtime.registry import RuntimeRegistry
+from agent_runtime.api import SandboxDriver, SandboxSpec, Session, SessionInfo
+from agent_runtime.registry import SandboxDriverRegistry
 from orchestrator.utils.job_env import JobEnv
 from orchestrator.utils.paths import safe_workspace_key
 from orchestrator.utils.service import SharedServiceBase
@@ -80,8 +80,8 @@ class ProjectSandbox(SharedServiceBase):
             return raw or sandbox
         return sandbox
 
-    def runtime_for(self, project_id: str) -> Runtime:
-        registry = RuntimeRegistry.shared()
+    def runtime_for(self, project_id: str) -> SandboxDriver:
+        registry = SandboxDriverRegistry.shared()
         registry.register_builtin()
         return registry.get(runtime_id_for(project_id))
 
@@ -138,7 +138,7 @@ class ProjectSandbox(SharedServiceBase):
         if not pid:
             return {"action": "skipped", "reason": "no project_id"}
 
-        registry = RuntimeRegistry.shared()
+        registry = SandboxDriverRegistry.shared()
         registry.register_builtin()
         selected = (
             SandboxRuntime.resolve(runtime_id)
@@ -152,7 +152,7 @@ class ProjectSandbox(SharedServiceBase):
 
         def _rm(target: str, *, role: str) -> None:
             result = runtime.destroy(
-                RuntimeSpec(
+                SandboxSpec(
                     project_id=pid,
                     name=target,
                     role=role,
@@ -205,13 +205,13 @@ class ProjectSandbox(SharedServiceBase):
         """Remove any runtime resource deterministically owned by a project."""
         self = cls.shared()
         pid = str(project_id or "").strip()
-        registry = RuntimeRegistry.shared()
+        registry = SandboxDriverRegistry.shared()
         registry.register_builtin()
         results: dict[str, dict[str, Any]] = {}
         for rid in registry.ids():
             runtime = registry.get(rid)
             name = runtime.resource_name(pid, prefix=self.prefix(), shared=False)
-            spec = RuntimeSpec(
+            spec = SandboxSpec(
                 project_id=pid,
                 name=name,
                 role="project",
@@ -240,8 +240,8 @@ class ProjectSandbox(SharedServiceBase):
         return {"action": action, "project_id": pid, "backends": results}
 
     @classmethod
-    def spec_for(cls, project_id: str) -> tuple[Runtime, RuntimeSpec]:
-        """Runtime and spec for the project's dedicated environment."""
+    def spec_for(cls, project_id: str) -> tuple[SandboxDriver, SandboxSpec]:
+        """SandboxDriver and spec for the project's dedicated environment."""
         self = cls.shared()
         try:
             project_id = str(uuid.UUID(str(project_id)))
@@ -256,7 +256,7 @@ class ProjectSandbox(SharedServiceBase):
         extra_mounts = [(str(helper_pack), "/skills/helpers")] if helper_pack.is_dir() else []
         sock = str(getattr(settings, "STREAM_SOCKET_PATH", "") or "")
         volume = str(getattr(settings, "SANDBOX_SOCKETS_VOLUME", "") or "").strip()
-        spec = RuntimeSpec(
+        spec = SandboxSpec(
             project_id=project_id,
             name=runtime.resource_name(project_id, prefix=self.prefix(), shared=False),
             image=self.image_for(runtime.id),

@@ -306,6 +306,9 @@
   }
 
   function revealShellCard() {
+    if (window.PeonConsolePanels && typeof window.PeonConsolePanels.show === "function") {
+      window.PeonConsolePanels.show("shell");
+    }
     var card = document.getElementById("console-workspace");
     if (card && card.classList.contains("is-collapsed")) {
       var foldBtn = card.querySelector(".panel-collapse-btn");

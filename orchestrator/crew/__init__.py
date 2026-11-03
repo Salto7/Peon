@@ -1,10 +1,10 @@
 """CrewAI project orchestration (Peon-crewAI branch).
 
-- ``runtime_base`` — project Flow DTOs + ``CrewRuntimeBase``
+- ``runtime_base`` — project Flow DTOs + ``CrewOrchestratorBase``
 - ``registry`` — ``AGENT_MODULE`` resolution (job runtime)
 - ``roles`` — platform role store + affinity skill decoration + CrewAI agent factory
 - ``tools`` — sandbox / RoE / findings tool allowlists
-- ``runtimes`` — job role runtime + ``ProjectCrewRuntime`` Flow
+- ``runtimes`` — job role runtime + ``ProjectCrewOrchestrator`` Flow
 """
 
 from orchestrator.crew.registry import (
@@ -14,15 +14,15 @@ from orchestrator.crew.registry import (
 )
 from orchestrator.crew.roles import RoleRegistry, RoleSpec, build_crew_agent
 from orchestrator.crew.runtime_base import (
+    CrewOrchestratorBase,
     CrewRunRequest,
     CrewRunResult,
-    CrewRuntimeBase,
 )
 
 __all__ = [
     "CrewRunRequest",
     "CrewRunResult",
-    "CrewRuntimeBase",
+    "CrewOrchestratorBase",
     "RoleRegistry",
     "RoleSpec",
     "agent_module_id",

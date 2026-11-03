@@ -36,6 +36,7 @@ type Urls = {
   mcp_source: string;
   role_write: string;
   role_create: string;
+  role_confirm: string;
 };
 
 type Draft = {
@@ -135,7 +136,11 @@ export default function CatalogEditor({
 
   const load = useMutation({
     mutationFn: async ({ kind, id }: { kind: Kind; id: string }) => {
-      if (id === NEW && (kind === "skill" || kind === "role")) return toDraft(kind, id, {});
+      if (id === NEW) {
+        if (kind === "skill" || kind === "role") return toDraft(kind, id, {});
+        if (kind === "mcp") return toDraft(kind, id, { document: { id: "", command: "npx", args: ["-y", ""], env: {} } });
+        if (kind === "tool") return toDraft(kind, id, { yaml: "id: \ndescription: \nbinary: \n" });
+      }
       return toDraft(kind, id, await api<SourcePayload>(sourceUrl(urls, kind, id)));
     },
     onSuccess: (d) => {
@@ -150,6 +155,17 @@ export default function CatalogEditor({
       api(deleteUrl(urls, kind, id), { method: "DELETE", json: {} }),
     onSuccess: () => {
       toast.success("Deleted");
+      window.setTimeout(() => window.location.reload(), 400);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  // Clears an auto-drafted role's "pending" flag without opening the editor
+  // — confirming isn't destructive, so no requestConfirm() prompt first.
+  const confirmRole = useMutation({
+    mutationFn: (id: string) => api(fill(urls.role_confirm, id), { method: "POST", json: {} }),
+    onSuccess: () => {
+      toast.success("Confirmed");
       window.setTimeout(() => window.location.reload(), 400);
     },
     onError: (err: Error) => toast.error(err.message),
@@ -175,14 +191,19 @@ export default function CatalogEditor({
 
   const loadItem = load.mutate;
   const removeItem = remove.mutate;
+  const confirmRoleItem = confirmRole.mutate;
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
-      const el = (e.target as HTMLElement).closest<HTMLElement>("[data-catalog-edit],[data-catalog-delete]");
+      const el = (e.target as HTMLElement).closest<HTMLElement>(
+        "[data-catalog-edit],[data-catalog-delete],[data-catalog-confirm]",
+      );
       if (!el) return;
       e.preventDefault();
       const id = el.dataset.id ?? "";
       if (el.dataset.catalogEdit) {
         loadItem({ kind: el.dataset.catalogEdit as Kind, id });
+      } else if (el.dataset.catalogConfirm) {
+        confirmRoleItem(id);
       } else {
         const kind = el.dataset.catalogDelete as Kind;
         requestConfirm({
@@ -211,7 +232,7 @@ export default function CatalogEditor({
       document.removeEventListener("click", onClick);
       document.removeEventListener("change", onChange);
     };
-  }, [loadItem, removeItem]);
+  }, [loadItem, removeItem, confirmRoleItem]);
 
   const selectedItems = [...selected.values()];
   const clearSelection = () => {

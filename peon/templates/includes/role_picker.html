@@ -2,7 +2,7 @@
 <fieldset class="space-y-3">
   <legend class="ui-label">Roles</legend>
   <p class="ui-help -mt-1">{{ hint|default:"Core crew roles stay on; add specialists for the planner." }}</p>
-  <div class="grid gap-2 sm:grid-cols-2">
+  <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
     {% for role in available_roles %}
     {% if role.required %}<input type="hidden" name="role_ids" value="{{ role.name }}">{% endif %}
     <label class="group flex cursor-pointer gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/50 has-[:checked]:border-primary/50 has-[:checked]:bg-primary/5 has-[:disabled]:cursor-default has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">

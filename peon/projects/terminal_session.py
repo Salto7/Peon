@@ -10,11 +10,12 @@ autoreload drops every session; the browser reopens on ``404``.
 
 from __future__ import annotations
 
+import base64
 import logging
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 from agent_runtime.api import TerminalHandle
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 _MAX_SESSIONS_PER_PROJECT = 4
 _IDLE_SECONDS = 30 * 60
 _HEARTBEAT_SECONDS = 15.0
+
+# Scope key for the single Toolsmith lab terminal — shares the project-keyed
+# registry below (reap/heartbeat/SSE streaming are all scope-agnostic), never
+# collides with a real project UUID.
+LAB_SCOPE = "__lab__"
 
 
 @dataclass
@@ -83,30 +89,55 @@ class TerminalRegistry:
         pid = str(project_id or "").strip()
         if not pid:
             raise ValueError("project_id required")
-        self.reap()
-        # Serialize opens per project so a double click does not spawn two shells.
-        with self._project_lock(pid):
-            live = self._live_for(pid)
-            if live:
-                keep, *extras = live
-                for extra in extras:
-                    self.close(extra.id, pid)
-                keep.resize(cols, rows)
-                logger.info("terminal session %s reused → %s", keep.id[:8], keep.container)
-                return keep, True
-            if len(self._for_project(pid)) >= _MAX_SESSIONS_PER_PROJECT:
-                raise RuntimeError(
-                    f"At most {_MAX_SESSIONS_PER_PROJECT} terminals per project"
-                )
+
+        def provision() -> tuple[str, TerminalHandle]:
             info = ProjectSandbox.provision(pid, bind=False, warm_mcp=False)
             runtime, spec = ProjectSandbox.spec_for(pid)
             handle = runtime.open_terminal(spec, cols=int(cols or 80), rows=int(rows or 24))
+            return info.name, handle
+
+        return self._open(pid, _MAX_SESSIONS_PER_PROJECT, provision, cols=cols, rows=rows)
+
+    def open_lab(self, *, cols: int = 80, rows: int = 24) -> tuple[TerminalSession, bool]:
+        """Terminal into the Toolsmith lab container — one session, like the lab itself."""
+        from peon.projects.lab_service import LabService
+
+        def provision() -> tuple[str, TerminalHandle]:
+            lab = LabService.shared()
+            handle = lab.open_terminal(cols=int(cols or 80), rows=int(rows or 24))
+            return lab.container_name(), handle
+
+        return self._open(LAB_SCOPE, 1, provision, cols=cols, rows=rows)
+
+    def _open(
+        self,
+        scope: str,
+        max_sessions: int,
+        provision: Callable[[], tuple[str, TerminalHandle]],
+        *,
+        cols: int,
+        rows: int,
+    ) -> tuple[TerminalSession, bool]:
+        self.reap()
+        # Serialize opens per scope so a double click does not spawn two shells.
+        with self._project_lock(scope):
+            live = self._live_for(scope)
+            if live:
+                keep, *extras = live
+                for extra in extras:
+                    self.close(extra.id, scope)
+                keep.resize(cols, rows)
+                logger.info("terminal session %s reused → %s", keep.id[:8], keep.container)
+                return keep, True
+            if len(self._for_project(scope)) >= max_sessions:
+                raise RuntimeError(f"At most {max_sessions} terminal(s) for {scope!r}")
+            container, handle = provision()
             session = TerminalSession(
-                id=uuid.uuid4().hex, project_id=pid, container=info.name, handle=handle
+                id=uuid.uuid4().hex, project_id=scope, container=container, handle=handle
             )
             with self._lock:
                 self._sessions[session.id] = session
-            logger.info("terminal session %s → %s", session.id[:8], info.name)
+            logger.info("terminal session %s → %s", session.id[:8], container)
             return session, False
 
     def _for_project(self, project_id: str) -> list[TerminalSession]:
@@ -177,6 +208,32 @@ class TerminalRegistry:
             with self._lock:
                 session.viewers = max(0, session.viewers - 1)
                 session.touch()
+
+    def iter_sse_events(self, session: TerminalSession) -> Iterator[str]:
+        """``iter_output`` formatted as SSE text frames — the whole stream-view body."""
+        yield "retry: 2000\nevent: ready\ndata: ok\n\n"
+        try:
+            for chunk in self.iter_output(session):
+                if chunk is None:
+                    yield ": ping\n\n"  # comment line: keeps proxies/clients from timing out
+                    continue
+                payload = base64.b64encode(chunk).decode("ascii")
+                yield f"event: out\ndata: {payload}\n\n"
+        except Exception as exc:
+            logger.warning("terminal stream %s failed: %s", session.id[:8], exc)
+            yield f"event: fail\ndata: {str(exc)[:200]}\n\n"
+            return
+        # Only reached when the shell actually ended (or was closed).
+        yield "event: exit\ndata: closed\n\n"
+
+
+def decode_input_bytes(raw: object, *, base64_encoded: bool) -> bytes:
+    """Request body ``data`` (str or raw bytes) → PTY input bytes."""
+    if isinstance(raw, str) and base64_encoded:
+        return base64.b64decode(raw)
+    if isinstance(raw, str):
+        return raw.encode("utf-8", errors="replace")
+    return bytes(raw or b"")
 
 
 _REGISTRY = TerminalRegistry()

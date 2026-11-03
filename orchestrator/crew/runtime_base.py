@@ -1,6 +1,6 @@
 """Project-level CrewAI runtime ABC (one Project = one Flow).
 
-Job-level tool loops stay on ``orchestrator.agent.runtime_base.AgentRuntimeBase``.
+Job-level tool loops stay on ``orchestrator.agent.runtime_base.AgentExecutorBase``.
 This module owns hierarchical role orchestration for a whole engagement.
 """
 
@@ -35,7 +35,7 @@ class CrewRunRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-class CrewRuntimeBase(ABC):
+class CrewOrchestratorBase(ABC):
     """Framework-agnostic project crew execution."""
 
     @abstractmethod

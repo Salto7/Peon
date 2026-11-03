@@ -105,20 +105,29 @@
     return once(attempts);
   }
 
+  // Poll a `toolsmith_test_tool_status` URL until its row flips to "done"
+  // (or attempts run out — the run keeps going on the worker regardless;
+  // the operator can just re-check by opening the page again).
+  function pollTestResult(url, attempts, delayMs) {
+    function once(left) {
+      return getJson(url).then(function (st) {
+        var data = st.ok && st.data ? st.data : null;
+        if (!data) return null;
+        if (data.status === "done" || left <= 1) return data;
+        return new Promise(function (resolve) {
+          setTimeout(function () {
+            resolve(once(left - 1));
+          }, delayMs);
+        });
+      });
+    }
+    return once(attempts);
+  }
+
   function pollLabRunning(attempts, delayMs) {
     return pollLabUntil(
       function (lab) {
         return !!lab.running;
-      },
-      attempts,
-      delayMs
-    );
-  }
-
-  function pollLabGone(attempts, delayMs) {
-    return pollLabUntil(
-      function (lab) {
-        return !lab.exists && !lab.running;
       },
       attempts,
       delayMs
@@ -165,6 +174,20 @@
     if (gen) gen.textContent = mode === "tool" ? "Suggest tool" : "Draft skill";
   }
 
+  function updateLabDot(lab) {
+    var dot = document.getElementById("tool-lab-dot");
+    if (!dot) return;
+    dot.className =
+      "size-2 shrink-0 rounded-full " +
+      (lab.error || lab.docker === false
+        ? "bg-destructive"
+        : lab.running
+          ? "bg-success"
+          : lab.exists
+            ? "bg-warning"
+            : "bg-muted-foreground/50");
+  }
+
   function updateLabUi(lab) {
     if (!lab) return;
     var nameEl = document.getElementById("tool-lab-name");
@@ -175,9 +198,10 @@
     app.setAttribute("data-lab-name", name);
     app.setAttribute("data-lab-exists", lab.exists ? "1" : "0");
     app.setAttribute("data-lab-running", lab.running ? "1" : "0");
+    updateLabDot(lab);
 
     if (!labBusy) {
-      ["tool-lab-setup-btn", "tool-lab-decommission-btn", "tool-lab-reset-btn"].forEach(
+      ["tool-lab-setup-btn", "tool-lab-reboot-btn", "tool-lab-reset-btn"].forEach(
         function (id) {
           var btn = document.getElementById(id);
           if (btn) btn.disabled = lab.docker === false;
@@ -367,17 +391,21 @@
     });
   }
 
-  // All three lab lifecycle actions share this shape: POST, then (when the
-  // worker queues the real docker op, to dodge the web-side docker-rm
-  // network flap) poll status until it settles. One function, three thin
-  // bindings, instead of three near-copies of the same request/poll dance.
+  // All lab lifecycle actions share this shape: POST, then (when the worker
+  // queues the real docker op, to dodge the web-side docker-rm network
+  // flap) poll status until it settles. One function, thin bindings per
+  // action, instead of near-copies of the same request/poll dance.
+  //
+  // A busy lab (an install test, or another lifecycle action, already
+  // holding the lab's cross-process lock) answers 409 — offer the operator
+  // a force-retry instead of just failing, since "wait it out" isn't always
+  // an option when the lab is actually stuck.
   function runLabAction(opts) {
     var btn = document.getElementById(opts.btnId);
     if (!btn) return;
-    btn.addEventListener("click", function () {
-      if (labBusy) return;
+    function attempt(force) {
       labBusy = true;
-      ["tool-lab-setup-btn", "tool-lab-decommission-btn", "tool-lab-reset-btn"].forEach(
+      ["tool-lab-setup-btn", "tool-lab-reboot-btn", "tool-lab-reset-btn"].forEach(
         function (id) {
           var b = document.getElementById(id);
           if (b) b.disabled = true;
@@ -386,8 +414,17 @@
       var status = document.getElementById("tool-lab-status");
       if (status) status.textContent = opts.busyLabel;
 
-      postJson(app.getAttribute(opts.urlAttr), {})
+      postJson(app.getAttribute(opts.urlAttr), { force: !!force })
         .then(function (out) {
+          if (out.status === 409 && !force) {
+            labBusy = false;
+            if (window.confirm((out.data && out.data.error) + "\n\nForce it anyway? This interrupts whatever is running.")) {
+              attempt(true);
+            } else {
+              toast("Cancelled", "error");
+            }
+            return null;
+          }
           if (!out.ok || !out.data || !out.data.ok) {
             toast((out.data && out.data.error) || opts.failLabel, "error");
             return opts.poll ? opts.poll(8, 400) : null;
@@ -410,6 +447,12 @@
             if (st.ok && st.data && st.data.lab) updateLabUi(st.data.lab);
           });
         });
+    }
+    btn.addEventListener("click", function () {
+      if (labBusy) return;
+      var menu = btn.closest("details[data-menu]");
+      if (menu) menu.open = false;
+      attempt(false);
     });
   }
 
@@ -417,23 +460,23 @@
     runLabAction({
       btnId: "tool-lab-setup-btn",
       urlAttr: "data-lab-setup",
-      busyLabel: "Setting up…",
-      failLabel: "Setup failed",
-      queuedLabel: "Setting up…",
+      busyLabel: "Starting…",
+      failLabel: "Start failed",
+      queuedLabel: "Starting…",
       doneLabel: function (data) {
         return "Lab ready: " + (data.name || "");
       },
     });
     runLabAction({
-      btnId: "tool-lab-decommission-btn",
-      urlAttr: "data-lab-decommission",
-      busyLabel: "Decommissioning…",
-      failLabel: "Decommission failed",
-      queuedLabel: "Decommissioning…",
+      btnId: "tool-lab-reboot-btn",
+      urlAttr: "data-lab-reboot",
+      busyLabel: "Rebooting…",
+      failLabel: "Reboot failed",
+      queuedLabel: "Rebooting…",
       doneLabel: function (data) {
-        return data.removed ? "Lab decommissioned" : "No lab to remove";
+        return "Lab rebooted: " + (data.name || "");
       },
-      poll: pollLabGone,
+      poll: pollLabRunning,
     });
     runLabAction({
       btnId: "tool-lab-reset-btn",
@@ -497,44 +540,65 @@
         var script = (document.getElementById("tool-script") || {}).value || "";
         setBusy(testBtn, true);
         showReplanPanel(false);
-        showTestLog("Resetting a clean test container and running the install…");
+        showTestLog("Queuing a clean test container and running the install…");
+
+        function renderResult(data) {
+          updateLabUi(data.lab);
+          var parts = [];
+          if (data.message) parts.push(data.message);
+          if (data.verify_output) {
+            parts.push("--- verify command output ---");
+            parts.push(data.verify_output);
+          } else if (data.log) {
+            parts.push(data.log);
+          }
+          var logText = parts.join("\n\n");
+          showTestLog(logText);
+          lastInstallError = logText;
+          if (data.install_ok || data.verified) {
+            showReplanPanel(false);
+            toast(
+              "Install finished" + (data.tool_id ? ": " + data.tool_id : "") +
+                " — see verify output",
+              "ok"
+            );
+            return;
+          }
+          var seed =
+            (document.getElementById("toolsmith-prompt") || {}).value ||
+            "Fix the catalog install recipe for the Peon sandbox (Kali).";
+          showReplanPanel(true, seed);
+          toast("Install finished — check verify output below", "error");
+        }
+
         postJson(app.getAttribute("data-test-tool"), {
           yaml: yaml,
           install_script: script,
         })
           .then(function (out) {
-            if (!out.ok || !out.data || !out.data.ok) {
+            if (!out.ok || !out.data || !out.data.ok || !out.data.run_id) {
               showTestLog((out.data && out.data.error) || "Test request failed");
               toast((out.data && out.data.error) || "Test failed", "error");
               if (out.data && out.data.lab) updateLabUi(out.data.lab);
+              return null;
+            }
+            // Install runs on the worker — the same docker-rm/run cycle
+            // that resets the lab, done inline in this request, can drop
+            // the browser's own connection to it ("network flap"). Polling
+            // a tiny status row instead means this request is just "was it
+            // queued", answered in milliseconds, nothing to flap.
+            var statusUrl =
+              app.getAttribute("data-test-tool") + encodeURIComponent(out.data.run_id) + "/";
+            return pollTestResult(statusUrl, 900, 1000);
+          })
+          .then(function (data) {
+            if (!data) return;
+            if (data.status !== "done") {
+              showTestLog("Still running — this is taking longer than expected.");
+              toast("Still running — check back shortly", "error");
               return;
             }
-            updateLabUi(out.data.lab);
-            var parts = [];
-            if (out.data.message) parts.push(out.data.message);
-            if (out.data.verify_output) {
-              parts.push("--- verify command output ---");
-              parts.push(out.data.verify_output);
-            } else if (out.data.log) {
-              parts.push(out.data.log);
-            }
-            var logText = parts.join("\n\n");
-            showTestLog(logText);
-            lastInstallError = logText;
-            if (out.data.install_ok || out.data.verified) {
-              showReplanPanel(false);
-              toast(
-                "Install finished" + (out.data.tool_id ? ": " + out.data.tool_id : "") +
-                  " — see verify output",
-                "ok"
-              );
-              return;
-            }
-            var seed =
-              (document.getElementById("toolsmith-prompt") || {}).value ||
-              "Fix the catalog install recipe for the Peon sandbox (Kali).";
-            showReplanPanel(true, seed);
-            toast("Install finished — check verify output below", "error");
+            renderResult(data);
           })
           .catch(function () {
             toast("Test failed", "error");

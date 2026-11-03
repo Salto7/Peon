@@ -193,6 +193,7 @@
 
   // Set by bindProjectChat; lets project-ops feed the roster / retarget chat.
   var chatCtl = null;
+  var chatStatus = null;
 
   function bindProjectChat(projectPk) {
     const form = el("project-chat-form");
@@ -205,6 +206,93 @@
     let replyPromptId = "";
     const toSel = el("project-chat-to");
     let roster = [];
+
+    // Recipient picker: a menu that stays inside the composer (the native <select> popup could spill outside the
+    // card). The hidden select remains the source of truth, so everything else keeps reading toSel.value.
+    const toBtn = el("project-chat-to-btn");
+    const toMenu = el("project-chat-to-menu");
+
+    function closeRecipientMenu() {
+      if (!toMenu) return;
+      toMenu.hidden = true;
+      if (toBtn) toBtn.setAttribute("aria-expanded", "false");
+    }
+
+    function chooseRecipient(id) {
+      if (!toSel) return;
+      toSel.value = id;
+      toSel.dispatchEvent(new Event("change"));
+      closeRecipientMenu();
+      input.focus();
+    }
+
+    function syncRecipient() {
+      if (!toBtn || !toMenu || !toSel) return;
+      const current = toSel.value;
+      const label = toBtn.querySelector(".chat-to-label");
+      const picked = roster.find(function (a) { return a.id === current; });
+      if (label) label.textContent = picked ? picked.label : "Everyone";
+      toBtn.classList.toggle("is-targeted", !!picked);
+      toMenu.replaceChildren();
+      const rows = [{ id: "", label: "Everyone", sub: "Project chat", status: "" }].concat(
+        roster.map(function (a) {
+          return {
+            id: a.id,
+            label: a.label,
+            sub: a.title.replace(/^OBJ-\d+:\s*/, ""),
+            status: a.status,
+            terminal: a.terminal,
+          };
+        })
+      );
+      rows.forEach(function (r) {
+        const li = document.createElement("li");
+        li.setAttribute("role", "option");
+        li.tabIndex = -1;
+        li.className = "chat-to-item" + (r.id === current ? " is-selected" : "") + (r.terminal ? " is-done" : "");
+        li.dataset.id = r.id;
+        li.setAttribute("aria-selected", r.id === current ? "true" : "false");
+        const name = document.createElement("span");
+        name.className = "chat-to-name";
+        name.textContent = r.label;
+        li.appendChild(name);
+        const detail = [r.sub, r.status].filter(Boolean).join(" · ");
+        if (detail) {
+          const sub = document.createElement("span");
+          sub.className = "chat-to-sub";
+          sub.textContent = detail;
+          li.appendChild(sub);
+        }
+        li.addEventListener("click", function () { chooseRecipient(r.id); });
+        li.addEventListener("keydown", function (ev) {
+          if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); chooseRecipient(r.id); }
+        });
+        toMenu.appendChild(li);
+      });
+    }
+
+    if (toBtn && toMenu) {
+      toBtn.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        const open = toMenu.hidden;
+        toMenu.hidden = !open;
+        toBtn.setAttribute("aria-expanded", open ? "true" : "false");
+        if (open) {
+          const sel = toMenu.querySelector(".is-selected") || toMenu.firstElementChild;
+          if (sel) sel.focus();
+        }
+      });
+      toMenu.addEventListener("keydown", function (ev) {
+        const items = Array.prototype.slice.call(toMenu.children);
+        const at = items.indexOf(document.activeElement);
+        if (ev.key === "ArrowDown") { ev.preventDefault(); (items[at + 1] || items[0]).focus(); }
+        else if (ev.key === "ArrowUp") { ev.preventDefault(); (items[at - 1] || items[items.length - 1]).focus(); }
+        else if (ev.key === "Escape") { closeRecipientMenu(); toBtn.focus(); }
+      });
+      document.addEventListener("click", function (ev) {
+        if (!toMenu.hidden && !toMenu.contains(ev.target) && ev.target !== toBtn) closeRecipientMenu();
+      });
+    }
 
     function recipient() {
       const id = toSel ? toSel.value : "";
@@ -257,7 +345,12 @@
         btn.hidden = !!to && (m === "replan" || m === "stop");
         if (m === "instruct") btn.disabled = !!(to && to.terminal);
       });
-      if (send) send.textContent = modeLabels[chatMode] || "Send";
+      syncRecipient();
+      if (send) {   // icon-only button: the mode shows in its label / tooltip
+        var verb = modeLabels[chatMode] || "Send";
+        send.setAttribute("aria-label", verb);
+        send.title = verb;
+      }
       setBusy(false);
     }
 
@@ -288,7 +381,7 @@
       toSel.replaceChildren();
       const all = document.createElement("option");
       all.value = "";
-      all.textContent = "Everyone — project chat";
+      all.textContent = "Everyone";
       toSel.appendChild(all);
       roster.forEach(function (a) {
         const opt = document.createElement("option");
@@ -301,6 +394,7 @@
     }
 
     function target(jobId) {
+      if (window.PeonConsolePanels) window.PeonConsolePanels.show("chat");
       if (!toSel) return;
       if (roster.some(function (a) { return a.id === String(jobId); })) {
         toSel.value = String(jobId);
@@ -332,6 +426,7 @@
       if (btn.dataset.boundChatOpen) return;
       btn.dataset.boundChatOpen = "1";
       btn.addEventListener("click", function () {
+        if (window.PeonConsolePanels) window.PeonConsolePanels.show("chat");
         setMode(btn.getAttribute("data-chat-open-mode") || "chat");
         if (window.PeonProjectOps && window.PeonProjectOps.showWorkspaceTab) {
           window.PeonProjectOps.showWorkspaceTab("chat");
@@ -355,12 +450,54 @@
       setThinking(!!busy);
     }
 
+    // Inline status, Claude-style: a shimmering line in the thread where the answer will appear. The text glides
+    // when it changes (live agent activity feeds it through setStatus).
+    var statusText = "";
+    var statusVerbs = {
+      chat: "Thinking",
+      instruct: "Instructing agents",
+      replan: "Replanning",
+      stop: "Pausing",
+      reply: "Passing your answer on",
+    };
+    function statusNode() {
+      var thread = el("chat-thread");
+      return thread ? thread.querySelector(".chat-status") : null;
+    }
+    var statusAt = 0;
+    function setStatus(text) {
+      var node = statusNode();
+      var next = String(text || "").trim();
+      if (!node || !next || next === statusText) return;
+      var now = Date.now();
+      if (statusText && now - statusAt < 700) return;   // let a word be read before the next one glides in
+      statusAt = now;
+      statusText = next;
+      var label = node.querySelector(".chat-status-text");
+      if (!label) return;
+      var old = label.querySelector(".chat-status-word");
+      var word = document.createElement("span");
+      word.className = "chat-status-word is-enter";
+      word.textContent = next;
+      if (old) {
+        old.classList.remove("is-enter");
+        old.classList.add("is-leave");
+        setTimeout(function () { old.remove(); }, 260);
+      }
+      label.appendChild(word);
+      requestAnimationFrame(function () { word.classList.remove("is-enter"); });
+    }
+
     function setThinking(on) {
       var thread = el("chat-thread");
       if (!thread) return;
-      var existing = thread.querySelector(".chat-bubble-thinking");
+      var existing = statusNode();
       if (!on) {
-        if (existing) existing.remove();
+        statusText = "";
+        if (existing) {
+          existing.classList.add("is-done");
+          setTimeout(function () { existing.remove(); }, 180);
+        }
         return;
       }
       if (existing) {
@@ -370,23 +507,27 @@
       }
       var empty = thread.querySelector(".chat-thread-empty");
       if (empty) empty.remove();
-      var bubble = document.createElement("div");
-      bubble.className = "chat-bubble chat-bubble-thinking";
-      bubble.setAttribute("aria-live", "polite");
-      bubble.setAttribute("aria-label", "Peon is thinking");
-      var meta = document.createElement("div");
-      meta.className = "chat-bubble-meta";
-      var who = document.createElement("span");
-      who.textContent = "Peon";
-      meta.appendChild(who);
-      var dots = document.createElement("div");
-      dots.className = "chat-thinking-dots";
-      dots.innerHTML = "<span></span><span></span><span></span>";
-      bubble.appendChild(meta);
-      bubble.appendChild(dots);
-      thread.appendChild(bubble);
+      var node = document.createElement("div");
+      node.className = "chat-status";
+      node.setAttribute("role", "status");
+      node.setAttribute("aria-live", "polite");
+      node.innerHTML =
+        '<span class="chat-status-spark" aria-hidden="true"></span>' +
+        '<span class="chat-status-text"></span>';
+      thread.appendChild(node);
+      statusText = "";
+      setStatus(statusVerbs[chatMode] || statusVerbs.chat);
       thread.scrollTop = thread.scrollHeight;
     }
+    chatStatus = setStatus;
+
+    // The composer grows with its text (up to its CSS max-height), like a modern chat box.
+    function autosize() {
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight, 200) + "px";
+    }
+    input.addEventListener("input", autosize);
+    autosize();
 
     window.addEventListener("peon:chat-target", function (ev) {
       target((ev.detail && ev.detail.jobId) || "");
@@ -446,6 +587,7 @@
           return;
         }
         input.value = "";
+        autosize();
         replyPromptId = "";
         if (chatMode === "reply") setMode("chat");
         var resultMode = data.mode || chatMode;
@@ -464,8 +606,9 @@
           } else if (resultMode === "stop") {
             replyTag = "stop";
           }
+          var replyId = "local-a-" + Date.now();
           appendChatBubble({
-            id: "local-a-" + Date.now(),
+            id: replyId,
             content: data.reply,
             created_at: new Date().toISOString(),
             metadata: {
@@ -476,6 +619,7 @@
               from_job_id: (data.agent && data.agent.id) || "",
             },
           });
+          revealReply(replyId);
         }
         if (window.PeonUI) {
           var toast = "Sent";
@@ -524,6 +668,7 @@
     if (answerBtn && !answerBtn.dataset.bound) {
       answerBtn.dataset.bound = "1";
       answerBtn.addEventListener("click", function () {
+        if (window.PeonConsolePanels) window.PeonConsolePanels.show("chat");
         var banner = el("hitl-banner");
         var pid = banner && banner.dataset.promptId;
         if (pid && !String(pid).startsWith("obj-")) {
@@ -556,6 +701,7 @@
       return;
     }
     var first = rows[0];
+    if (window.PeonConsolePanels) window.PeonConsolePanels.show("chat");   // an agent is waiting: never leave it hidden
     banner.hidden = false;
     banner.dataset.promptId = String(first.id || "");
     if (q) {
@@ -564,6 +710,37 @@
         q.textContent = first.question + " · " + first.job_title;
       }
     }
+  }
+
+  // The answer glides in word by word. The full text stays on data-full so a streamed duplicate is still
+  // recognised while the reveal is running.
+  function revealReply(id) {
+    var thread = el("chat-thread");
+    var bubble = thread && thread.querySelector('[data-chat-id="' + id + '"]');
+    var body = bubble && bubble.querySelector(".chat-bubble-body");
+    if (!body) return;
+    var full = body.textContent;
+    if (
+      full.length > 1500 ||
+      (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+    ) {
+      return;
+    }
+    bubble.dataset.full = full;
+    var parts = full.split(/(\s+)/);
+    body.textContent = "";
+    var i = 0;
+    (function step() {
+      var n = Math.min(parts.length, i + 3);
+      var chunk = document.createElement("span");
+      chunk.className = "chat-reveal";
+      chunk.textContent = parts.slice(i, n).join("");
+      body.appendChild(chunk);
+      i = n;
+      thread.scrollTop = thread.scrollHeight;
+      if (i < parts.length) setTimeout(step, 28);
+      else delete bubble.dataset.full;
+    })();
   }
 
   window.PeonProjectConsoleChat = {
@@ -583,6 +760,9 @@
     },
     select: function (jobId) {
       if (chatCtl) chatCtl.select(jobId);
+    },
+    setStatus: function (text) {
+      if (chatStatus) chatStatus(text);
     },
     updatePendingInputs: function (pending, deps) {
       useDeps(deps);

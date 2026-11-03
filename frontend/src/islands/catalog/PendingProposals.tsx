@@ -17,27 +17,34 @@ type Proposal = {
 type Props = {
   listUrl: string;
   decideUrl: string;
-  kind: "role" | "skill" | "mcp_binding" | "mcp_role_skill";
+  kind: "role" | "skill" | "mcp_binding" | "role_draft" | "skill_overlap";
 };
 
 const APPROVED_MESSAGE: Record<Props["kind"], string> = {
   role: "Role created",
   skill: "Skill created",
   mcp_binding: "Binding applied",
-  mcp_role_skill: "Role + skill created",
+  role_draft: "Role created",
+  skill_overlap: "Marked as overlapping",
 };
 
 /**
  * Pending role/skill proposals (Dream-suggested or marketplace-discovered),
- * pending mcp_binding proposals (an MCP install whose role auto-bind scored
- * every role below threshold — see PlatformCatalog._stage_binding_review),
- * and pending mcp_role_skill proposals (same trigger, but a dedicated role +
- * skill drafted from the server's own description instead of reusing an
- * existing role — see PlatformCatalog._stage_role_skill_proposal),
- * shown as cards in the same section as the real ones — tagged "Pending",
- * never assignable until approved here. Shares the ["catalog-proposals"]
- * query with ProposalBadge/MarketplacePanel (one QueryClient per page), so
- * deciding anywhere keeps every view in sync.
+ * pending mcp_binding proposals (a skill/MCP install whose role auto-bind
+ * scored every role below threshold — see
+ * PlatformCatalog._stage_binding_review), and pending role_draft proposals
+ * (same trigger, but a dedicated role drafted from the item's own
+ * description instead of reusing an existing one — for an MCP server this
+ * also creates its companion skill; see
+ * PlatformCatalog._resolve_role_for_owner), shown as cards in the same
+ * section as the real ones — tagged "Pending", never assignable until
+ * approved here. ``skill_overlap`` proposals (a newly bound skill reads like
+ * a sibling already on its role — see
+ * ``orchestrator.skills.overlap.find_overlap``) approve into a
+ * ``CatalogSkillRelation`` row instead of a binding; see SkillRelations for
+ * direct, no-review editing of that same table. Shares the
+ * ["catalog-proposals"] query with ProposalBadge/MarketplacePanel (one
+ * QueryClient per page), so deciding anywhere keeps every view in sync.
  */
 export default function PendingProposals({ listUrl, decideUrl, kind }: Props) {
   const qc = useQueryClient();
@@ -71,7 +78,7 @@ export default function PendingProposals({ listUrl, decideUrl, kind }: Props) {
   if (!proposals.length) return null;
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 min-[120rem]:grid-cols-5">
       {proposals.map((p) => (
         <article key={p.id} className="flex flex-col gap-3 rounded-xl border border-dashed bg-card p-4 shadow-sm">
           <div className="flex items-start gap-2">

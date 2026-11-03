@@ -1,1 +1,0 @@
-"""AdStrike — configuration package."""

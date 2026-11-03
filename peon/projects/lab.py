@@ -144,6 +144,7 @@ urlpatterns = [
     path("", lab_index, name="lab"),
     path("toolsmith/", include("peon.projects.toolsmith")),
     path("roles/", lab_roles_page, name="lab_roles"),
+    path("workflows/", include("peon.projects.workflow")),
     path("dream/", lab_dream_page, name="lab_dream"),
     path("dream/api/status/", lab_dream_status, name="lab_dream_status"),
     path("dream/api/catalog/", lab_dream_catalog, name="lab_dream_catalog"),

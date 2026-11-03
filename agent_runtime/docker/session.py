@@ -9,8 +9,8 @@ import time
 from docker.errors import DockerException
 from docker.utils.socket import STDERR, frames_iter
 
-from agent_runtime.api import ExecResult, RuntimeSession, SessionInfo
-from agent_runtime.docker.engine import DockerEngine
+from agent_runtime.api import ExecResult, SandboxSession, SessionInfo
+from agent_runtime.docker.engine import DockerClient
 from agent_runtime.process import ExecTransport
 from agent_runtime.util import forward_env_items
 
@@ -18,17 +18,16 @@ from agent_runtime.util import forward_env_items
 _TIMEOUT_CODE = 124
 
 
-class DockerSession(RuntimeSession):
-    def __init__(self, info: SessionInfo, *, engine: DockerEngine | None = None) -> None:
+class DockerSession(SandboxSession):
+    def __init__(self, info: SessionInfo, *, engine: DockerClient | None = None) -> None:
         super().__init__(info)
-        self._engine = engine or DockerEngine.shared()
+        self._engine = engine or DockerClient.shared()
 
     def _environment(self, env: dict[str, str] | None) -> dict[str, str]:
         out = {
             "DEBIAN_FRONTEND": "noninteractive",
             "ORCHESTRATOR_WORKSPACE": self.workdir(),
             "SKILLS_DIR": "/skills",
-            "SKILLS_IMPORTED_DIR": "/skills",
             "TOOLS_CATALOG_DIR": "/tools/catalog",
             "PROJECT_WORKSPACES_DIR": "/workspace",
             # Include sbin paths — Kali (and Debian) put many admin CLIs there.

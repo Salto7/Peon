@@ -34,7 +34,7 @@ def _filters(items: tuple[str, ...]) -> dict[str, list[str]]:
     return out
 
 
-class DockerEngine(SharedBase):
+class DockerClient(SharedBase):
     """Process-shared ``docker.DockerClient`` honoring ``DOCKER_HOST``."""
 
     def __init__(self) -> None:
@@ -127,6 +127,13 @@ class DockerEngine(SharedBase):
     def rm_force(self, ref: str) -> ExecResult:
         try:
             self.client.containers.get(ref).remove(force=True)
+        except DockerException as exc:
+            return _error(exc)
+        return ExecResult(0)
+
+    def restart(self, name: str, *, timeout: int = 10) -> ExecResult:
+        try:
+            self.client.containers.get(name).restart(timeout=timeout)
         except DockerException as exc:
             return _error(exc)
         return ExecResult(0)
@@ -283,4 +290,4 @@ class DockerEngine(SharedBase):
         return mounts
 
 
-__all__ = ["DockerEngine"]
+__all__ = ["DockerClient"]

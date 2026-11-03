@@ -62,11 +62,27 @@ class RoleSpec:
         return not self.is_manager and not self.is_analyzer
 
 
-def llm_id_for_crew() -> str:
-    """Map Peon LiteLLM model id into a CrewAI-friendly llm string."""
+def llm_id_for_crew() -> Any:
+    """Build the CrewAI ``Agent(llm=...)`` / ``planning_llm=...`` value.
+
+    A bare model string is enough for a provider CrewAI resolves from env
+    vars it already knows (OpenRouter's ``OPENROUTER_API_KEY``, etc.). A
+    custom endpoint (Ollama, any other OpenAI-compatible base) needs an
+    explicit ``crewai.LLM`` instead: CrewAI's native ``ollama``/``ollama_chat``
+    route reads its base URL from a ``base_url`` kwarg (or ``OLLAMA_HOST``),
+    never from ``api_base`` or a bare model string — passing only the model
+    id silently drops the endpoint and falls back to connecting to OpenAI.
+    """
     cfg = get_config()
     model = (cfg.litellm_model or "").strip()
-    return model or "openrouter/openai/gpt-5.6-luna"
+    if not model:
+        return ""
+    base = (cfg.litellm_api_base or "").strip()
+    if not base:
+        return model
+    from crewai.llm import LLM
+
+    return LLM(model=model, base_url=base, api_key=cfg.litellm_api_key or "ollama")
 
 
 def build_crew_agent(
@@ -90,8 +106,7 @@ def build_crew_agent(
         from crewai import Agent
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "crewai is required for AGENT_MODULE=crewai "
-            "(pip install 'crewai>=1.0.0')"
+            "crewai is required for AGENT_MODULE=crewai (pip install 'crewai>=1.0.0')"
         ) from exc
 
     from orchestrator.skills.bind import (
@@ -117,9 +132,7 @@ def build_crew_agent(
         if mcp_block:
             backstory = f"{backstory}\n\n{mcp_block}".strip()
     if role.reports_to:
-        backstory = (
-            f"{backstory}\n\n## Hierarchy\nYou report to `{role.reports_to}`."
-        ).strip()
+        backstory = (f"{backstory}\n\n## Hierarchy\nYou report to `{role.reports_to}`.").strip()
     if role.is_technical or role.is_manager:
         # CrewAI-native coworker tools exist only in the in-process crew
         # (``collaborate``). In the job model peers are reached via A2A
@@ -226,11 +239,7 @@ def build_crew_agent(
     role_iters = max(1, int(role.max_iter))
     cap = max(
         1,
-        int(
-            max_iterations
-            if max_iterations is not None
-            else cfg.agent_max_iterations
-        ),
+        int(max_iterations if max_iterations is not None else cfg.agent_max_iterations),
     )
     tool_names = effective_tools(role, selected) if tools is None else None
     if tools is not None:
@@ -256,9 +265,7 @@ def build_crew_agent(
         "llm": llm_id_for_crew(),
     }
     if role.reasoning:
-        effort = (
-            (reasoning_effort or cfg.crew_reasoning_effort or "low").strip().lower()
-        )
+        effort = (reasoning_effort or cfg.crew_reasoning_effort or "low").strip().lower()
         if effort not in {"low", "medium", "high"}:
             effort = "low"
         attempts = max(

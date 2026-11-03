@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% load ui %}
+{% block title %}Workflow design · Peon{% endblock %}
+{% block content %}
+<c-page-header title="Workflow design" description="Build a hierarchy that runs: project manager → roles → skills → tools. The plan on the right is exactly what a project created from the workflow executes. Published workflows show up when creating a project.">
+  <c-slot name="crumbs"><a class="hover:text-foreground" href="{% url 'lab' %}">Lab</a>{% icon "chevron-right" "size-3" %}<span>Workflows</span></c-slot>
+</c-page-header>
+{% island "workflow-designer" element_id="workflow-designer" catalogUrl=workflow_urls.catalog listUrl=workflow_urls.list detailUrl=workflow_urls.detail createUrl=workflow_urls.create writeUrl=workflow_urls.write deleteUrl=workflow_urls.delete lintUrl=workflow_urls.lint compileUrl=workflow_urls.compile generateUrl=workflow_urls.generate projectsUrl=workflow_urls.projects fromProjectUrl=workflow_urls.fromProject %}
+{% endblock %}

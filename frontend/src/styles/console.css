@@ -358,18 +358,20 @@
     @apply bg-secondary text-foreground;
   }
 
-  /* ── Chat (project-console-chat.js) ───────────────────────────── */
+  /* ── Chat (project-console-chat.js): Claude-style thread + composer ─────────── */
   .chat-thread {
-    @apply flex flex-col gap-3 overflow-y-auto;
+    @apply flex flex-col gap-5 overflow-y-auto scroll-smooth;
   }
   .chat-thread-empty {
     @apply m-auto p-6 text-center text-sm text-muted-foreground;
   }
   .chat-bubble {
-    @apply flex max-w-[85%] flex-col gap-1;
+    @apply flex max-w-full flex-col gap-1;
+    animation: chat-rise 0.28s ease both;
   }
+  /* You: a soft pill on the right. Peon / agents: plain text on the page, no box. */
   .chat-bubble-user {
-    @apply self-end;
+    @apply max-w-[88%] self-end;
   }
   .chat-bubble-meta {
     @apply flex items-center gap-2 px-1 text-[11px] text-muted-foreground;
@@ -377,32 +379,185 @@
   .chat-bubble-user .chat-bubble-meta {
     @apply justify-end;
   }
+  .chat-bubble-meta span:nth-child(n + 2) {
+    @apply opacity-0 transition-opacity;
+  }
+  .chat-bubble:hover .chat-bubble-meta span:nth-child(n + 2) {
+    @apply opacity-100;
+  }
   .chat-bubble-meta .stream-badge {
     @apply ml-0;
   }
   .chat-bubble-body {
-    @apply rounded-xl border bg-card px-3 py-2 font-sans text-sm leading-relaxed break-words whitespace-pre-wrap shadow-sm;
+    @apply px-1 font-sans text-[14.5px] leading-[1.65] break-words whitespace-pre-wrap;
   }
   .chat-bubble-user .chat-bubble-body {
-    @apply border-primary bg-primary text-primary-foreground;
+    @apply rounded-2xl rounded-br-md bg-secondary px-4 py-2.5 text-foreground;
   }
   .chat-bubble-system .chat-bubble-body {
-    @apply border-warning/40 bg-warning/5;
+    @apply rounded-xl border border-warning/40 bg-warning/5 px-3 py-2;
   }
-  .chat-bubble-thinking {
-    @apply self-start;
+
+  /* Inline status: a sparkle and a line of text that shimmers while Peon works; the words glide as they change. */
+  .chat-status {
+    @apply flex items-center gap-2 px-1 text-[14px] text-muted-foreground;
+    animation: chat-rise 0.28s ease both;
+    transition: opacity 0.18s ease;
   }
-  .chat-thinking-dots {
-    @apply flex gap-1 rounded-xl border bg-card px-3 py-3;
+  .chat-status.is-done {
+    opacity: 0;
   }
-  .chat-thinking-dots span {
-    @apply size-1.5 animate-bounce rounded-full bg-muted-foreground;
+  .chat-status-spark {
+    @apply size-2.5 shrink-0 rounded-full;
+    background: radial-gradient(circle at 35% 35%, var(--foreground), var(--muted-foreground));
+    animation: chat-spark 1.6s ease-in-out infinite;
   }
-  .chat-thinking-dots span:nth-child(2) {
-    animation-delay: 120ms;
+  .chat-status-text {
+    display: inline-grid;
+    min-width: 0;
   }
-  .chat-thinking-dots span:nth-child(3) {
-    animation-delay: 240ms;
+  .chat-status-word {
+    grid-area: 1 / 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition:
+      opacity 0.25s ease,
+      transform 0.25s ease;
+    background: linear-gradient(
+      90deg,
+      var(--muted-foreground) 0%,
+      var(--foreground) 45%,
+      var(--muted-foreground) 90%
+    );
+    background-size: 240% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: chat-shimmer 2.2s linear infinite;
+  }
+  .chat-status-word.is-enter {
+    opacity: 0;
+    transform: translateY(0.45em);
+  }
+  .chat-status-word.is-leave {
+    opacity: 0;
+    transform: translateY(-0.45em);
+  }
+  .chat-reveal {
+    animation: chat-fade 0.4s ease both;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chat-bubble,
+    .chat-status,
+    .chat-status-spark,
+    .chat-status-word,
+    .chat-reveal {
+      animation: none;
+    }
+    .chat-status-word {
+      color: var(--muted-foreground);
+      background: none;
+    }
+  }
+
+  /* Composer: one rounded card; text on top, tools underneath, round send button. */
+  .chat-form {
+    @apply px-3 pt-1 pb-3;
+  }
+  .chat-composer {
+    @apply rounded-2xl border border-input bg-background shadow-sm transition-shadow focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/30;
+  }
+  .chat-input {
+    @apply block max-h-[200px] min-h-[46px] w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[14.5px] leading-6 outline-none placeholder:text-muted-foreground;
+  }
+  .chat-composer-bar {
+    @apply flex items-center gap-1 px-2 pb-2;
+  }
+  .chat-modes {
+    @apply ml-1 flex items-center gap-0.5;
+  }
+  .chat-mode {
+    @apply h-7 cursor-pointer rounded-full px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .chat-mode.is-active {
+    @apply bg-secondary text-foreground;
+  }
+  .chat-mode[hidden] {
+    display: none;
+  }
+  .chat-to {
+    @apply ml-auto min-w-0;
+  }
+  .chat-composer {
+    position: relative;
+  }
+  .chat-to-btn {
+    @apply inline-flex h-7 max-w-[10rem] cursor-pointer items-center gap-1 rounded-full px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none;
+  }
+  .chat-to-btn.is-targeted {
+    @apply bg-secondary text-foreground;
+  }
+  .chat-to-label {
+    @apply truncate;
+  }
+  /* Opens upward, anchored to the composer and never wider than it: nothing can spill out of the chat card. */
+  .chat-to-menu {
+    @apply absolute right-2 bottom-[calc(100%+0.5rem)] z-20 max-h-64 w-[min(20rem,calc(100%-1rem))] overflow-x-hidden overflow-y-auto rounded-xl border bg-popover p-1 text-popover-foreground shadow-lg;
+  }
+  .chat-to-menu[hidden] {
+    display: none;
+  }
+  .chat-to-item {
+    @apply flex min-w-0 cursor-pointer flex-col rounded-lg px-3 py-1.5 text-sm outline-none hover:bg-accent focus-visible:bg-accent;
+  }
+  .chat-to-item.is-selected {
+    @apply bg-secondary;
+  }
+  .chat-to-item.is-done {
+    @apply opacity-60;
+  }
+  .chat-to-name {
+    @apply truncate font-medium;
+  }
+  .chat-to-sub {
+    @apply truncate text-xs text-muted-foreground;
+  }
+  .chat-send {
+    @apply inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-foreground text-background transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-30;
+  }
+  .chat-hint {
+    @apply mt-1.5 text-center text-[11px] text-muted-foreground;
+  }
+  @keyframes chat-shimmer {
+    from {
+      background-position: 120% 0;
+    }
+    to {
+      background-position: -120% 0;
+    }
+  }
+  @keyframes chat-spark {
+    0%,
+    100% {
+      transform: scale(0.8);
+      opacity: 0.6;
+    }
+    50% {
+      transform: scale(1.15);
+      opacity: 1;
+    }
+  }
+  @keyframes chat-rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+  @keyframes chat-fade {
+    from {
+      opacity: 0;
+    }
   }
 
   /* Uploaded files (renderProjectFilesList) */
@@ -528,4 +683,412 @@
   height: auto !important;
   flex: 1 1 0;
   min-height: 0;
+}
+
+/* Collapsible cards (console-panels.js): each card has its own button in its header. A collapsed card shrinks to
+   its header (the chat to a narrow rail) and the cards around it grow into the space. */
+.panel-hide {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.panel-hide:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.panel-hide .panel-icon-closed {
+  display: none;
+}
+#war-layout[data-collapse-ops] [data-panel-toggle="ops"] .panel-icon-open,
+#war-layout[data-collapse-chat] [data-panel-toggle="chat"] .panel-icon-open,
+#war-layout[data-collapse-shell] [data-panel-toggle="shell"] .panel-icon-open,
+#console-workspace.is-collapsed [data-panel-toggle="shell"] .panel-icon-open {
+  display: none;
+}
+#war-layout[data-collapse-ops] [data-panel-toggle="ops"] .panel-icon-closed,
+#war-layout[data-collapse-chat] [data-panel-toggle="chat"] .panel-icon-closed,
+#war-layout[data-collapse-shell] [data-panel-toggle="shell"] .panel-icon-closed,
+#console-workspace.is-collapsed [data-panel-toggle="shell"] .panel-icon-closed {
+  display: inline;
+}
+
+/* Context & activity: header only; the agent graph takes the height. */
+#war-layout[data-collapse-ops] #ops-card {
+  height: auto !important;
+}
+#war-layout[data-collapse-ops] #ops-card > :not(.workspace-header) {
+  display: none !important;
+}
+#war-layout[data-collapse-ops] #ops-card .workspace-header {
+  border-bottom: 0;
+}
+#war-layout[data-collapse-ops] #agents-list.agent-tree {
+  height: min(48rem, calc(100dvh - 9rem)) !important;
+}
+
+/* Chat: below xl it is a header bar; at xl it is a narrow rail and the left column widens. */
+#war-layout[data-collapse-chat] #war-chat {
+  height: auto !important;
+}
+#war-layout[data-collapse-chat] #war-chat > :not(:first-child) {
+  display: none !important;
+}
+#war-layout[data-collapse-chat] #war-chat > :first-child {
+  border-bottom: 0;
+}
+@media (min-width: 80rem) {
+  #war-layout[data-collapse-chat] .console-grid {
+    grid-template-columns: minmax(0, 1fr) 3.25rem !important;
+  }
+  #war-layout[data-collapse-chat] #war-chat {
+    align-self: start;
+  }
+  #war-layout[data-collapse-chat] #war-chat > :first-child {
+    flex-direction: column-reverse;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0 1rem;
+  }
+  #war-layout[data-collapse-chat] #war-chat h2 {
+    writing-mode: vertical-rl;
+    letter-spacing: 0.04em;
+  }
+  #war-layout[data-collapse-chat] #war-chat > :first-child span {
+    display: none;
+  }
+}
+
+/* Sandbox shell: header only when collapsed; neighbors above keep their space. */
+#war-layout[data-collapse-shell] #console-workspace,
+#console-workspace.is-collapsed {
+  height: auto !important;
+}
+#war-layout[data-collapse-shell] #console-workspace > :not(.workspace-header),
+#console-workspace.is-collapsed > :not(.workspace-header) {
+  display: none !important;
+}
+#war-layout[data-collapse-shell] #console-workspace .workspace-header,
+#console-workspace.is-collapsed .workspace-header {
+  border-bottom: 0;
+}
+
+/* War-room card sizes (set by console-panels.js as --war-* vars). Content fills. */
+#war-layout {
+  --war-agents-h: 26rem;
+  --war-ops-h: 26rem;
+  --war-chat-h: 53rem;
+  --war-chat-w: 26rem;
+  --war-shell-h: 22rem;
+}
+.console-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 80rem) {
+  .console-grid {
+    grid-template-columns: minmax(0, 1fr) var(--war-chat-w, 26rem);
+  }
+}
+#agents-list.war-agents-body,
+#agents-list.agent-tree {
+  height: var(--war-agents-h, 26rem);
+}
+#ops-card {
+  height: var(--war-ops-h, 26rem);
+}
+#war-chat {
+  height: var(--war-chat-h, 53rem);
+}
+#terminal-host.war-shell-body,
+#terminal-host.terminal-host {
+  height: var(--war-shell-h, 22rem);
+  box-sizing: border-box;
+}
+#terminal-host .xterm,
+#terminal-host .xterm-viewport,
+#terminal-host .xterm-screen {
+  height: 100% !important;
+}
+
+.war-card {
+  position: relative;
+}
+.war-resizer {
+  position: absolute;
+  z-index: 5;
+  touch-action: none;
+  background: transparent;
+}
+.war-resizer-s {
+  left: 0;
+  bottom: -4px;
+  width: 100%;
+  height: 10px;
+  cursor: ns-resize;
+}
+.war-resizer-w {
+  top: 0;
+  left: -5px;
+  width: 10px;
+  height: 100%;
+  cursor: ew-resize;
+}
+.war-resizer:hover,
+.war-resizer:active {
+  background: color-mix(in oklab, var(--primary) 40%, transparent);
+}
+#war-layout[data-collapse-ops] #ops-card .war-resizer,
+#war-layout[data-collapse-chat] #war-chat .war-resizer,
+#war-layout[data-collapse-shell] #console-workspace .war-resizer,
+#console-workspace.is-collapsed .war-resizer {
+  display: none;
+}
+@media (max-width: 79.99rem) {
+  #war-chat .war-resizer-w {
+    display: none;
+  }
+}
+
+/* ── Workflow designer windows (collapsible + resizable panels) ── */
+.wf-desk {
+  min-height: 36rem;
+}
+.wf-panel {
+  position: relative;
+  min-height: 0;
+}
+.wf-panel-body {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+}
+.wf-panel-body > * {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+}
+.wf-panel[data-collapsed] .wf-panel-header {
+  border-bottom: 0;
+}
+.wf-panel-left[data-collapsed] .wf-panel-header,
+.wf-panel-right[data-collapsed] .wf-panel-header {
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.25rem 0.75rem;
+}
+.wf-panel-left[data-collapsed] .wf-panel-header h2,
+.wf-panel-right[data-collapsed] .wf-panel-header h2 {
+  writing-mode: vertical-rl;
+  letter-spacing: 0.04em;
+}
+.wf-panel-resizer {
+  position: absolute;
+  z-index: 5;
+  touch-action: none;
+  background: transparent;
+}
+.wf-panel-resizer-right {
+  top: 0;
+  right: -5px;
+  width: 10px;
+  height: 100%;
+  cursor: ew-resize;
+}
+.wf-panel-resizer-left {
+  top: 0;
+  left: -5px;
+  width: 10px;
+  height: 100%;
+  cursor: ew-resize;
+}
+.wf-panel-resizer-top {
+  left: 0;
+  top: -5px;
+  width: 100%;
+  height: 10px;
+  cursor: ns-resize;
+}
+.wf-panel-resizer:hover,
+.wf-panel-resizer:active {
+  background: color-mix(in oklab, var(--primary) 40%, transparent);
+}
+
+/* ── Workflow designer canvas (lab/workflow/Canvas.tsx): the war-room graph's look, plus link handles ── */
+.wf-canvas {
+  outline: none;
+}
+.wf-canvas:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--ring) 55%, transparent);
+}
+.wf-node {
+  min-width: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  user-select: none;
+}
+.wf-node-note {
+  display: -webkit-box;
+  margin-top: 0.25rem;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.wf-resize {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 0.7rem;
+  height: 0.7rem;
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0;
+  border-radius: 0 0 0.35rem 0;
+  background:
+    linear-gradient(
+      135deg,
+      transparent 46%,
+      color-mix(in oklab, var(--muted-foreground) 70%, transparent) 46% 54%,
+      transparent 54% 70%,
+      color-mix(in oklab, var(--muted-foreground) 70%, transparent) 70% 78%,
+      transparent 78%
+    );
+  transition: opacity 0.12s ease;
+}
+.wf-node:hover .wf-resize,
+.wf-node.is-selected .wf-resize {
+  opacity: 1;
+}
+.wf-resize:hover {
+  background:
+    linear-gradient(
+      135deg,
+      transparent 46%,
+      var(--primary) 46% 54%,
+      transparent 54% 70%,
+      var(--primary) 70% 78%,
+      transparent 78%
+    );
+}
+.wf-node.has-problem {
+  border-color: color-mix(in oklab, var(--destructive) 60%, transparent);
+}
+.wf-node.is-link-ok {
+  border-color: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--success) 22%, transparent);
+}
+.wf-node.is-link-bad {
+  border-color: var(--destructive);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--destructive) 18%, transparent);
+}
+.wf-handle {
+  position: absolute;
+  left: 50%;
+  width: 0.75rem;
+  height: 0.75rem;
+  translate: -50% 0;
+  border-radius: 9999px;
+  border: 2px solid var(--card);
+  background: var(--muted-foreground);
+  opacity: 0;
+  transition: opacity 0.12s ease, scale 0.12s ease;
+}
+.wf-handle-in {
+  top: -0.4rem;
+}
+.wf-handle-out {
+  bottom: -0.4rem;
+  cursor: crosshair;
+  touch-action: none;
+}
+.wf-node:hover .wf-handle,
+.wf-node.is-selected .wf-handle {
+  opacity: 1;
+}
+.wf-handle-out:hover {
+  scale: 1.35;
+  background: var(--primary);
+}
+.wf-edge {
+  stroke: var(--input);
+  stroke-width: 1.75;
+}
+.wf-edge.is-parallel {
+  stroke-dasharray: 5 5;
+}
+.wf-edge.is-selected {
+  stroke: var(--primary);
+  stroke-width: 2.5;
+}
+.wf-edge.is-live {
+  stroke: var(--info);
+  stroke-dasharray: 6 6;
+  animation: flow-march 0.9s linear infinite;
+}
+.wf-arrow {
+  fill: var(--muted-foreground);
+}
+.wf-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.wf-zoom {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.15);
+}
+.wf-zoom button {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.wf-zoom button:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.wf-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  pointer-events: none;
+}
+.wf-card.is-linkable {
+  border-color: color-mix(in oklab, var(--primary) 45%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .wf-edge.is-live {
+    animation: none;
+  }
 }

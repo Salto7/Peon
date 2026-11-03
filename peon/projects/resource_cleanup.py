@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_runtime.docker.engine import DockerEngine
+from agent_runtime.docker.engine import DockerClient
 from peon.projects.models import Project
 from peon.projects.sandbox import ProjectSandbox
 from peon.projects.workspaces import prune_orphan_workspaces, workspace_entry_project_id
@@ -15,7 +15,7 @@ class ProjectResourcePruner:
 
     @classmethod
     def _runtime_project_ids(cls) -> set[str]:
-        cli = DockerEngine.shared()
+        cli = DockerClient.shared()
         project_ids: set[str] = set()
         for container_id in cli.ps_ids("label=peon.project_id"):
             project_id = workspace_entry_project_id(

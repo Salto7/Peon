@@ -12,7 +12,7 @@ from django.core.checks import Error, register
 from dramatiq.brokers.redis import RedisBroker
 from dramatiq.brokers.stub import StubBroker
 
-from agent_runtime.registry import RuntimeRegistry
+from agent_runtime.registry import SandboxDriverRegistry
 from orchestrator.config import LLM_PROVIDER_KEY_ENV, RuntimeConfig, configure
 from orchestrator.crew.roles.registry import RoleRegistry
 
@@ -71,40 +71,31 @@ def crewai_roles_check(app_configs, **kwargs):
 def configure_orchestrator() -> None:
     """Push Django settings into orchestrator.RuntimeConfig (idempotent)."""
 
-    provider = str(getattr(settings, "LLM_PROVIDER", "openrouter") or "openrouter")
+    provider = str(getattr(settings, "LLM_PROVIDER", "") or "").strip()
     key_attr = LLM_PROVIDER_KEY_ENV.get(provider, "LITELLM_API_KEY")
     api_key = (
         str(getattr(settings, key_attr, "") or "")
         or str(getattr(settings, "LITELLM_API_KEY", "") or "")
         or str(getattr(settings, "OPENROUTER_API_KEY", "") or "")
+        or str(getattr(settings, "OPENAI_API_KEY", "") or "")
         or ""
     )
     configure(
         RuntimeConfig(
             skills_dir=Path(settings.SKILLS_DIR).resolve(),
-            skills_imported_dir=Path(settings.SKILLS_IMPORTED_DIR).resolve(),
-            skills_extra_dirs=tuple(
-                Path(path).resolve()
-                for path in getattr(settings, "SKILLS_EXTRA_DIRS", ())
-            ),
             mcps_dir=Path(
                 getattr(settings, "MCPS_DIR", None) or (Path(settings.BASE_DIR) / "mcps")
             ).resolve(),
             tools_catalog_dir=Path(settings.TOOLS_CATALOG_DIR).resolve(),
             workspaces_dir=Path(settings.PROJECT_WORKSPACES_DIR).resolve(),
-            platform_workspace_dir=Path(
-                settings.PLATFORM_WORKSPACE_DIR
-            ).resolve(),
+            platform_workspace_dir=Path(settings.PLATFORM_WORKSPACE_DIR).resolve(),
             llm_provider=provider,
-            llm_module=str(
-                getattr(settings, "LLM_MODULE", None) or "litellm"
-            ).strip()
-            or "litellm",
+            llm_module=str(getattr(settings, "LLM_MODULE", None) or "litellm").strip() or "litellm",
             litellm_model=str(
                 getattr(settings, "LITELLM_MODEL", None)
                 or getattr(settings, "LLM_MODEL", None)
-                or "openrouter/openai/gpt-5.6-luna"
-            ),
+                or ""
+            ).strip(),
             litellm_api_key=api_key,
             litellm_api_base=getattr(settings, "LITELLM_API_BASE", None) or None,
             llm_temperature=float(getattr(settings, "LLM_TEMPERATURE", 0.0) or 0.0),
@@ -115,17 +106,11 @@ def configure_orchestrator() -> None:
             ).strip()
             or "http://litellm:4000/v1",
             agent_max_iterations=int(getattr(settings, "AGENT_MAX_ITERATIONS", 40) or 40),
-            agent_max_failure_replans=int(
-                getattr(settings, "AGENT_MAX_FAILURE_REPLANS", 2) or 2
-            ),
+            agent_max_failure_replans=int(getattr(settings, "AGENT_MAX_FAILURE_REPLANS", 2) or 2),
             agent_max_subagents=int(getattr(settings, "AGENT_MAX_SUBAGENTS", 4) or 4),
-            agent_max_subagent_depth=int(
-                getattr(settings, "AGENT_MAX_SUBAGENT_DEPTH", 2) or 2
-            ),
+            agent_max_subagent_depth=int(getattr(settings, "AGENT_MAX_SUBAGENT_DEPTH", 2) or 2),
             agent_runtime_enabled=bool(getattr(settings, "AGENT_RUNTIME_ENABLED", True)),
-            crew_reasoning_effort=str(
-                getattr(settings, "CREW_REASONING_EFFORT", "low") or "low"
-            )
+            crew_reasoning_effort=str(getattr(settings, "CREW_REASONING_EFFORT", "low") or "low")
             .strip()
             .lower(),
             crew_reasoning_max_attempts=int(
@@ -136,9 +121,7 @@ def configure_orchestrator() -> None:
             .lower()
             or "crewai",
             sandbox_image=str(getattr(settings, "SANDBOX_IMAGE", "peon-sandbox:local")),
-            sandbox_prefix=str(
-                getattr(settings, "PROJECT_SANDBOX_PREFIX", "peon-project")
-            ),
+            sandbox_prefix=str(getattr(settings, "PROJECT_SANDBOX_PREFIX", "peon-project")),
         )
     )
 
@@ -243,7 +226,6 @@ def _boot_services(kind: str) -> None:
         logger.warning("scheduler kick failed: %s", exc)
 
 
-
 def _watch_vite_manifest() -> None:
     """Restart runserver when ``vite build --watch`` rewrites the manifest.
 
@@ -260,6 +242,7 @@ def _watch_vite_manifest() -> None:
         sender.extra_files.add(manifest)
 
     autoreload_started.connect(watch, weak=False)
+
 
 class ProjectsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
@@ -282,7 +265,7 @@ class ProjectsConfig(AppConfig):
         except Exception as exc:
             logger.warning("llm usage tracking not started: %s", exc)
         configure_broker()
-        RuntimeRegistry.shared().register_builtin()
+        SandboxDriverRegistry.shared().register_builtin()
         kind = _process_kind()
         if not kind:
             return
@@ -292,6 +275,4 @@ class ProjectsConfig(AppConfig):
             PlatformCatalog.shared().ensure_seeded()
         except Exception as exc:
             logger.warning("platform catalog seed skipped: %s", exc)
-        threading.Thread(
-            target=_boot_services, args=(kind,), name="peon-boot", daemon=True
-        ).start()
+        threading.Thread(target=_boot_services, args=(kind,), name="peon-boot", daemon=True).start()

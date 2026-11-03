@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["CrewAIJobRuntime", "ProjectCrewRuntime"]
+__all__ = ["CrewAIAgentExecutor", "ProjectCrewOrchestrator"]
 
 
 def __getattr__(name: str) -> Any:
-    if name == "CrewAIJobRuntime":
+    if name == "CrewAIAgentExecutor":
         # deferred: optional heavy crewai runtime
-        from orchestrator.crew.runtimes.job_crewai import CrewAIJobRuntime
+        from orchestrator.crew.runtimes.job_crewai import CrewAIAgentExecutor
 
-        return CrewAIJobRuntime
-    if name == "ProjectCrewRuntime":
+        return CrewAIAgentExecutor
+    if name == "ProjectCrewOrchestrator":
         # deferred: optional heavy crewai runtime
-        from orchestrator.crew.runtimes.project_crewai import ProjectCrewRuntime
+        from orchestrator.crew.runtimes.project_crewai import ProjectCrewOrchestrator
 
-        return ProjectCrewRuntime
+        return ProjectCrewOrchestrator
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

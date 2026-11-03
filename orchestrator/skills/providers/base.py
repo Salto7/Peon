@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from orchestrator.skills.common import SKILL_NAME_RE, render_prompt_block
-from orchestrator.utils.paths import normalize_rel_path, safe_join
 
 PEON_PROVIDER = "peon"
 CLAUDE_PROVIDER = "claude"
@@ -139,85 +136,3 @@ class SkillDocument:
         return render_prompt_block(
             self.id, self.description, self.instructions, body_limit=body_limit
         )
-
-
-class SkillProvider(ABC):
-    """Discover and read one skill style. Does not execute or bind roles."""
-
-    name: str
-    disclosure: str
-
-    def __init__(self, root: Path, *, container_base: str = "/skills") -> None:
-        self.root = Path(root)
-        self.container_base = (container_base or "/skills").rstrip("/") or "/skills"
-
-    def container_path(self, root: Path) -> str:
-        """Map a host path below this provider to its Docker mount path."""
-        base = self.root.resolve()
-        target = Path(root).resolve()
-        try:
-            relative = target.relative_to(base)
-        except ValueError:
-            relative = Path(target.name)
-        if str(relative) == ".":
-            return self.container_base
-        return f"{self.container_base}/{relative.as_posix()}"
-
-    @abstractmethod
-    def discover(self) -> Sequence[SkillDocument]:
-        """Packs under this provider root."""
-
-    def mtime(self) -> float:
-        from orchestrator.skills.registry_scan import skill_tree_mtime
-
-        return skill_tree_mtime(self.root)
-
-    def fingerprint(self) -> str:
-        """Manifest/sidecar content stamp for registry cache invalidation."""
-        from orchestrator.skills.registry_scan import skill_tree_fingerprint
-
-        return skill_tree_fingerprint(self.root)
-
-    def document(self, name: str) -> SkillDocument | None:
-        wanted = (name or "").strip().lower()
-        if not wanted:
-            return None
-        for doc in self.discover():
-            if doc.name == wanted:
-                return doc
-        return None
-
-    def list_resources(self, name: str) -> Sequence[str]:
-        doc = self.document(name)
-        if doc is None or doc.root is None:
-            return ()
-        return tuple(_pack_files(doc.root))
-
-    def read_resource(self, name: str, path: str) -> bytes:
-        doc = self.document(name)
-        if doc is None or doc.root is None:
-            raise FileNotFoundError(name)
-        target = safe_join(doc.root, path)
-        if target is None or not target.is_file():
-            raise FileNotFoundError(path)
-        return target.read_bytes()
-
-
-def _pack_files(root: Path) -> list[str]:
-    skip = {"node_modules", "__pycache__", ".git"}
-    out: list[str] = []
-    base = Path(root)
-    if not base.is_dir():
-        return out
-    for path in sorted(base.rglob("*")):
-        if not path.is_file() or path.name.startswith("."):
-            continue
-        if path.name == AFFINITY_NAME:
-            continue
-        if skip.intersection(path.parts) or path.suffix in {".pyc", ".pyo"}:
-            continue
-        rel = path.relative_to(base).as_posix()
-        if normalize_rel_path(rel) is None:
-            continue
-        out.append(rel)
-    return out

@@ -1,7 +1,7 @@
-"""Dynamic role↔skill affinity. Persisted affinity remains an optional cache.
+"""Dynamic role↔skill affinity — keyword match, then LLM classification.
 
-Native packs: ``peon.affinity.yaml`` next to SKILL.md.
-Imported packs receive role bindings dynamically from their manifest content.
+Every skill and MCP server gets its role binding from this module, DB-driven
+end to end: no sidecar file, no cache, nothing read from disk.
 """
 
 from __future__ import annotations
@@ -10,15 +10,11 @@ import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import yaml
 
 from orchestrator.skills.common import SKILL_NAME_RE
-from orchestrator.skills.manifest import ParseProfile, SkillParseError, find_skill_manifest
-from orchestrator.skills.model import parse_skill_md
-from orchestrator.skills.providers.base import AFFINITY_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +32,17 @@ Return ONLY JSON:
 
 Rules:
 - role_id must be one of the provided catalog role ids (never invent ids)
-- score is confidence that this role should own/run the item (0-1)
-- include every role that reasonably fits; omit roles that do not
+- score is confidence that this role's actual specialty IS the item's
+  primary purpose — not merely that the item touches a technique the role
+  also uses. A recon/OSINT tool that happens to include a port-scan module
+  is not a network scanner just because they share that one technique;
+  score that kind of incidental overlap low (well under 0.5), not high
+- if none of the provided roles' specialties genuinely match the item's
+  primary purpose, return bindings: [] (or only low scores) — a bad forced
+  match is worse than no match, since the platform will draft a dedicated
+  new role for an item nothing existing really fits
+- include every role that reasonably fits; omit or score low the ones that
+  only touch the item incidentally
 - at most one binding may have lead=true (default lead for that role)
 - engagement-pm / analyzer roles only bind items clearly for that lane
 - Toolsmith/authoring-only packs may return bindings: []
@@ -90,10 +95,6 @@ class SkillAffinity:
         )
 
 
-def affinity_path(skill_dir: Path) -> Path:
-    return Path(skill_dir) / AFFINITY_NAME
-
-
 def _clean_role(raw: object) -> str:
     role = str(raw or "").strip().lower()
     if role and SKILL_NAME_RE.match(role):
@@ -130,23 +131,18 @@ def _parse_bindings(raw: Any) -> tuple[AffinityBinding, ...]:
     return tuple(out)
 
 
-def read_affinity(skill_dir: Path) -> SkillAffinity:
-    path = affinity_path(skill_dir)
-    if not path.is_file():
-        return SkillAffinity()
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return SkillAffinity()
-    if not isinstance(data, dict):
-        return SkillAffinity()
-    return SkillAffinity(
-        bindings=_parse_bindings(data.get("bindings") or data.get("roles")),
-        source=str(data.get("source") or "").strip(),
-    )
+_BRIEF_LIMIT = 300
 
 
 def _role_briefs() -> list[dict[str, str]]:
+    """Catalog roles as the LLM classifier sees them.
+
+    Must carry each role's *real* goal/backstory — a placeholder shaped
+    identically for every technical role (e.g. "Technical expert role `x`
+    for in-lane engagement work.") gives the classifier nothing to
+    discriminate on, which is exactly how a prior version of this function
+    let an unrelated technical role win by default.
+    """
     from orchestrator.crew.roles.catalog import load_role_catalog
 
     briefs: list[dict[str, str]] = []
@@ -157,18 +153,32 @@ def _role_briefs() -> list[dict[str, str]]:
         elif kind == "analyzer":
             goal = "Turn workspace evidence into findings and report.md."
         else:
-            goal = f"Technical expert role `{role.id}` for in-lane engagement work."
+            goal = f"{role.goal}\n{role.backstory}".strip()
+            if not goal:
+                goal = f"Technical expert role `{role.id}` for in-lane engagement work."
+        if len(goal) > _BRIEF_LIMIT:
+            goal = goal[:_BRIEF_LIMIT].rstrip() + "…"
         briefs.append({"id": role.id, "kind": kind, "goal": goal})
     return briefs
 
 
-def score_roles(
-    catalog: Iterable[Any], *, name: str, description: str, corpus: str
-) -> tuple[AffinityBinding, ...]:
-    """Lexical role match: a role token in the name > description > body."""
+def score_roles(catalog: Iterable[Any], *, name: str) -> tuple[AffinityBinding, ...]:
+    """Strict lexical role match: every role-id/alias token must appear in
+    the skill's own *name*.
+
+    Deliberately narrow — this is a fast path for a skill that is quite
+    literally named after the role (``network-scanner-v2`` -> role
+    ``network-scanner``), not a general "shares a word with" heuristic. A
+    single shared English word between an OSINT skill's description and a
+    role id like ``network-scanner`` ("...OSINT **scanner**...") is not a
+    binding signal — matching on description or body text produced exactly
+    that kind of false positive, silently mis-assigning skills to unrelated
+    roles instead of asking the LLM classifier (or drafting a new role when
+    nothing really fits). Anything short of a full name match falls through
+    to :func:`classify_text_affinity`, which has the actual context needed
+    to discriminate.
+    """
     name_words = set(_WORD_RE.findall(name.lower()))
-    description_words = set(_WORD_RE.findall(description.lower()))
-    words = set(_WORD_RE.findall(corpus.lower()))
     bindings: list[AffinityBinding] = []
     for role in catalog:
         tokens = {
@@ -177,39 +187,20 @@ def score_roles(
             for token in _WORD_RE.findall(label.lower())
             if token not in _ROLE_STOPWORDS
         }
-        if tokens & name_words:
-            score = 0.95
-        elif tokens & description_words:
-            score = 0.75
-        elif tokens & words:
-            score = 0.55
-        else:
-            continue
-        bindings.append(AffinityBinding(role_id=role.id, score=score, lead=score == 0.95))
+        if tokens and tokens <= name_words:
+            bindings.append(AffinityBinding(role_id=role.id, score=0.95, lead=True))
     return tuple(bindings)
 
 
-def keyword_role_bindings(
-    *,
-    name: str,
-    description: str = "",
-    body: str = "",
-    tags: Iterable[str] = (),
-) -> SkillAffinity:
-    """Fast lexical role match from free text (no LLM)."""
+def keyword_role_bindings(*, name: str) -> SkillAffinity:
+    """Fast lexical role match from the skill's own name (no LLM)."""
     try:
         from orchestrator.crew.roles.catalog import load_role_catalog
 
         catalog = tuple(load_role_catalog())
     except Exception:
         return SkillAffinity()
-    tag_text = " ".join(str(t) for t in tags)
-    bindings = score_roles(
-        catalog,
-        name=str(name or ""),
-        description=f"{description} {tag_text}",
-        corpus=" ".join((name, description, tag_text, body[:4000])),
-    )
+    bindings = score_roles(catalog, name=str(name or ""))
     return SkillAffinity(bindings=bindings, source="dynamic-keyword")
 
 
@@ -274,18 +265,14 @@ def infer_catalog_bindings(
     but real enough to put in front of a human instead of discarding
     (callers may stage these for review rather than just logging them).
     """
-    keyed = keyword_role_bindings(
-        name=owner_id,
-        description=description,
-        body=body,
-        tags=tags,
-    )
+    keyed = keyword_role_bindings(name=owner_id)
     affinity = keyed
     if not affinity.bindings:
+        tag_text = " ".join(str(t) for t in tags)
         affinity = classify_text_affinity(
             owner_id=owner_id,
             owner_kind=owner_kind,
-            description=description,
+            description=f"{description} {tag_text}".strip(),
             body=body or description,
         )
     applied = [
@@ -328,31 +315,4 @@ def _catalog_roles():
     from orchestrator.crew.roles.catalog import load_role_catalog
 
     return load_role_catalog()
-
-
-def classify_skill_affinity(
-    skill_dir: Path,
-    *,
-    known_roles: Iterable[str] | None = None,
-) -> SkillAffinity:
-    """LLM-classify role bindings for a pack. Returns empty affinity on failure."""
-    root = Path(skill_dir)
-    manifest = find_skill_manifest(root)
-    if manifest is None:
-        return SkillAffinity()
-    try:
-        spec = parse_skill_md(manifest, profile=ParseProfile.CLAUDE_CODE)
-    except SkillParseError as exc:
-        logger.debug("affinity parse failed for %s: %s", root, exc)
-        return SkillAffinity()
-    except OSError as exc:
-        logger.debug("affinity read failed for %s: %s", root, exc)
-        return SkillAffinity()
-    return classify_text_affinity(
-        owner_id=spec.id,
-        owner_kind="skill",
-        description=spec.description,
-        body=spec.instructions or "",
-        known_roles=known_roles,
-    )
 

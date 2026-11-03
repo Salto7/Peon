@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from orchestrator.agent.job import bind_job
 from orchestrator.agent.runtime_base import (
+    AgentExecutorBase,
     AgentRunRequest,
     AgentRunResult,
-    AgentRuntimeBase,
 )
 from orchestrator.crew.roles.model import build_crew_agent
 from orchestrator.crew.roles.registry import RoleRegistry
@@ -34,7 +34,7 @@ def project_crew_requested(scope) -> bool:
     return str(extras.get("crew_mode") or "").strip().lower() == "project"
 
 
-class CrewAIJobRuntime(AgentRuntimeBase):
+class CrewAIAgentExecutor(AgentExecutorBase):
     """Run one CrewAI role, or an explicitly requested full project crew."""
 
     def start(self, request: AgentRunRequest) -> AgentRunResult:

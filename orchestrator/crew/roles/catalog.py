@@ -24,6 +24,7 @@ class RoleDef:
     kind: str  # engagement-pm | analyzer | technical
     aliases: tuple[str, ...] = ()
     protected: bool = False
+    pending: bool = False
     goal: str = ""
     backstory: str = ""
 
@@ -136,6 +137,7 @@ def role_def_from_mapping(row: dict[str, Any]) -> RoleDef:
         kind=kind,
         aliases=aliases,
         protected=bool(row.get("protected")),
+        pending=bool(row.get("pending")),
         goal=str(row.get("goal") or "").strip(),
         backstory=str(row.get("backstory") or "").strip(),
     )

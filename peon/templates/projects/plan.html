@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% load static ui %}
 {% block title %}Plan · {{ project.title }} · Peon{% endblock %}
-{% block main_class %}mx-auto w-full max-w-[1680px] flex-1 px-4 py-6 md:px-6{% endblock %}
 {% block content %}
 <c-page-header title="Review the plan" description="Edit agents, prompts and dependencies, then accept to start the engagement.">
   <c-slot name="crumbs">
@@ -18,7 +17,7 @@
       <h2 id="plan-graph-heading" class="text-sm font-semibold">Agent graph</h2>
       <p class="text-xs text-muted-foreground" id="plan-status">Click a node to edit its role, prompt and dependencies.</p>
     </div>
-    <div id="plan-graph-host" class="agent-tree h-[min(70vh,44rem)] overflow-auto" aria-label="Editable agent plan graph"></div>
+    <div id="plan-graph-host" class="agent-tree h-[max(28rem,calc(100dvh-12rem))] overflow-auto" aria-label="Editable agent plan graph"></div>
   </section>
 
   <aside id="plan-editor-aside" hidden class="space-y-4 rounded-xl border bg-card p-4 shadow-sm xl:sticky xl:top-6 xl:self-start">

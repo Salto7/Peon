@@ -230,7 +230,6 @@ def save_claude_skill(
     name: str,
     skill_md: str,
     files: dict[str, str] | None = None,
-    source: str = "toolsmith",
     binary: str = "",
 ) -> dict[str, Any]:
     """Validate and install a new pack on the Claude lane."""
@@ -262,7 +261,7 @@ def save_claude_skill(
                 body if str(body).endswith("\n") else str(body) + "\n", encoding="utf-8"
             )
             written.append(rel)
-        placed = place_pack(root, source=source)
+        placed = place_pack(root)
     return {
         "ok": True,
         "id": f"claude/{placed}",

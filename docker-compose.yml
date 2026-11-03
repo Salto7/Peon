@@ -49,6 +49,9 @@ services:
       context: .
       dockerfile: Docker/Dockerfile
     image: peon-web:local
+    # Reach Ollama (or other LLMs) on the Docker host from in-process LiteLLM.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
@@ -85,8 +88,7 @@ services:
       - ./manage.py:/app/manage.py
       - ./skills:/app/skills
       - ./mcps:/app/mcps
-      - ./skills_imported:/app/skills_imported
-      - ${SKILLS_EXTRA_HOST_ROOT:-./skills_imported}:/external-skills:ro
+      - ${SKILLS_EXTRA_HOST_ROOT:-./external-skills}:/external-skills:ro
       - ./tools:/app/tools
     # Dev: auto-reload on code edits and on `npm run dev` rebuilds (manifest.json).
     command:
@@ -124,6 +126,8 @@ services:
     build:
       context: .
       dockerfile: Docker/Dockerfile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
@@ -156,8 +160,7 @@ services:
       - ./manage.py:/app/manage.py
       - ./skills:/app/skills
       - ./mcps:/app/mcps
-      - ./skills_imported:/app/skills_imported
-      - ${SKILLS_EXTRA_HOST_ROOT:-./skills_imported}:/external-skills:ro
+      - ${SKILLS_EXTRA_HOST_ROOT:-./external-skills}:/external-skills:ro
       - ./tools:/app/tools
       - /var/run/docker.sock:/var/run/docker.sock
     entrypoint: ["/entrypoint-worker.sh"]
@@ -194,32 +197,43 @@ services:
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     profiles: ["llm-proxy"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
-      LITELLM_MODEL: ${LITELLM_MODEL:-openrouter/openai/gpt-5.6-luna}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      LITELLM_MODEL: ${LITELLM_MODEL:-${LLM_MODEL:-}}
+      LITELLM_API_BASE: ${LITELLM_API_BASE:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-${LLM_API_KEY:-}}
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-${LLM_API_KEY:-}}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-peon-litellm}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -e
         MODEL="$${LITELLM_MODEL:?LITELLM_MODEL required}"
+        # Cloud: OPENROUTER_API_KEY. Local Ollama: LITELLM_API_BASE + any LITELLM_API_KEY.
+        if [ -n "$${LITELLM_API_BASE}" ]; then
+          KEY_ENV=LITELLM_API_KEY
+          : "$${LITELLM_API_KEY:=ollama}"
+          export LITELLM_API_KEY
+          BASE_LINE="              api_base: os.environ/LITELLM_API_BASE"
+        else
+          KEY_ENV=OPENROUTER_API_KEY
+          BASE_LINE=""
+        fi
         cat >/tmp/config.yaml <<EOF
         model_list:
           - model_name: default
             litellm_params:
               model: os.environ/LITELLM_MODEL
-              api_key: os.environ/OPENROUTER_API_KEY
+              api_key: os.environ/$${KEY_ENV}
+        $${BASE_LINE}
           - model_name: "$${MODEL}"
             litellm_params:
               model: os.environ/LITELLM_MODEL
-              api_key: os.environ/OPENROUTER_API_KEY
-          - model_name: openrouter/openai/text-embedding-3-small
-            litellm_params:
-              model: openrouter/openai/text-embedding-3-small
-              api_key: os.environ/OPENROUTER_API_KEY
+              api_key: os.environ/$${KEY_ENV}
+        $${BASE_LINE}
         general_settings:
           master_key: os.environ/LITELLM_MASTER_KEY
         EOF
@@ -243,11 +257,12 @@ services:
       ENABLE_BACKEND_ACCESS_CONTROL: "false"
       COGNEE_SKIP_CONNECTION_TEST: ${COGNEE_SKIP_CONNECTION_TEST:-true}
       LLM_PROVIDER: custom
-      LLM_MODEL: ${LITELLM_MODEL:-openrouter/openai/gpt-5.6-luna}
-      LLM_API_KEY: ${OPENROUTER_API_KEY}
+      # Prefer LITELLM_MODEL / OPENROUTER_API_KEY; accept Cognee-style LLM_* aliases.
+      LLM_MODEL: ${LITELLM_MODEL:-${LLM_MODEL:-}}
+      LLM_API_KEY: ${OPENROUTER_API_KEY:-${LLM_API_KEY:-}}
       EMBEDDING_PROVIDER: custom
       EMBEDDING_MODEL: ${COGNEE_EMBEDDING_MODEL:-openrouter/openai/text-embedding-3-small}
-      EMBEDDING_API_KEY: ${OPENROUTER_API_KEY}
+      EMBEDDING_API_KEY: ${OPENROUTER_API_KEY:-${LLM_API_KEY:-}}
       EMBEDDING_DIMENSIONS: ${COGNEE_EMBEDDING_DIMENSIONS:-1536}
     volumes:
       - peon_cognee:/cognee-storage

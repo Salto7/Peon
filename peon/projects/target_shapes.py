@@ -333,7 +333,15 @@ def accept_asset(value: str, typ: str = "") -> dict[str, str] | None:
 
 
 def canonical_asset_key(typ: str, value: str) -> str:
-    """Stable identity shared by RoE, findings, and the graph."""
+    """Stable identity shared by RoE, findings, and the graph.
+
+    A service's identity is its host:port — protocol is an attribute of
+    that socket (a host can answer both tcp and udp on the same port
+    number), never part of what makes two sightings "the same asset".
+    Whether a given producer happened to name the protocol stays an
+    accumulated property on the one node (``_upsert_asset``), not a second
+    node keyed by how complete that one call was.
+    """
     accepted = accept_asset(value, typ)
     if accepted is None:
         family = sanitize_label(typ, default="other") or "other"
@@ -343,6 +351,10 @@ def canonical_asset_key(typ: str, value: str) -> str:
         clean = accepted["value"].lower()
     if family in {"host", "fqdn", "domain", "hostname"}:
         family = "host"
+    elif family == "service":
+        endpoint = parse_service(clean)
+        if endpoint is not None:
+            clean = f"{endpoint.host}:{endpoint.port}"
     return f"{family}:{clean}"[:400]
 
 

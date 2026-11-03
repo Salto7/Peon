@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { requestConfirm } from "@/lib/behaviors";
 import {
   canPickDirectory,
   pairsFromDrop,
@@ -24,6 +25,22 @@ import {
 import { cn } from "@/lib/utils";
 
 type Source = { value: "npx" | "git" | "disk"; label: string; placeholder?: string };
+
+/** MCP installs still return the plain ``{ids}`` shape; skill installs also
+ * report per-pack outcomes so a name collision can be put to the operator
+ * instead of either blocking the whole batch or silently overwriting. */
+type InstallResult = {
+  ids?: string[];
+  installed?: string[];
+  skipped?: string[];
+  conflicts?: string[];
+  errors?: { path: string; error: string }[];
+};
+
+/** What to replay with `on_conflict` once the operator decides. */
+type LastAttempt =
+  | { via: "source"; kind: Source["value"]; value: string; revision: string }
+  | { via: "upload"; pairs: UploadPair[] };
 
 type Props = {
   /** "skill" or "mcp": MCP uploads drop hidden paths. */
@@ -49,28 +66,69 @@ export default function InstallForm({ kind, installUrl, uploadUrl, sources, subm
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const zipInput = useRef<HTMLInputElement>(null);
+  const lastAttempt = useRef<LastAttempt | null>(null);
   const rules = { skipHidden: kind === "mcp" };
   const current = sources.find((s) => s.value === source);
 
-  const onDone = (data: { ids?: string[] }) => {
-    toast.success(`Installed ${(data.ids ?? []).join(", ") || submitLabel.toLowerCase()}`);
-    // A fresh role/skill proposal (or a direct bind) from this install can
-    // exist in the DB the instant the request above returns — the install
-    // itself ran the auto-bind synchronously. Show it now, not after the
-    // page-reload-for-the-new-card finishes a moment later.
+  const reload = () => {
     qc.invalidateQueries({ queryKey: ["catalog-proposals"] });
     window.setTimeout(() => window.location.reload(), 600);
+  };
+
+  const retry = (attempt: LastAttempt) => {
+    if (attempt.via === "source") install.mutate({ ...attempt, onConflict: "overwrite" });
+    else upload.mutate({ pairs: attempt.pairs, onConflict: "overwrite" });
+  };
+
+  const onDone = (data: InstallResult) => {
+    const installedNow = data.installed ?? data.ids ?? [];
+    const skipped = data.skipped ?? [];
+    const conflicts = data.conflicts ?? [];
+    const errors = data.errors ?? [];
+    if (installedNow.length) toast.success(`Installed ${installedNow.join(", ")}`);
+    if (skipped.length) toast.info(`Already installed, skipped: ${skipped.join(", ")}`);
+    for (const e of errors) toast.error(`${e.path}: ${e.error}`);
+    if (conflicts.length && lastAttempt.current) {
+      const attempt = lastAttempt.current;
+      requestConfirm({
+        title: conflicts.length === 1 ? "Skill already exists" : "Skills already exist",
+        message:
+          conflicts.length === 1
+            ? `"${conflicts[0]}" already exists. Overwrite it with this install?`
+            : `${conflicts.length} skills already exist: ${conflicts.join(", ")}. Overwrite them with this install?`,
+        confirmLabel: "Overwrite",
+        destructive: true,
+        onConfirm: () => retry(attempt),
+      });
+      // Don't schedule the page reload here — it would fire mid-dialog and
+      // yank the "overwrite?" confirm away before the operator can answer.
+      // The retried install's own onDone reloads once conflicts clear.
+      if (installedNow.length) qc.invalidateQueries({ queryKey: ["catalog-proposals"] });
+      return;
+    }
+    if (!installedNow.length && !skipped.length) return;
+    reload();
   };
   const onError = (err: Error) => toast.error(err.message);
 
   const install = useMutation({
-    mutationFn: () =>
-      api<{ ids?: string[] }>(installUrl, { json: { kind: source, source: value.trim(), revision: revision.trim() } }),
+    mutationFn: (args: { kind: Source["value"]; value: string; revision: string; onConflict?: "overwrite" }) =>
+      api<InstallResult>(installUrl, {
+        json: {
+          kind: args.kind,
+          source: args.value.trim(),
+          revision: args.revision.trim(),
+          ...(args.onConflict ? { on_conflict: args.onConflict } : {}),
+        },
+      }),
     onSuccess: onDone,
     onError,
   });
   const upload = useMutation({
-    mutationFn: (pairs: UploadPair[]) => api<{ ids?: string[] }>(uploadUrl, { form: uploadBody(pairs) }),
+    mutationFn: (args: { pairs: UploadPair[]; onConflict?: "overwrite" }) =>
+      api<InstallResult>(uploadUrl, {
+        form: uploadBody(args.pairs, args.onConflict ? { on_conflict: args.onConflict } : undefined),
+      }),
     onSuccess: onDone,
     onError,
   });
@@ -83,7 +141,8 @@ export default function InstallForm({ kind, installUrl, uploadUrl, sources, subm
       return;
     }
     toast.info(`Uploading ${pairs.length} file${pairs.length === 1 ? "" : "s"}…`);
-    upload.mutate(pairs);
+    lastAttempt.current = { via: "upload", pairs };
+    upload.mutate({ pairs });
   };
 
   const chooseFolder = async () => {
@@ -105,12 +164,14 @@ export default function InstallForm({ kind, installUrl, uploadUrl, sources, subm
   };
 
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 space-y-4">
       <form
-        className="grid gap-3 sm:grid-cols-[11rem_1fr_auto]"
+        className="min-w-0 space-y-4"
         onSubmit={(e) => {
           e.preventDefault();
-          if (source !== "disk") install.mutate();
+          if (source === "disk") return;
+          lastAttempt.current = { via: "source", kind: source, value, revision };
+          install.mutate({ kind: source, value, revision });
         }}
       >
         <div className="space-y-1.5">
@@ -128,8 +189,9 @@ export default function InstallForm({ kind, installUrl, uploadUrl, sources, subm
             </SelectContent>
           </Select>
         </div>
+
         {source === "disk" ? (
-          <div className="space-y-1.5 sm:col-span-2">
+          <div className="space-y-1.5">
             <span className="text-sm leading-none font-medium">Folder</span>
             <div
               role="group"
@@ -141,21 +203,25 @@ export default function InstallForm({ kind, installUrl, uploadUrl, sources, subm
               onDragLeave={() => setDragging(false)}
               onDrop={onDrop}
               className={cn(
-                "flex min-h-9 flex-wrap items-center gap-3 rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground transition-colors",
+                "flex min-w-0 flex-col gap-3 rounded-lg border border-dashed px-4 py-5 text-sm text-muted-foreground transition-colors sm:flex-row sm:items-center",
                 dragging && "border-primary bg-primary/5 text-foreground",
               )}
             >
-              <Upload className="size-4" aria-hidden />
-              <span className="flex-1">Drop a folder or .zip here</span>
-              <Button type="button" variant="outline" size="sm" disabled={busy} onClick={chooseFolder}>
-                <FolderOpen /> Choose folder
-              </Button>
-              {kind === "skill" && (
-                <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => zipInput.current?.click()}>
-                  Upload .zip
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <Upload className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <span className="min-w-0 break-words">Drop a folder or .zip here</span>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <Button type="button" variant="outline" size="sm" disabled={busy} onClick={chooseFolder}>
+                  <FolderOpen /> Choose folder
                 </Button>
-              )}
-              {busy && <Loader2 className="size-4 animate-spin" aria-label="Uploading" />}
+                {kind === "skill" && (
+                  <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => zipInput.current?.click()}>
+                    Upload .zip
+                  </Button>
+                )}
+                {busy && <Loader2 className="size-4 animate-spin" aria-label="Uploading" />}
+              </div>
             </div>
             <input
               ref={fileInput}
@@ -186,8 +252,8 @@ export default function InstallForm({ kind, installUrl, uploadUrl, sources, subm
           </div>
         ) : (
           <>
-            <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
-              <div className="space-y-1.5">
+            <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_9rem]">
+              <div className="min-w-0 space-y-1.5">
                 <Label htmlFor={`${ids}-value`}>{source === "git" ? "Repository" : "Package"}</Label>
                 <Input
                   id={`${ids}-value`}
@@ -195,21 +261,25 @@ export default function InstallForm({ kind, installUrl, uploadUrl, sources, subm
                   value={value}
                   onChange={(e) => setValue(e.target.value)}
                   placeholder={current?.placeholder}
+                  className="min-w-0"
                 />
               </div>
-              {source === "git" && (
-                <div className="space-y-1.5">
+              {source === "git" ? (
+                <div className="min-w-0 space-y-1.5">
                   <Label htmlFor={`${ids}-rev`}>Revision</Label>
                   <Input
                     id={`${ids}-rev`}
                     value={revision}
                     onChange={(e) => setRevision(e.target.value)}
-                    placeholder="main (optional)"
+                    placeholder="main"
+                    className="min-w-0"
                   />
                 </div>
+              ) : (
+                <div className="hidden sm:block" aria-hidden />
               )}
             </div>
-            <div className="flex items-end">
+            <div className="flex justify-end">
               <Button type="submit" disabled={busy || !value.trim()} className="w-full sm:w-auto">
                 {install.isPending && <Loader2 className="animate-spin" />}
                 {submitLabel}
@@ -218,7 +288,7 @@ export default function InstallForm({ kind, installUrl, uploadUrl, sources, subm
           </>
         )}
       </form>
-      {help && <p className="text-xs text-muted-foreground">{help}</p>}
+      {help ? <p className="text-xs break-words text-muted-foreground">{help}</p> : null}
     </div>
   );
 }

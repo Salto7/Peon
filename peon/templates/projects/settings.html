@@ -42,9 +42,9 @@
       {% csrf_token %}
       {% for cat in categories %}
       <c-card title="{{ cat.label }}" id="{{ cat.id }}" class="scroll-mt-8" flush>
-        <div class="divide-y">
+        <div class="grid xl:grid-cols-2">
           {% for f in cat.fields %}
-          <div class="grid gap-3 px-5 py-4 md:grid-cols-[1fr_minmax(0,18rem)] md:items-start">
+          <div class="grid gap-3 border-b px-5 py-4 last:border-b-0 md:grid-cols-[1fr_minmax(0,18rem)] md:items-start xl:[&:nth-child(odd):not(:last-child)]:border-r xl:[&:nth-last-child(-n+2)]:border-b-0">
             <div class="space-y-1">
               <label for="{{ f.key }}" class="flex flex-wrap items-center gap-2 text-sm font-medium">
                 {{ f.label }}

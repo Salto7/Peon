@@ -308,18 +308,96 @@
 }
 
 @layer components {
-  /* Catalog cards (roles/skills/mcp/tools): hover glow + a distinct look once
-     selected for bulk delete. */
+  /* Catalog: open canvas, sticky filter bar, quiet cards. */
+  .catalog-shell {
+    @apply min-w-0;
+  }
+  .catalog-toolbar {
+    @apply sticky top-0 z-20 -mx-1 mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-border/70 bg-card/85 px-3 py-2.5 shadow-sm backdrop-blur-md;
+  }
+  .catalog-tabs {
+    @apply inline-flex max-w-full flex-wrap gap-0.5 rounded-lg bg-muted/80 p-1;
+  }
+  .catalog-type-tab {
+    @apply inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors;
+  }
+  .catalog-type-tab:hover {
+    @apply bg-background/50 text-foreground;
+  }
+  .catalog-type-tab.is-active,
+  .catalog-type-tab[aria-selected="true"] {
+    @apply bg-background text-foreground shadow-sm;
+  }
+  .catalog-tab-count {
+    @apply rounded-md bg-muted-foreground/10 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground;
+  }
+  .catalog-type-tab.is-active .catalog-tab-count,
+  .catalog-type-tab[aria-selected="true"] .catalog-tab-count {
+    @apply bg-primary/12 text-foreground;
+  }
+  .catalog-add-kind {
+    @apply h-8 max-w-[11rem] rounded-md border border-input bg-background px-2 text-xs;
+  }
+  .catalog-add-btn {
+    @apply inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90;
+  }
+  .catalog-pending {
+    @apply mb-6 flex flex-wrap gap-2 px-0.5 text-[11px] text-muted-foreground;
+  }
+  .catalog-body {
+    @apply min-w-0 space-y-10;
+  }
+  .catalog-pane {
+    @apply min-w-0 space-y-4;
+  }
+  .catalog-pane-head {
+    @apply flex flex-wrap items-end justify-between gap-3 border-b border-border/60 pb-3;
+  }
+  .catalog-pane-title {
+    @apply text-[15px] font-semibold tracking-tight;
+  }
+  .catalog-pane-desc {
+    @apply mt-0.5 text-xs text-pretty text-muted-foreground;
+  }
+  .catalog-grid {
+    @apply grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 min-[120rem]:grid-cols-5;
+  }
+  /* All: show every pane with its title. One type: hide others (JS) and soften title. */
+  .catalog-shell:not([data-catalog-type="all"]) .catalog-pane-title {
+    @apply sr-only;
+  }
+  .catalog-shell:not([data-catalog-type="all"]) .catalog-pane-head {
+    @apply border-0 pb-0;
+  }
+
   .catalog-block {
-    @apply relative transition-shadow duration-150;
+    @apply relative flex min-w-0 flex-col gap-3 rounded-xl border border-border/80 bg-card p-4 transition-[border-color,background-color,box-shadow] duration-150;
   }
   .catalog-block:hover {
-    @apply border-ring/60 shadow-[0_0_0_1px_var(--ring),0_0_18px_-2px_var(--ring)];
+    @apply border-border bg-card shadow-sm;
   }
   .catalog-block:has(.catalog-block-check:checked) {
-    @apply border-primary bg-primary/5 shadow-[0_0_0_1px_var(--primary),0_0_22px_-2px_var(--primary)];
+    @apply border-primary/50 bg-primary/5;
   }
   .catalog-block-check {
     @apply mt-0.5 size-4 shrink-0 accent-primary;
+  }
+  .catalog-block-title {
+    @apply min-w-0 truncate font-mono text-[13px] font-medium tracking-tight;
+  }
+  .catalog-block-meta {
+    @apply mt-0.5 truncate font-mono text-xs text-muted-foreground;
+  }
+  .catalog-block-body {
+    @apply line-clamp-3 text-sm leading-relaxed text-pretty text-muted-foreground;
+  }
+  .catalog-block-tags {
+    @apply mt-auto flex flex-wrap gap-1.5;
+  }
+  .catalog-relations {
+    @apply min-w-0 space-y-3 rounded-xl border border-border/70 bg-muted/20 p-4;
+  }
+  .catalog-relations-title {
+    @apply text-sm font-semibold tracking-tight;
   }
 }

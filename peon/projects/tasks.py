@@ -26,10 +26,10 @@ import dramatiq
 from django.conf import settings
 from django.db import close_old_connections
 
-from agent_runtime.registry import RuntimeRegistry
+from agent_runtime.registry import SandboxDriverRegistry
 from peon.projects.job_claim import job_slots_available, mark_job_running
-from peon.projects.lab_runtime import Lab
-from peon.projects.models import Job, JobStatus, SandboxRuntime
+from peon.projects.lab_service import LabService
+from peon.projects.models import Job, JobStatus, SandboxRuntime, ToolTestRun
 from peon.projects.sandbox import ProjectSandbox
 
 logger = logging.getLogger(__name__)
@@ -135,7 +135,7 @@ def enqueue_sandbox_cleanup(project_id: str, *, runtime_id: str = "") -> dict:
     if not pid:
         return {"action": "skipped", "reason": "no project_id"}
     rid = SandboxRuntime.resolve(runtime_id)
-    registry = RuntimeRegistry.shared()
+    registry = SandboxDriverRegistry.shared()
     registry.register_builtin()
     runtime = registry.get(rid)
     name = runtime.resource_name(
@@ -157,7 +157,7 @@ def enqueue_sandbox_cleanup(project_id: str, *, runtime_id: str = "") -> dict:
 
 
 @dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
-def decommission_lab() -> None:
+def decommission_lab(force: bool = False) -> None:
     """Remove the lab container on the worker.
 
     Same rationale as project sandbox cleanup: ``docker rm`` on web can drop
@@ -165,8 +165,8 @@ def decommission_lab() -> None:
     """
     close_old_connections()
     try:
-        result = Lab.shared().decommission()
-        logger.info("decommission_lab → %s", result)
+        result = LabService.shared().decommission(force=force)
+        logger.info("decommission_lab(force=%s) → %s", force, result)
     except Exception:
         logger.exception("decommission_lab failed")
     finally:
@@ -174,37 +174,122 @@ def decommission_lab() -> None:
 
 
 @dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
-def reset_lab() -> None:
+def reset_lab(force: bool = False) -> None:
     """Decommission then set up fresh, on the worker (same docker-flap rationale)."""
     close_old_connections()
     try:
-        result = Lab.shared().reset()
-        logger.info("reset_lab → %s", result)
+        result = LabService.shared().reset(force=force)
+        logger.info("reset_lab(force=%s) → %s", force, result)
     except Exception:
         logger.exception("reset_lab failed")
     finally:
         close_old_connections()
 
 
-def _enqueue_lab_action(actor, inline) -> dict:
-    """Queue a lab lifecycle action on the worker, or run it inline when Dramatiq is off."""
-    lab = Lab.shared()
+@dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
+def reboot_lab(force: bool = False) -> None:
+    """Restart the lab container in place, on the worker (same docker-flap rationale)."""
+    close_old_connections()
+    try:
+        result = LabService.shared().reboot(force=force)
+        logger.info("reboot_lab(force=%s) → %s", force, result)
+    except Exception:
+        logger.exception("reboot_lab failed")
+    finally:
+        close_old_connections()
+
+
+def _enqueue_lab_action(actor, inline, *, force: bool) -> dict:
+    """Queue a lab lifecycle action on the worker, or run it inline when Dramatiq is off.
+
+    A queued action's lock check happens later, inside the worker — too
+    late to tell the operator "busy" synchronously. Probe the lock here
+    first (acquire-and-release, not held across the real queued run) so a
+    busy lab is reported immediately instead of as a silent worker-log
+    failure minutes later; ``force`` skips the probe same as it skips the
+    real lock.
+    """
+    lab = LabService.shared()
     name = lab.container_name()
+    if not force:
+        try:
+            with lab._exclusive():
+                pass
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc), "name": name, "lab": lab.status()}
     if _dramatiq_enabled():
-        actor.send()
+        actor.send(force)
         return {"ok": True, "action": "queued", "name": name, "lab": lab.status()}
-    result = inline()
+    result = inline(force=force)
     result.setdefault("action", "removed" if result.get("removed") else result.get("reason") or "missing")
     result["lab"] = lab.status()
     return result
 
 
-def enqueue_lab_decommission() -> dict:
-    return _enqueue_lab_action(decommission_lab, Lab.shared().decommission)
+def enqueue_lab_decommission(*, force: bool = False) -> dict:
+    return _enqueue_lab_action(decommission_lab, LabService.shared().decommission, force=force)
 
 
-def enqueue_lab_reset() -> dict:
-    return _enqueue_lab_action(reset_lab, Lab.shared().reset)
+def enqueue_lab_reset(*, force: bool = False) -> dict:
+    return _enqueue_lab_action(reset_lab, LabService.shared().reset, force=force)
+
+
+def enqueue_lab_reboot(*, force: bool = False) -> dict:
+    return _enqueue_lab_action(reboot_lab, LabService.shared().reboot, force=force)
+
+
+@dramatiq.actor(queue_name="peon.jobs", max_retries=0, time_limit=900_000)
+def run_tool_test(run_id: str, yaml_text: str, install_script: str) -> None:
+    """Run one install test on the worker (same docker-flap rationale as the
+    lab lifecycle actors — ``test_tool_install`` starts with the same
+    ``_ensure_clean`` destroy+recreate). ``max_retries=0``: a failed run
+    should report back as a failure, not silently retry a destructive
+    docker operation the browser already stopped waiting on.
+    """
+    close_old_connections()
+    try:
+        result = LabService.shared().test_tool_install(
+            yaml_text=yaml_text, install_script=install_script
+        )
+    except Exception as exc:  # noqa: BLE001 — reported to the poller, not raised
+        logger.exception("run_tool_test failed")
+        result = {
+            "ok": False,
+            "verified": False,
+            "message": str(exc),
+            "log": "",
+            "lab": LabService.shared().status(),
+            "tool_id": "",
+        }
+    ToolTestRun.objects.filter(pk=run_id).update(status="done", result=result)
+    close_old_connections()
+
+
+def enqueue_tool_test(*, yaml_text: str, install_script: str) -> dict:
+    """Start one install test; the caller polls ``ToolTestRun`` for the result.
+
+    No ``force`` here — test installs stay strictly mutex'd, unlike the
+    lifecycle actions (an operator-confirmed override makes sense for "this
+    lab seems stuck"; it does not for "let two installs race").
+    """
+    lab = LabService.shared()
+    try:
+        with lab._exclusive():
+            pass
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc), "lab": lab.status()}
+
+    run = ToolTestRun.objects.create(tool_id="")
+    if _dramatiq_enabled():
+        run_tool_test.send(str(run.pk), yaml_text, install_script)
+    else:
+        result = LabService.shared().test_tool_install(
+            yaml_text=yaml_text, install_script=install_script
+        )
+        run.status = "done"
+        run.result = result
+        run.save(update_fields=["status", "result"])
+    return {"ok": True, "run_id": str(run.pk)}
 
 
 # Self re-arming scanners. Exactly one chain per scanner: ``_arm`` stores a
@@ -344,3 +429,35 @@ def ensure_dream_scheduler(*, force: bool = False) -> bool:
     except Exception:
         logger.warning("ensure_dream_scheduler failed", exc_info=True)
         return False
+
+
+@dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=600_000)
+def resweep_catalog_bindings() -> None:
+    """Re-resolve any skill/MCP currently unbound from any role.
+
+    Enqueued whenever a role is created or edited (``PlatformCatalog.
+    upsert_role``, deferred to that transaction's commit) — a role change may
+    be exactly what a previously-orphaned item needed. Cheap when there is
+    nothing to do: one anti-join query, nothing else.
+    """
+    close_old_connections()
+    try:
+        from peon.projects.platform_catalog import PlatformCatalog
+
+        result = PlatformCatalog.shared().resweep_unbound_owners()
+        if result.get("resolved") or result.get("remaining"):
+            logger.info("resweep_catalog_bindings -> %s", result)
+    except Exception:
+        logger.exception("resweep_catalog_bindings failed")
+    finally:
+        close_old_connections()
+
+
+def enqueue_catalog_resweep() -> dict:
+    """Queue a catalog resweep on the worker, or run it inline when Dramatiq is off."""
+    if _dramatiq_enabled():
+        resweep_catalog_bindings.send()
+        return {"ok": True, "action": "queued"}
+    from peon.projects.platform_catalog import PlatformCatalog
+
+    return {"ok": True, **PlatformCatalog.shared().resweep_unbound_owners()}

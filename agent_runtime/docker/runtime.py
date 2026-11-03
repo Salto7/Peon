@@ -8,8 +8,14 @@ import logging
 import re
 from pathlib import Path
 
-from agent_runtime.api import Runtime, RuntimeSession, RuntimeSpec, SessionInfo, TerminalHandle
-from agent_runtime.docker.engine import DockerEngine
+from agent_runtime.api import (
+    SandboxDriver,
+    SandboxSession,
+    SandboxSpec,
+    SessionInfo,
+    TerminalHandle,
+)
+from agent_runtime.docker.engine import DockerClient
 from agent_runtime.docker.session import DockerSession
 from agent_runtime.pty import PtyTerminal
 from agent_runtime.util import resource_name as make_resource_name
@@ -20,11 +26,11 @@ logger = logging.getLogger(__name__)
 _SANDBOX_SHM = "1gb"
 
 
-class DockerRuntime(Runtime):
+class DockerSandboxDriver(SandboxDriver):
     id = "sandbox"
 
     @staticmethod
-    def mode_for(spec: RuntimeSpec) -> str:
+    def mode_for(spec: SandboxSpec) -> str:
         if spec.role == "lab":
             return "lab"
         if spec.role == "shared":
@@ -34,10 +40,10 @@ class DockerRuntime(Runtime):
     def resource_name(self, project_id: str, *, prefix: str, shared: bool) -> str:
         return make_resource_name(project_id, prefix=prefix, shared=shared)
 
-    def _engine(self) -> DockerEngine:
-        return DockerEngine.shared()
+    def _engine(self) -> DockerClient:
+        return DockerClient.shared()
 
-    def _volumes(self, spec: RuntimeSpec) -> list[str]:
+    def _volumes(self, spec: SandboxSpec) -> list[str]:
         """Bind specs (``src:dst[:ro]``) as the Docker SDK ``volumes`` list."""
         bind = self._engine().host_bind_path
         out: list[str] = []
@@ -45,8 +51,6 @@ class DockerRuntime(Runtime):
             out.append(f"{bind(Path(spec.workspace_host))}:/workspace")
         if spec.skills_host:
             out.append(f"{bind(Path(spec.skills_host))}:/skills:ro")
-        if spec.skills_imported_host:
-            out.append(f"{bind(Path(spec.skills_imported_host))}:/skills-imported:ro")
         for host, container in spec.extra_ro_mounts or []:
             if not host or not container or not container.startswith("/"):
                 continue
@@ -74,7 +78,7 @@ class DockerRuntime(Runtime):
         """
         return cls._VOLUME_PATH.sub(r"\1", volume)
 
-    def _runtime_fingerprint(self, spec: RuntimeSpec, volumes: list[str]) -> str:
+    def _runtime_fingerprint(self, spec: SandboxSpec, volumes: list[str]) -> str:
         """Identify the image/configuration a reusable sandbox was created with."""
         image_ref = (spec.image or "").strip()
         image = self._engine().image_id(image_ref)
@@ -91,7 +95,7 @@ class DockerRuntime(Runtime):
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()[:32]
 
-    def provision(self, spec: RuntimeSpec) -> RuntimeSession:
+    def provision(self, spec: SandboxSpec) -> SandboxSession:
         cli = self._engine()
         cli.require_daemon()
         name = (spec.name or "").strip()
@@ -104,7 +108,7 @@ class DockerRuntime(Runtime):
         # Services on the Peon machine are reachable from the sandbox.
         # The sandbox stays off the Compose network.
         extra_hosts = {"host.docker.internal": "host-gateway", **(spec.extra_hosts or {})}
-        spec = RuntimeSpec(**{**spec.__dict__, "extra_hosts": extra_hosts})
+        spec = SandboxSpec(**{**spec.__dict__, "extra_hosts": extra_hosts})
         fingerprint = self._runtime_fingerprint(spec, volumes)
         labels = dict(spec.labels or {})
         labels["peon.runtime_fingerprint"] = fingerprint
@@ -131,10 +135,10 @@ class DockerRuntime(Runtime):
         )
         return self._session(spec, action=action)
 
-    def attach(self, spec: RuntimeSpec) -> RuntimeSession:
+    def attach(self, spec: SandboxSpec) -> SandboxSession:
         return self._session(spec, action="reused")
 
-    def _session(self, spec: RuntimeSpec, *, action: str) -> DockerSession:
+    def _session(self, spec: SandboxSpec, *, action: str) -> DockerSession:
         info = SessionInfo(
             project_id=spec.project_id,
             name=spec.name,
@@ -150,7 +154,7 @@ class DockerRuntime(Runtime):
             logger.info("base-command probe skipped for %s: %s", spec.name, exc)
         return session
 
-    def destroy(self, spec: RuntimeSpec) -> dict:
+    def destroy(self, spec: SandboxSpec) -> dict:
         name = (spec.name or "").strip()
         if not name:
             return {"ok": False, "removed": False, "error": "name required"}
@@ -167,7 +171,19 @@ class DockerRuntime(Runtime):
             return {"ok": True, "removed": False, "name": name, "reason": "not found"}
         return {"ok": False, "removed": False, "name": name, "error": err}
 
-    def status(self, spec: RuntimeSpec) -> dict:
+    def restart(self, spec: SandboxSpec) -> dict:
+        name = (spec.name or "").strip()
+        if not name:
+            return {"ok": False, "error": "name required"}
+        cli = self._engine()
+        if not cli.available():
+            return {"ok": False, "name": name, "error": "docker unavailable"}
+        proc = cli.restart(name)
+        if proc.ok:
+            return {"ok": True, "name": name}
+        return {"ok": False, "name": name, "error": (proc.stderr or proc.stdout or "").strip()}
+
+    def status(self, spec: SandboxSpec) -> dict:
         name = spec.name
         image = spec.image
         cli = self._engine()
@@ -197,7 +213,7 @@ class DockerRuntime(Runtime):
             return []
         return cli.ps_ids(label)
 
-    def open_terminal(self, spec: RuntimeSpec, *, cols: int, rows: int) -> TerminalHandle:
+    def open_terminal(self, spec: SandboxSpec, *, cols: int, rows: int) -> TerminalHandle:
         workdir = spec.container_workdir or "/workspace"
         argv = [
             self._engine().docker_bin(),

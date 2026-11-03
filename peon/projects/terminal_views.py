@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -12,7 +11,7 @@ from django.views.decorators.http import require_GET, require_http_methods
 from peon.projects.http_helpers import parse_json_body, sse_response, with_project_context
 from peon.projects.models import Project
 from peon.projects.streaming import audit_project_stream
-from peon.projects.terminal_session import get_registry
+from peon.projects.terminal_session import decode_input_bytes, get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -78,28 +77,7 @@ def project_terminal_stream(request: HttpRequest, pk, session_id: str) -> HttpRe
     sess, err = _session_or_404(project, session_id)
     if err is not None:
         return err
-    reg = get_registry()
-
-    def event_stream():
-        # ``retry`` keeps EventSource from hammering a restarted dev server.
-        yield "retry: 2000\nevent: ready\ndata: ok\n\n"
-        try:
-            for chunk in reg.iter_output(sess):
-                if chunk is None:
-                    # Comment line: keeps proxies from timing out the idle stream
-                    # and lets the server notice a client that went away.
-                    yield ": ping\n\n"
-                    continue
-                payload = base64.b64encode(chunk).decode("ascii")
-                yield f"event: out\ndata: {payload}\n\n"
-        except Exception as exc:
-            logger.warning("terminal stream %s failed: %s", sess.id[:8], exc)
-            yield f"event: fail\ndata: {str(exc)[:200]}\n\n"
-            return
-        # Only reached when the shell actually ended (or was closed).
-        yield "event: exit\ndata: closed\n\n"
-
-    return sse_response(request, event_stream())
+    return sse_response(request, get_registry().iter_sse_events(sess))
 
 
 @require_http_methods(["POST"])
@@ -114,12 +92,7 @@ def project_terminal_input(request: HttpRequest, pk, session_id: str) -> JsonRes
     if raw is None:
         raw = request.POST.get("data") or ""
     try:
-        if isinstance(raw, str) and body.get("encoding") == "base64":
-            data = base64.b64decode(raw)
-        elif isinstance(raw, str):
-            data = raw.encode("utf-8", errors="replace")
-        else:
-            data = bytes(raw or b"")
+        data = decode_input_bytes(raw, base64_encoded=body.get("encoding") == "base64")
     except Exception:
         return JsonResponse({"ok": False, "error": "Invalid input"}, status=400)
     try:

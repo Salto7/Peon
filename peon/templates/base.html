@@ -52,6 +52,7 @@
         <c-nav-section label="Lab">
           <c-nav-item href="{% url 'lab_toolsmith' %}" icon="hammer" label="Toolsmith" active="{% if lab_section == 'toolsmith' %}1{% endif %}" />
           <c-nav-item href="{% url 'lab_dream' %}" icon="brain" label="Dream" active="{% if lab_section == 'dream' %}1{% endif %}" />
+          <c-nav-item href="{% url 'lab_workflows' %}" icon="workflow" label="Workflows" active="{% if lab_section == 'workflows' %}1{% endif %}" />
         </c-nav-section>
         {% block sidebar_extra %}{% endblock %}
       </nav>
@@ -76,7 +77,7 @@
         <span class="text-sm font-semibold">Peon</span>
         <c-button variant="ghost" size="icon-sm" class="ml-auto" data-palette-open aria-label="Search">{% icon "search" %}</c-button>
       </header>
-      <main id="main" tabindex="-1" class="{% block main_class %}mx-auto w-full max-w-6xl flex-1 px-4 py-6 md:px-8 md:py-8{% endblock %}">
+      <main id="main" tabindex="-1" class="{% block main_class %}flex w-full min-w-0 flex-1 flex-col px-4 py-6 md:px-8 md:py-8{% endblock %}">
         {% block content %}{% endblock %}
       </main>
     </div>

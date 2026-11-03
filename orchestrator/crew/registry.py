@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import importlib
 
-from orchestrator.agent.runtime_base import AgentRuntimeBase
+from orchestrator.agent.runtime_base import AgentExecutorBase
 from orchestrator.config import get_config
 
 # Job-level modules (one Job / role tool loop).
 _JOB_MODULES: dict[str, str] = {
-    "crewai": "orchestrator.crew.runtimes.job_crewai:CrewAIJobRuntime",
+    "crewai": "orchestrator.crew.runtimes.job_crewai:CrewAIAgentExecutor",
 }
 
-_job_cached: AgentRuntimeBase | None = None
+_job_cached: AgentExecutorBase | None = None
 _job_cached_id: str | None = None
 
 
@@ -38,7 +38,7 @@ def agent_module_id() -> str:
     """Return configured module id (crewai only)."""
     return (get_config().agent_module or "crewai").strip().lower() or "crewai"
 
-def get_job_runtime() -> AgentRuntimeBase:
+def get_job_runtime() -> AgentExecutorBase:
     """Return the Job-level agent runtime for ``AGENT_MODULE``."""
     global _job_cached, _job_cached_id
     module_id = agent_module_id()

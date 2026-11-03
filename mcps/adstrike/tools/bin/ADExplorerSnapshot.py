@@ -1,2 +1,0 @@
-import adexpsnapshot
-adexpsnapshot.main()

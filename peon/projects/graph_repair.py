@@ -5,9 +5,21 @@ from __future__ import annotations
 from typing import Any
 
 from peon.projects.asset_graph import AssetGraphEngine
+from peon.projects.asset_model import RELATIONS, classify
 from peon.projects.models import Finding, Project, RulesOfEngagement
 from peon.projects.target_discovery import SubjectCanonicalizer
 from peon.projects.target_shapes import canonical_asset_key, coerce_targets, detect_shape
+
+
+def _is_unconnectable(typ: str, value: str) -> bool:
+    """True for a value that can never stand alone as this relation's target.
+
+    Same check ``target_discovery._normalize_subjects`` uses going forward
+    (a bare port number classified as a ``port`` relation target, per
+    ``asset_model.RELATIONS``) — reused here to clear out nodes/candidates a
+    producer stored before that pairing existed, rather than a second rule.
+    """
+    return value.isdigit() and classify(typ, value).slug in RELATIONS["port"].targets
 
 
 def _provenance_paths(project: Project) -> set[str]:
@@ -89,7 +101,8 @@ def repair_project_graph(project: Project, *, persist: bool = True) -> dict[str,
         for raw in coerce_targets(roe.candidates):
             value = str(raw.get("value") or "").strip()
             key = value.lower()
-            if key in provenance and key not in subjects:
+            stale_provenance = key in provenance and key not in subjects
+            if stale_provenance or _is_unconnectable(str(raw.get("type") or ""), value):
                 removed_candidates.append(value)
                 continue
             kept.append(raw)
@@ -105,11 +118,10 @@ def repair_project_graph(project: Project, *, persist: bool = True) -> dict[str,
         value = str(asset.get("value") or "").strip()
         key = value.lower()
         typ = str(asset.get("type") or "").strip().lower()
-        if (
-            typ in {"file", "path"}
-            and key in provenance
-            and key not in subjects
-        ):
+        stale_provenance = (
+            typ in {"file", "path"} and key in provenance and key not in subjects
+        )
+        if stale_provenance or _is_unconnectable(typ, value):
             drop_ids.add(str(asset.get("id") or ""))
             removed_assets.append(value)
             continue

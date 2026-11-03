@@ -108,11 +108,12 @@ export async function pairsFromDrop(data: DataTransfer, rules: UploadRules): Pro
   return pairsFromFileList(data.files, rules);
 }
 
-export function uploadBody(pairs: UploadPair[]): FormData {
+export function uploadBody(pairs: UploadPair[], extra?: Record<string, string>): FormData {
   const body = new FormData();
   for (const { file, path } of pairs) {
     body.append("file", file, file.name);
     body.append("path", path);
   }
+  for (const [key, value] of Object.entries(extra ?? {})) body.append(key, value);
   return body;
 }

@@ -7,8 +7,9 @@ FROM kalilinux/kali-rolling
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl unzip nodejs npm python3 python3-pip python3-venv \
+    bash ca-certificates curl unzip nodejs npm python3 python3-pip python3-venv pipx \
     python-is-python3 python3-requests python3-yaml python3-bs4 \
+    build-essential python3-dev \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf "$(command -v nodejs)" /usr/local/bin/node \
     && node --version \
@@ -16,6 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && npx --version \
     && uv --version \
     && uvx --version \
+    && pipx --version \
+    && gcc --version \
     && python3 -m venv /opt/peon-mcp-client \
     && /opt/peon-mcp-client/bin/pip install --no-cache-dir 'mcp>=1.10,<3' 'fastmcp>=2.0,<3' \
     && mkdir -p /etc/peon /opt/peon-mcp /workspace

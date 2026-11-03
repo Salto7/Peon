@@ -1,0 +1,8 @@
+id: bbot
+description: 'BBOT is an open-source framework for recursive internet-wide reconnaissance and attack-surface mapping.'
+binary: bbot
+install:
+  - type: custom
+    command: bbot.sh
+verify:
+  - command: bbot --help

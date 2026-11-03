@@ -9,8 +9,8 @@ After the project stops, write a **standalone** `findings/report.md` from existi
 evidence only. **Do not collect new evidence or invent discoveries.**
 
 ## Order
-Runs **last** on every project (planner bookend): `project-manager` → specialist
-skills → **`analyzer`** (this skill) → `findings/report.md`.
+Runs **last** on every project (planner bookend): the engagement-PM role →
+specialist skills → this skill (analyzer) → `findings/report.md`.
 
 ## Sources (read-only)
 1. Structured findings (`list_findings` / DB / `workspace/findings_queue.jsonl`)

@@ -48,7 +48,7 @@ Do not import `skill_entry` or call `run_binary`. Do not tell the agent to invok
 
 ## Install notes
 
-If the host attached a tools-suggestor recipe, add `references/INSTALL.md` with one fenced `install:` block copied from that recipe, and link it from SKILL.md. Do not paste apt/git/pip steps into the body.
+If the host attached a tool-install recipe (produced by the platform's tool-suggestion flow), add `references/INSTALL.md` with one fenced `install:` block copied from that recipe, and link it from SKILL.md. Do not paste apt/git/pip steps into the body.
 
 ## Other rules
 

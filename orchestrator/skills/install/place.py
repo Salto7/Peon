@@ -9,12 +9,20 @@ import yaml
 
 from orchestrator.config import get_config
 from orchestrator.skills.common import split_frontmatter
-from orchestrator.skills.install.lockfile import record
 from orchestrator.skills.install.validate import validate_pack
 from orchestrator.skills.manifest import ParseProfile, SkillParseError, find_skill_manifest
 from orchestrator.skills.model import parse_skill_md
 from orchestrator.skills.providers.base import CLAUDE_PROVIDER, PEON_PROVIDER, SkillId
 from orchestrator.skills.registry import SkillRegistry
+
+
+class SkillConflictError(ValueError):
+    """A pack's frontmatter name collides with an already-installed skill."""
+
+    def __init__(self, name: str, existing_provider: str) -> None:
+        super().__init__(f"skill {name!r} already exists ({existing_provider})")
+        self.name = name
+        self.existing_provider = existing_provider
 
 
 def _frontmatter_name(skill_dir: Path) -> str:
@@ -71,8 +79,14 @@ def _stamp_claude_provider(manifest: Path) -> None:
     manifest.write_text(f"---\n{dumped}\n---\n\n{(body or '').strip()}\n", encoding="utf-8")
 
 
-def place_pack(skill_dir: Path, *, source: str, revision: str = "") -> str:
-    """Validate, reject Peon-name collisions, then copy into ``skills/``."""
+def place_pack(skill_dir: Path, *, overwrite: bool = False) -> str:
+    """Validate, then copy into ``skills/``.
+
+    Raises ``SkillConflictError`` when a skill of that name already exists
+    and ``overwrite`` is false — regardless of the existing pack's provider,
+    so a Claude-provider pack is protected the same as a Peon one instead of
+    being silently replaced.
+    """
     import tempfile
 
     root = Path(skill_dir)
@@ -108,9 +122,9 @@ def place_pack(skill_dir: Path, *, source: str, revision: str = "") -> str:
         errors = validate_pack(work)
         if errors:
             raise ValueError("; ".join(errors))
-        peon = SkillRegistry.shared().get(name)
-        if peon is not None and peon.provider == PEON_PROVIDER:
-            raise ValueError(f"skill name {name} is already a Peon skill")
+        existing = SkillRegistry.shared().get(name)
+        if existing is not None and not overwrite:
+            raise SkillConflictError(name, existing.provider)
         dest_root = Path(get_config().skills_dir)
         dest_root.mkdir(parents=True, exist_ok=True)
         dest = dest_root / name
@@ -126,7 +140,6 @@ def place_pack(skill_dir: Path, *, source: str, revision: str = "") -> str:
                 )
             copied_manifest.rename(canonical_manifest)
         _stamp_claude_provider(canonical_manifest)
-        record(name=name, source=source, revision=revision, skill_md=canonical_manifest)
         SkillRegistry.shared().invalidate()
         return name
     finally:

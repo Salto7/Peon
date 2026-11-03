@@ -1,6 +1,6 @@
 """Subprocess helper for runtime backends only.
 
-Role assets, catalog CLIs, and operator commands go through ``RuntimeSession.exec``.
+Role assets, catalog CLIs, and operator commands go through ``SandboxSession.exec``.
 """
 
 from __future__ import annotations

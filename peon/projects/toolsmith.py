@@ -17,10 +17,11 @@ from orchestrator.toolsmith import PeonAuthoring
 from orchestrator.utils.llm import LLM_NOT_CONFIGURED, llm_configured
 from orchestrator.utils.strings import is_kebab
 from peon.projects.catalog_cards.tool import ToolCards
-from peon.projects.http_helpers import json_errors, parse_json_body, split_csv
-from peon.projects.lab_runtime import Lab
+from peon.projects.http_helpers import json_errors, parse_json_body, split_csv, sse_response
+from peon.projects.lab_service import LabService
 from peon.projects.llm_proxy import LlmProxy
 from peon.projects.opencode import PROXY_REQUIRED_MSG, OpenCodeEngine
+from peon.projects.terminal_session import LAB_SCOPE, decode_input_bytes, get_registry
 
 ENGINES = {"peon": PeonAuthoring, "opencode": OpenCodeEngine}
 
@@ -100,7 +101,7 @@ def toolsmith_page(request: HttpRequest) -> HttpResponse:
             "authoring_ready": llm_configured(),
             "opencode_ready": bool(llm_configured() and proxy["enabled"]),
             "tools": ToolCards.summaries(),
-            "lab": Lab.shared().status(),
+            "lab": LabService.shared().status(),
         },
     )
 
@@ -189,27 +190,54 @@ def toolsmith_save_tool(request: HttpRequest) -> JsonResponse:
     )
 
 
+def _test_result_response(result: dict) -> dict:
+    """Shape one ``test_tool_install``-style result dict for the frontend —
+    shared by the inline-fallback start response and the status poll."""
+    return {
+        "ok": True,
+        "install_ok": bool(result.get("ok")),
+        "verified": bool(result.get("verified")),
+        "message": result.get("message") or "",
+        "log": result.get("log") or "",
+        "verify_output": result.get("verify_output") or "",
+        "verify_steps": result.get("verify_steps") or [],
+        "lab": result.get("lab") or LabService.shared().status(),
+        "tool_id": result.get("tool_id") or "",
+    }
+
+
 @require_http_methods(["POST"])
 @json_errors
 def toolsmith_test_tool(request: HttpRequest) -> JsonResponse:
+    """Start an install test on the worker (same web-side docker-rm network
+    flap rationale as the lab lifecycle actions — ``docker rm``/``docker
+    run`` for the lab container inside this view's own request can drop the
+    browser's connection to it). Answers immediately with a run id; the
+    frontend polls ``toolsmith_test_tool_status`` for the actual result.
+    """
+    from peon.projects.tasks import enqueue_tool_test
+
     body = _parse_body(request)
-    result = Lab.shared().test_tool_install(
+    outcome = enqueue_tool_test(
         yaml_text=str(body.get("yaml") or ""),
         install_script=str(body.get("install_script") or ""),
     )
-    return JsonResponse(
-        {
-            "ok": True,
-            "install_ok": bool(result.get("ok")),
-            "verified": bool(result.get("verified")),
-            "message": result.get("message") or "",
-            "log": result.get("log") or "",
-            "verify_output": result.get("verify_output") or "",
-            "verify_steps": result.get("verify_steps") or [],
-            "lab": result.get("lab") or Lab.shared().status(),
-            "tool_id": result.get("tool_id") or "",
-        }
-    )
+    if not outcome.get("ok"):
+        status = 409 if _LAB_BUSY in str(outcome.get("error") or "") else 500
+        return JsonResponse(outcome, status=status)
+    return JsonResponse(outcome)
+
+
+@require_GET
+def toolsmith_test_tool_status(request: HttpRequest, run_id: str) -> JsonResponse:
+    from peon.projects.models import ToolTestRun
+
+    run = ToolTestRun.objects.filter(pk=run_id).first()
+    if run is None:
+        return JsonResponse({"ok": False, "error": "unknown test run"}, status=404)
+    if run.status != "done":
+        return JsonResponse({"ok": True, "status": "running"})
+    return JsonResponse({**_test_result_response(run.result or {}), "status": "done"})
 
 
 @require_http_methods(["POST"])
@@ -240,27 +268,56 @@ def toolsmith_replan_tool(request: HttpRequest) -> JsonResponse:
 
 @require_GET
 def toolsmith_lab_status(request: HttpRequest) -> JsonResponse:
-    return JsonResponse({"ok": True, "lab": Lab.shared().status()})
+    return JsonResponse({"ok": True, "lab": LabService.shared().status()})
+
+
+_LAB_BUSY = "is busy with another"
 
 
 def _lab_response(action) -> JsonResponse:
-    """Run one lab lifecycle action; always answer with the lab's own status."""
+    """Run one lab lifecycle action; always answer with the lab's own status.
+
+    A "lab busy" mutex rejection — raised directly (``setup``/``test``, which
+    run inline) or returned as ``{"ok": False, ...}`` (``enqueue_lab_*``'s own
+    pre-enqueue probe) — answers 409 so the frontend can reliably offer a
+    force-retry instead of just showing a generic error.
+    """
     try:
         result = action()
-        if "lab" not in result:
-            result["lab"] = Lab.shared().status()
-        return JsonResponse(result)
     except Exception as exc:  # noqa: BLE001
+        status = 409 if _LAB_BUSY in str(exc) else 500
         return JsonResponse(
-            {"ok": False, "error": str(exc), "lab": Lab.shared().status()},
-            status=500,
+            {"ok": False, "error": str(exc), "lab": LabService.shared().status()},
+            status=status,
         )
+    if "lab" not in result:
+        result["lab"] = LabService.shared().status()
+    status = 409 if not result.get("ok") and _LAB_BUSY in str(result.get("error") or "") else 200
+    return JsonResponse(result, status=status)
+
+
+def _force_flag(request: HttpRequest) -> bool:
+    body = _parse_body(request)
+    raw = body.get("force")
+    if raw is None:
+        raw = request.POST.get("force")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @require_http_methods(["POST"])
 def toolsmith_lab_setup(request: HttpRequest) -> JsonResponse:
     """Ensure the lab is running — reused as-is, never wiped."""
-    return _lab_response(Lab.shared().setup)
+    force = _force_flag(request)
+    return _lab_response(lambda: LabService.shared().setup(force=force))
+
+
+@require_http_methods(["POST"])
+def toolsmith_lab_reboot(request: HttpRequest) -> JsonResponse:
+    """Queue a restart in place (no wipe) on the worker — unstick a hung lab."""
+    from peon.projects.tasks import enqueue_lab_reboot
+
+    force = _force_flag(request)
+    return _lab_response(lambda: enqueue_lab_reboot(force=force))
 
 
 @require_http_methods(["POST"])
@@ -268,7 +325,8 @@ def toolsmith_lab_decommission(request: HttpRequest) -> JsonResponse:
     """Queue lab removal on the worker (avoids a web-side docker-rm network flap)."""
     from peon.projects.tasks import enqueue_lab_decommission
 
-    return _lab_response(enqueue_lab_decommission)
+    force = _force_flag(request)
+    return _lab_response(lambda: enqueue_lab_decommission(force=force))
 
 
 @require_http_methods(["POST"])
@@ -276,7 +334,89 @@ def toolsmith_lab_reset(request: HttpRequest) -> JsonResponse:
     """Queue a decommission + fresh setup on the worker — guarantees one clean lab."""
     from peon.projects.tasks import enqueue_lab_reset
 
-    return _lab_response(enqueue_lab_reset)
+    force = _force_flag(request)
+    return _lab_response(lambda: enqueue_lab_reset(force=force))
+
+
+def _lab_session_or_404(session_id: str):
+    sess = get_registry().get(session_id, LAB_SCOPE)
+    if sess is None:
+        return None, JsonResponse({"ok": False, "error": "Session not found"}, status=404)
+    return sess, None
+
+
+@require_http_methods(["POST"])
+def toolsmith_lab_terminal_open(request: HttpRequest) -> JsonResponse:
+    """Open (or reuse) the one interactive shell into the running lab container."""
+    body = parse_json_body(request)
+    try:
+        cols = int(body.get("cols") or request.POST.get("cols") or 80)
+        rows = int(body.get("rows") or request.POST.get("rows") or 24)
+    except (TypeError, ValueError):
+        cols, rows = 80, 24
+    try:
+        sess, reused = get_registry().open_lab(cols=cols, rows=rows)
+    except RuntimeError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=503)
+    return JsonResponse(
+        {
+            "ok": True,
+            "session_id": sess.id,
+            "container": sess.container,
+            "cols": sess.cols,
+            "rows": sess.rows,
+            "reused": reused,
+        }
+    )
+
+
+@require_GET
+def toolsmith_lab_terminal_stream(request: HttpRequest, session_id: str) -> HttpResponse:
+    sess, err = _lab_session_or_404(session_id)
+    if err is not None:
+        return err
+    return sse_response(request, get_registry().iter_sse_events(sess))
+
+
+@require_http_methods(["POST"])
+def toolsmith_lab_terminal_input(request: HttpRequest, session_id: str) -> JsonResponse:
+    sess, err = _lab_session_or_404(session_id)
+    if err is not None:
+        return err
+    body = parse_json_body(request)
+    raw = body.get("data")
+    if raw is None:
+        raw = request.POST.get("data") or ""
+    try:
+        data = decode_input_bytes(raw, base64_encoded=body.get("encoding") == "base64")
+    except Exception:
+        return JsonResponse({"ok": False, "error": "Invalid input"}, status=400)
+    try:
+        sess.write(data)
+    except OSError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=410)
+    return JsonResponse({"ok": True})
+
+
+@require_http_methods(["POST"])
+def toolsmith_lab_terminal_resize(request: HttpRequest, session_id: str) -> JsonResponse:
+    sess, err = _lab_session_or_404(session_id)
+    if err is not None:
+        return err
+    body = parse_json_body(request)
+    try:
+        cols = int(body.get("cols") or request.POST.get("cols") or sess.cols)
+        rows = int(body.get("rows") or request.POST.get("rows") or sess.rows)
+    except (TypeError, ValueError):
+        cols, rows = sess.cols, sess.rows
+    sess.resize(cols, rows)
+    return JsonResponse({"ok": True, "cols": sess.cols, "rows": sess.rows})
+
+
+@require_http_methods(["POST"])
+def toolsmith_lab_terminal_close(request: HttpRequest, session_id: str) -> JsonResponse:
+    ok = get_registry().close(session_id, LAB_SCOPE)
+    return JsonResponse({"ok": True, "closed": ok})
 
 
 @require_http_methods(["POST"])
@@ -330,7 +470,6 @@ def toolsmith_save_skill(request: HttpRequest) -> JsonResponse:
         name=name,
         skill_md=skill_md,
         files=_file_map(body.get("files") or {}),
-        source="toolsmith",
         binary=draft_binary(skill_md),
     )
     status = 200 if saved.get("ok") else 400
@@ -342,12 +481,39 @@ urlpatterns = [
     path("api/tool/", toolsmith_suggest_tool, name="toolsmith_api_tool"),
     path("api/tool/save/", toolsmith_save_tool, name="toolsmith_api_tool_save"),
     path("api/tool/test/", toolsmith_test_tool, name="toolsmith_api_tool_test"),
+    path(
+        "api/tool/test/<str:run_id>/",
+        toolsmith_test_tool_status,
+        name="toolsmith_api_tool_test_status",
+    ),
     path("api/tool/replan/", toolsmith_replan_tool, name="toolsmith_api_tool_replan"),
     path("api/skill/", toolsmith_write_skill, name="toolsmith_api_skill"),
     path("api/skill/lint/", toolsmith_lint_skill, name="toolsmith_api_skill_lint"),
     path("api/skill/save/", toolsmith_save_skill, name="toolsmith_api_skill_save"),
     path("api/lab/", toolsmith_lab_status, name="toolsmith_api_lab"),
     path("api/lab/setup/", toolsmith_lab_setup, name="toolsmith_api_lab_setup"),
+    path("api/lab/reboot/", toolsmith_lab_reboot, name="toolsmith_api_lab_reboot"),
     path("api/lab/decommission/", toolsmith_lab_decommission, name="toolsmith_api_lab_decommission"),
     path("api/lab/reset/", toolsmith_lab_reset, name="toolsmith_api_lab_reset"),
+    path("api/lab/terminal/", toolsmith_lab_terminal_open, name="toolsmith_api_lab_terminal_open"),
+    path(
+        "api/lab/terminal/<str:session_id>/stream/",
+        toolsmith_lab_terminal_stream,
+        name="toolsmith_api_lab_terminal_stream",
+    ),
+    path(
+        "api/lab/terminal/<str:session_id>/input/",
+        toolsmith_lab_terminal_input,
+        name="toolsmith_api_lab_terminal_input",
+    ),
+    path(
+        "api/lab/terminal/<str:session_id>/resize/",
+        toolsmith_lab_terminal_resize,
+        name="toolsmith_api_lab_terminal_resize",
+    ),
+    path(
+        "api/lab/terminal/<str:session_id>/close/",
+        toolsmith_lab_terminal_close,
+        name="toolsmith_api_lab_terminal_close",
+    ),
 ]

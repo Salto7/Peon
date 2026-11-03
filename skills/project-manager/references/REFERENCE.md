@@ -3,7 +3,7 @@
 ## Paths
 - Scratch → `workspace/`
 - Phase outputs → `findings/<skill-or-phase>.md` (+ structured JSON under `workspace/`)
-- Final `findings/report.md` → **analyzer**
+- Final `findings/report.md` → the analyzer (reporting) role
 
 ## Who does what
 - **Engagement PM (this role)** — govern objectives, replan / ask operator, never probe

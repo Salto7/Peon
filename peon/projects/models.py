@@ -290,6 +290,10 @@ class EngagementRole(models.Model):
         default=False,
         help_text="Bookend roles that Lab must not delete.",
     )
+    pending = models.BooleanField(
+        default=False,
+        help_text="Auto-drafted role awaiting human confirm/edit.",
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -1231,14 +1235,20 @@ class CatalogProposal(models.Model):
     Dream never calls ``PlatformCatalog.upsert_role``/``upsert_skill``
     directly — it writes one of these, and a human approves or rejects it
     from the Dream page before the catalog itself changes. ``mcp_binding``
-    is the same queue used for a different producer: an MCP server install
-    whose role auto-bind scored every role below the confidence threshold
-    (see ``PlatformCatalog._stage_binding_review``); approving applies the
-    staged below-threshold candidates as real bindings.
+    and ``role_draft`` are the same queue used by a different producer: a
+    skill/MCP install whose role resolution scored every role below the
+    confidence threshold, or drafted a brand-new role, respectively (see
+    ``PlatformCatalog._resolve_role_for_owner``). ``skill_overlap`` flags a
+    newly bound skill that reads like it solves the same problem as a
+    sibling already bound to its role (see
+    ``orchestrator.skills.overlap.find_overlap``); approving writes a
+    ``CatalogSkillRelation`` row instead of touching a binding.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    kind = models.CharField(max_length=16, help_text="role | skill | mcp_binding")
+    kind = models.CharField(
+        max_length=16, help_text="role | skill | role_draft | mcp_binding | skill_overlap"
+    )
     action = models.CharField(max_length=16, help_text="create | update")
     target_id = models.CharField(
         max_length=128, blank=True, default="", help_text="Existing role_id/skill_id, blank for create"
@@ -1257,6 +1267,73 @@ class CatalogProposal(models.Model):
 
     def __str__(self) -> str:
         return f"{self.action} {self.kind} {self.target_id or '(new)'} [{self.status}]"
+
+
+class SkillRelationKind(models.TextChoices):
+    """How two skills relate. Soft kinds guide the planner; hard kinds filter binds.
+
+    ``overlaps`` means the two packs look like they solve the same problem —
+    the planner should not bind both for the same job without a human call
+    (or upgrade the row to ``preferred_over`` / ``supersedes``). It does not
+    delete either skill; it only flags the ambiguity.
+    """
+
+    SEQUENCE = "sequence", "Runs after"
+    DEPENDS_ON = "depends_on", "Depends on"
+    PREFERRED_OVER = "preferred_over", "Preferred over"
+    SUPERSEDES = "supersedes", "Supersedes"
+    DOES_NOT_RUN_WITH = "does_not_run_with", "Does not run with"
+    RUNS_UNDER = "runs_under", "Runs under"
+    OVERLAPS = "overlaps", "Overlaps with"
+
+
+class CatalogSkillRelation(models.Model):
+    """A declared link between two skills — planner-facing, user-editable.
+
+    ``sequence``: ``skill_id`` should run after ``related_skill_id``.
+    ``depends_on``: ``skill_id`` needs ``related_skill_id`` present first
+    (stronger than sequence — the dependency is auto-included when binding).
+    ``preferred_over``: when both would bind, keep ``skill_id`` and drop
+    ``related_skill_id``.
+    ``supersedes``: ``skill_id`` replaces ``related_skill_id`` for the same job.
+    ``does_not_run_with``: the two must not bind together (mutual exclusion).
+    ``runs_under``: ``skill_id`` is a sub-agent skill under ``related_skill_id``.
+    ``overlaps``: similar purpose — advisory; don't bind both without a call.
+
+    ``conditions``: optional free-text when this relation applies (empty =
+    always). Surfaced to the model; hard filters only apply when empty so we
+    never guess free-text matches.
+
+    Written from the Catalog page or by approving a ``skill_overlap`` proposal
+    (lands as ``overlaps``). Never read from or written to disk.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    skill_id = models.CharField(max_length=128)
+    related_skill_id = models.CharField(max_length=128)
+    kind = models.CharField(max_length=32, choices=SkillRelationKind.choices)
+    note = models.CharField(max_length=500, blank=True, default="")
+    conditions = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional — when this relation applies. Empty = always.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["skill_id", "related_skill_id", "kind"],
+                name="catalog_skill_relation_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["skill_id"]),
+            models.Index(fields=["related_skill_id"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.skill_id} {self.kind} {self.related_skill_id}"
 
 
 class ProjectMcpConfig(ProjectScopedModel):
@@ -1385,3 +1462,67 @@ class LlmCallLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.purpose}:{self.model} ${self.cost_usd:.4f}"
+
+
+class WorkflowPreset(models.Model):
+    """A designer-built graph of roles/skills/tools for one engagement shape.
+
+    ``graph`` is the whole designer document — ``{"nodes": [...], "edges":
+    [...]}`` — edited as one unit (drag/wire), not as separate relational
+    rows (matching ``CatalogProposal.payload``'s use of JSON for the same
+    reason). Node shape: ``{id, kind: "role"|"skill"|"tool", ref_id, label,
+    x, y, config}``. Edge shape: ``{id, source, target, kind: "sequence"|
+    "parallel"}``. ``ref_id`` is a bare catalog id, no FK — catalog rows can
+    be renamed/retired independently (same convention as ``CatalogBinding``).
+
+    ``seed_inputs``: ``[{key, label, kind: "text"|"scope", required, help,
+    maps_to: "summary"|"scope", target_type}]`` — exactly what project-creation
+    shows when this preset is picked, and where each answer lands on the new
+    project. ``target_type`` (e.g. ``"domain"``, ``"ip"``) only matters when
+    ``maps_to == "scope"``: the answer is recorded as ``f"{target_type}:{value}"``
+    because the Rules-of-Engagement parser drops bare, unprefixed values.
+
+    ``lint_errors`` is the last ``WorkflowLinter`` run's output, ``{"errors":
+    [...], "warnings": [...]}`` — only ``errors`` blocks publishing.
+    """
+
+    workflow_id = models.SlugField(max_length=64, primary_key=True)
+    name = models.CharField(max_length=200)
+    description = models.TextField(blank=True, default="")
+    seed_inputs = models.JSONField(default=list, blank=True)
+    graph = models.JSONField(default=dict, blank=True)
+    lint_errors = models.JSONField(default=dict, blank=True)
+    is_published = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.workflow_id
+
+
+class ToolTestRun(models.Model):
+    """One ``LabService.test_tool_install()`` run, handed off to the worker.
+
+    ``docker rm``/``docker run`` for the lab container inside the same web
+    request a browser is blocked on can drop that request's own connection
+    (the "web-side docker-rm network flap" — same reason decommission/reset
+    already run on the worker). The install test is no different, so it runs
+    there too; this row is how the browser's poll finds out it finished,
+    since (unlike decommission/reset) the result is richer than just
+    ``LabService.status()``.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tool_id = models.CharField(max_length=128, blank=True, default="")
+    status = models.CharField(max_length=16, default="running", help_text="running | done")
+    result = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.tool_id or '(unknown)'} [{self.status}]"

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from agent_runtime.api import ExecResult, RuntimeSession, SessionInfo
+from agent_runtime.api import ExecResult, SandboxSession, SessionInfo
 from agent_runtime.openshell.cli import OpenShellCli
 from agent_runtime.process import ExecTransport, HostProcessRunner
 from agent_runtime.util import forward_env_items
 
 
-class OpenShellSession(RuntimeSession):
+class OpenShellSession(SandboxSession):
     def __init__(self, info: SessionInfo, *, cli: OpenShellCli | None = None) -> None:
         super().__init__(info)
         self._cli = cli or OpenShellCli.shared()
@@ -32,7 +32,6 @@ class OpenShellSession(RuntimeSession):
             [
                 f"ORCHESTRATOR_WORKSPACE={workspace}",
                 "SKILLS_DIR=/skills",
-                "SKILLS_IMPORTED_DIR=/skills",
                 "TOOLS_CATALOG_DIR=/tools/catalog",
                 "PROJECT_WORKSPACES_DIR=/workspace",
                 "PYTHONPATH=/skills/helpers",

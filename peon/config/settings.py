@@ -31,9 +31,7 @@ if DEBUG and "testserver" not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append("testserver")
 
 if not DEBUG and SECRET_KEY in {_DEFAULT_SECRET, "peon-dev-only", ""}:
-    raise ImproperlyConfigured(
-        "Set a strong SECRET_KEY in the environment when DEBUG is false."
-    )
+    raise ImproperlyConfigured("Set a strong SECRET_KEY in the environment when DEBUG is false.")
 
 PUBLIC_URL = _env("PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/")
 _secure = PUBLIC_URL.lower().startswith("https://")
@@ -90,9 +88,7 @@ TEMPLATES = [
 ]
 
 # One workspace root: ``platform`` is reserved; UUID children belong to Projects.
-PROJECT_WORKSPACES_DIR = Path(
-    _env("PROJECT_WORKSPACES_DIR") or (BASE_DIR / "workspaces")
-).resolve()
+PROJECT_WORKSPACES_DIR = Path(_env("PROJECT_WORKSPACES_DIR") or (BASE_DIR / "workspaces")).resolve()
 PROJECT_WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
 PLATFORM_WORKSPACE_DIR = (PROJECT_WORKSPACES_DIR / "platform").resolve()
 PLATFORM_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
@@ -144,15 +140,6 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 _skills = Path(_env("SKILLS_DIR") or (BASE_DIR / "skills"))
 SKILLS_DIR = _skills if _skills.is_absolute() else (BASE_DIR / _skills).resolve()
 os.environ.setdefault("SKILLS_DIR", str(SKILLS_DIR))
-# Imports share skills/ unless SKILLS_IMPORTED_DIR is explicitly set (legacy).
-_imported_env = (_env("SKILLS_IMPORTED_DIR") or "").strip()
-_skills_imported = Path(_imported_env) if _imported_env else SKILLS_DIR
-SKILLS_IMPORTED_DIR = (
-    _skills_imported
-    if _skills_imported.is_absolute()
-    else (BASE_DIR / _skills_imported).resolve()
-)
-os.environ.setdefault("SKILLS_IMPORTED_DIR", str(SKILLS_IMPORTED_DIR))
 _mcps = Path(_env("MCPS_DIR") or (BASE_DIR / "mcps"))
 MCPS_DIR = _mcps if _mcps.is_absolute() else (BASE_DIR / _mcps).resolve()
 os.environ.setdefault("MCPS_DIR", str(MCPS_DIR))
@@ -208,14 +195,31 @@ DRAMATIQ_ENABLED = _env_bool("DRAMATIQ_ENABLED", True)
 DRAMATIQ_TIME_LIMIT_MS = int(_env("DRAMATIQ_TIME_LIMIT_MS", str(6 * 60 * 60 * 1000)) or 0)
 DRAMATIQ_MAX_RETRIES = int(_env("DRAMATIQ_MAX_RETRIES", "3") or 3)
 
-LLM_PROVIDER = _env("LLM_PROVIDER", "openrouter")
+# Empty until set in .env / Peon Settings — no baked-in provider or model.
+LLM_PROVIDER = _env("LLM_PROVIDER")
 # Provider module id (in-process backend). Default litellm; reserved for future modules.
 LLM_MODULE = _env("LLM_MODULE", "litellm") or "litellm"
-LITELLM_MODEL = _env("LITELLM_MODEL", "openrouter/openai/gpt-5.6-luna")
+# Canonical: LITELLM_MODEL. LLM_MODEL is a Cognee/legacy alias (same value).
+LITELLM_MODEL = _env("LITELLM_MODEL") or _env("LLM_MODEL")
+LLM_MODEL = LITELLM_MODEL
 LITELLM_API_BASE = _env("LITELLM_API_BASE") or None
+# Canonical provider keys. LLM_API_KEY is a Cognee/legacy alias for the active provider.
 LITELLM_API_KEY = _env("LITELLM_API_KEY")
 OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY")
 OPENAI_API_KEY = _env("OPENAI_API_KEY")
+_LLM_API_KEY_ALIAS = _env("LLM_API_KEY")
+if _LLM_API_KEY_ALIAS:
+    provider = (LLM_PROVIDER or "").strip().lower()
+    if provider == "openrouter" and not OPENROUTER_API_KEY:
+        OPENROUTER_API_KEY = _LLM_API_KEY_ALIAS
+    elif provider == "openai" and not OPENAI_API_KEY:
+        OPENAI_API_KEY = _LLM_API_KEY_ALIAS
+    elif provider == "ollama" and not LITELLM_API_KEY:
+        LITELLM_API_KEY = _LLM_API_KEY_ALIAS
+    elif not LITELLM_API_KEY:
+        LITELLM_API_KEY = _LLM_API_KEY_ALIAS
+        if not provider and _LLM_API_KEY_ALIAS.startswith("sk-or-") and not OPENROUTER_API_KEY:
+            OPENROUTER_API_KEY = _LLM_API_KEY_ALIAS
 LLM_TEMPERATURE = float(_env("LLM_TEMPERATURE", "0") or "0")
 _max_tokens = _env("LLM_MAX_TOKENS").strip()
 LLM_MAX_TOKENS = int(_max_tokens) if _max_tokens.isdigit() else None
@@ -226,9 +230,10 @@ LLM_PROXY_ENABLED = _env_bool("LLM_PROXY_ENABLED", True)
 LLM_PROXY_URL = _env("LLM_PROXY_URL", "http://litellm:4000/v1") or "http://litellm:4000/v1"
 LLM_PROXY_PORT = int(_env("LLM_PROXY_PORT", "4000") or 4000)
 LLM_PROXY_CONTAINER = _env("LLM_PROXY_CONTAINER", "peon-litellm") or "peon-litellm"
-LLM_PROXY_IMAGE = _env(
-    "LLM_PROXY_IMAGE", "ghcr.io/berriai/litellm:main-stable"
-) or "ghcr.io/berriai/litellm:main-stable"
+LLM_PROXY_IMAGE = (
+    _env("LLM_PROXY_IMAGE", "ghcr.io/berriai/litellm:main-stable")
+    or "ghcr.io/berriai/litellm:main-stable"
+)
 LLM_PROXY_NETWORK = _env("LLM_PROXY_NETWORK", "peon_default") or "peon_default"
 LITELLM_MASTER_KEY = _env("LITELLM_MASTER_KEY", "sk-peon-litellm") or "sk-peon-litellm"
 # OpenCode model id (provider/model) used inside the lab.
@@ -244,12 +249,8 @@ AGENT_MAX_SUBAGENT_DEPTH = max(1, int(_env("AGENT_MAX_SUBAGENT_DEPTH", "2") or 2
 AGENT_RUNTIME_ENABLED = _env_bool("AGENT_RUNTIME_ENABLED", True)
 # CrewAI PlanningConfig when RoleSpec.reasoning is true.
 _CREW_EFFORT = (_env("CREW_REASONING_EFFORT", "low") or "low").strip().lower()
-CREW_REASONING_EFFORT = (
-    _CREW_EFFORT if _CREW_EFFORT in {"low", "medium", "high"} else "low"
-)
-CREW_REASONING_MAX_ATTEMPTS = max(
-    1, min(5, int(_env("CREW_REASONING_MAX_ATTEMPTS", "1") or 1))
-)
+CREW_REASONING_EFFORT = _CREW_EFFORT if _CREW_EFFORT in {"low", "medium", "high"} else "low"
+CREW_REASONING_MAX_ATTEMPTS = max(1, min(5, int(_env("CREW_REASONING_MAX_ATTEMPTS", "1") or 1)))
 # Cognee self-hosted memory sidecar (semantic recall + dreaming).
 COGNEE_ENABLED = _env_bool("COGNEE_ENABLED", True)
 COGNEE_PORT = int(_env("COGNEE_PORT", "8001") or 8001)
@@ -289,6 +290,4 @@ _DRAMATIQ_THREADS_RAW = _env("DRAMATIQ_MAX_THREADS") or _env("DRAMATIQ_THREADS",
 DRAMATIQ_MAX_THREADS = max(1, int(_DRAMATIQ_THREADS_RAW or 8))
 # Backward-compat alias for older imports / docs.
 DRAMATIQ_THREADS = DRAMATIQ_MAX_THREADS
-JOB_STUCK_RUNNING_SECONDS = max(
-    60, int(_env("JOB_STUCK_RUNNING_SECONDS", "7200") or 7200)
-)
+JOB_STUCK_RUNNING_SECONDS = max(60, int(_env("JOB_STUCK_RUNNING_SECONDS", "7200") or 7200))

@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 OWNER_SKILL = "skill"
 OWNER_MCP = "mcp"
-_AFFINITY_THRESHOLD = 0.5
+OWNER_ROLE = "role"
 
 # Platform-core skills: load-bearing for every project (project-manager and
 # analyzer are the bookend roles' own skills) or hard-imported by Toolsmith's
@@ -34,6 +35,20 @@ _AFFINITY_THRESHOLD = 0.5
 # orchestrator/toolsmith/system_skills.py). Deleting one breaks the platform,
 # so — like a protected role — the catalog refuses to.
 CORE_SKILL_IDS = frozenset({"analyzer", "project-manager", "skill-writer", "tools-suggestor"})
+
+
+def _roleless_core_skill_ids() -> frozenset[str]:
+    """Of ``CORE_SKILL_IDS``, the two Toolsmith calls by id directly and that
+    are therefore never dispatched to an engagement role at all (the other
+    two are the bookends' own lead skills and must keep binding to their
+    role). Reads the live ids from ``system_skills`` rather than repeating
+    their default string here — a renamed authoring skill stays excluded.
+    """
+    from orchestrator.toolsmith.system_skills import skill_writer_skill, tools_suggestor_skill
+
+    return frozenset({skill_writer_skill(), tools_suggestor_skill()})
+
+
 _SKILLS_FINGERPRINT = ""  # last on-disk skill state reconciled by this process
 _revision: float = 0.0
 
@@ -143,6 +158,29 @@ def _bump() -> float:
     return _revision
 
 
+def _remove_catalog_disk_dir(root: Path, name: str) -> None:
+    """Best-effort delete of ``root/name`` — undoes a disk import so a later
+    sync (``refresh_stale_skills``/``sync_mcps_from_disk``) does not silently
+    re-create what the operator just deleted from the catalog.
+    """
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return
+    try:
+        if not root.is_dir():
+            return
+        root_resolved = root.resolve()
+        target = (root_resolved / name).resolve()
+    except OSError:
+        return
+    if target.parent != root_resolved or not target.is_dir():
+        return
+    try:
+        shutil.rmtree(target)
+        logger.info("removed catalog pack from disk: %s", target)
+    except OSError as exc:
+        logger.warning("failed to remove catalog pack %s: %s", target, exc)
+
+
 def _invalidate() -> None:
     _bump()
     try:
@@ -173,6 +211,23 @@ def _format_candidates(candidates: list[dict[str, Any]]) -> str:
         f"{c['role_id']} ({float(c['score']):.2f})"
         for c in sorted(candidates, key=lambda c: -float(c["score"]))
     )
+
+
+def _payload_mentions(payload: Any, needle: str) -> bool:
+    """True when ``needle`` appears as a string value anywhere in ``payload``.
+
+    Proposal payloads nest ids under different keys per kind (``owner_id``,
+    ``role_id``, ``skill_id``, ``related_skill_id``, a nested ``role`` dict's
+    own ``role_id``, ...). Walking every string value once covers all of
+    them without hardcoding each kind's shape.
+    """
+    if isinstance(payload, str):
+        return payload == needle
+    if isinstance(payload, dict):
+        return any(_payload_mentions(v, needle) for v in payload.values())
+    if isinstance(payload, (list, tuple)):
+        return any(_payload_mentions(v, needle) for v in payload)
+    return False
 
 
 class PlatformCatalog:
@@ -262,6 +317,7 @@ class PlatformCatalog:
                         str(a) for a in (row.aliases or []) if str(a).strip()
                     ),
                     protected=bool(row.protected),
+                    pending=bool(row.pending),
                     goal=str(row.goal or ""),
                     backstory=str(row.backstory or ""),
                 )
@@ -289,6 +345,7 @@ class PlatformCatalog:
         kind: str,
         aliases: list[str] | tuple[str, ...] | str = (),
         protected: bool | None = None,
+        pending: bool | None = None,
         previous_id: str = "",
         goal: str | None = None,
         backstory: str | None = None,
@@ -366,6 +423,10 @@ class PlatformCatalog:
             source = existing
             if source is None and previous:
                 source = EngagementRole.objects.filter(role_id=previous).first()
+            if pending is None:
+                pending_flag = bool(source.pending) if source is not None else False
+            else:
+                pending_flag = bool(pending)
             seeded_goal, seeded_story = seed_role_text(defn.id, final_kind)
             if goal is None:
                 goal_text = (source.goal if source is not None else "") or seeded_goal
@@ -383,6 +444,7 @@ class PlatformCatalog:
                     "kind": final_kind,
                     "aliases": list(defn.aliases),
                     "protected": keep_protected,
+                    "pending": pending_flag,
                     "goal": goal_text,
                     "backstory": story_text,
                 },
@@ -405,11 +467,109 @@ class PlatformCatalog:
                     memory.delete()
                 EngagementRole.objects.filter(role_id=previous).delete()
         _invalidate()
+
+        def _resweep() -> None:
+            try:
+                from peon.projects.tasks import enqueue_catalog_resweep
+
+                enqueue_catalog_resweep()
+            except Exception as exc:
+                logger.warning("catalog resweep enqueue failed: %s", exc)
+
+        # Deferred to commit: this call may itself be nested inside a caller's
+        # own ``transaction.atomic()`` (e.g. ``apply_proposal``'s role_draft
+        # branch) — enqueueing before that outer transaction commits would let
+        # the sweep query a role/binding state that isn't visible yet.
+        transaction.on_commit(_resweep)
         return self.get_role(defn.id)
+
+    def confirm_role(self, role_id: str) -> None:
+        """Clear a drafted role's ``pending`` flag — "looks fine, no edits needed"."""
+        from orchestrator.crew.roles.catalog import normalize_role_id
+        from peon.projects.models import EngagementRole
+
+        rid = normalize_role_id(role_id)
+        if not rid:
+            raise ValueError("invalid role id")
+        updated = EngagementRole.objects.filter(role_id=rid).update(pending=False)
+        if not updated:
+            raise KeyError(f"unknown role {rid!r}")
+        _invalidate()
+
+    def resweep_unbound_owners(self, *, limit: int = 50) -> dict[str, Any]:
+        """Re-run role resolution for every skill/MCP with zero bindings.
+
+        Enqueued (``peon.projects.tasks.enqueue_catalog_resweep``) whenever a
+        role is created or edited — a role that didn't exist before may now
+        be exactly what a previously-orphaned item needs; an edited role's
+        new goal/backstory may newly resemble one too. Cheap in the steady
+        state (no orphans): one anti-join query per owner kind, nothing else.
+        ``limit`` bounds one run; any remainder waits for the next trigger.
+        """
+        from peon.projects.models import CatalogBinding, CatalogMcp, CatalogSkill
+
+        bound_skills = set(
+            CatalogBinding.objects.filter(owner_kind=OWNER_SKILL).values_list(
+                "owner_id", flat=True
+            )
+        )
+        bound_mcps = set(
+            CatalogBinding.objects.filter(owner_kind=OWNER_MCP).values_list(
+                "owner_id", flat=True
+            )
+        )
+        orphans: list[tuple[str, str]] = [
+            (OWNER_SKILL, sid)
+            for sid in CatalogSkill.objects.exclude(
+                skill_id__in=bound_skills | _roleless_core_skill_ids()
+            ).values_list("skill_id", flat=True)
+        ] + [
+            (OWNER_MCP, mid)
+            for mid in CatalogMcp.objects.exclude(
+                mcp_id__in=bound_mcps
+            ).values_list("mcp_id", flat=True)
+        ]
+        resolved = 0
+        for owner_kind, owner_id in orphans[:limit]:
+            try:
+                if owner_kind == OWNER_SKILL:
+                    rec = self.get_skill(owner_id)
+                    if rec is None:
+                        continue
+                    self._apply_owner_bindings(
+                        owner_kind=OWNER_SKILL,
+                        owner_id=owner_id,
+                        bindings=None,
+                        infer_id=owner_id,
+                        infer_description=rec.description,
+                        infer_body=rec.body,
+                        is_new=True,
+                    )
+                else:
+                    mcp_rec = self.get_mcp(owner_id)
+                    if mcp_rec is None:
+                        continue
+                    self._apply_owner_bindings(
+                        owner_kind=OWNER_MCP,
+                        owner_id=owner_id,
+                        bindings=None,
+                        infer_id=owner_id,
+                        infer_description=mcp_rec.description,
+                        infer_body=_mcp_affinity_corpus(mcp_rec.files, mcp_rec),
+                        is_new=True,
+                    )
+                resolved += 1
+            except Exception as exc:
+                logger.warning("resweep failed for %s %s: %s", owner_kind, owner_id, exc)
+        return {
+            "scanned": len(orphans),
+            "resolved": resolved,
+            "remaining": max(0, len(orphans) - limit),
+        }
 
     def delete_role(self, role_id: str) -> None:
         from orchestrator.crew.roles.catalog import normalize_role_id
-        from peon.projects.models import CatalogBinding, EngagementRole
+        from peon.projects.models import EngagementRole
 
         rid = normalize_role_id(role_id)
         if not rid:
@@ -421,7 +581,7 @@ class PlatformCatalog:
         if current is not None and current.is_protected:
             raise ValueError(f"role {rid!r} is protected and cannot be deleted")
         with transaction.atomic():
-            CatalogBinding.objects.filter(role_id=rid).delete()
+            self._purge_dangling_references(owner_kind=OWNER_ROLE, owner_id=rid)
             row.delete()
         _invalidate()
 
@@ -555,6 +715,8 @@ class PlatformCatalog:
             self.replace_bindings(
                 owner_kind=owner_kind, owner_id=owner_id, bindings=bindings
             )
+            if is_new and owner_kind == OWNER_SKILL:
+                self._flag_skill_overlap(owner_id)
             return
         if bindings is not None:
             existing = self.list_bindings(owner_kind=owner_kind, owner_id=owner_id)
@@ -581,6 +743,12 @@ class PlatformCatalog:
                 )
                 return
         if not is_new:
+            _invalidate()
+            return
+        if owner_kind == OWNER_SKILL and owner_id in _roleless_core_skill_ids():
+            # Toolsmith's own authoring skills — called by id directly, never
+            # dispatched to an engagement role. Deliberately role-less, not
+            # an orphan a resweep should keep trying to "fix".
             _invalidate()
             return
         try:
@@ -611,36 +779,40 @@ class PlatformCatalog:
                         corpus=infer_body,
                         role_id=lead["role_id"],
                     )
+                else:
+                    self._flag_skill_overlap(owner_id)
                 return
             except ValueError as exc:
                 logger.warning(
                     "auto-bind rejected for %s %s: %s", owner_kind, owner_id, exc
                 )
-        if owner_kind == OWNER_MCP:
-            self._resolve_role_skill_for_mcp(
-                mcp_id=owner_id,
-                description=infer_description,
-                corpus=infer_body,
-                weak_candidates=candidates,
-            )
+        self._resolve_role_for_owner(
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            description=infer_description,
+            corpus=infer_body,
+            weak_candidates=candidates,
+        )
         _invalidate()
 
-    def _resolve_role_skill_for_mcp(
+    def _resolve_role_for_owner(
         self,
         *,
-        mcp_id: str,
+        owner_kind: str,
+        owner_id: str,
         description: str,
         corpus: str,
         weak_candidates: list[dict[str, Any]],
     ) -> None:
-        """No role bound confidently to ``mcp_id`` — reuse, create, or ask.
+        """No role bound confidently to ``owner_id`` — reuse, create, or ask.
 
-        Unambiguous (nothing existing resembles this server, no id clash):
-        draft a role + skill and create them immediately, no human gate —
-        that is the point of this path, not a safety hole, because every
-        branch below that finds *any* overlap falls back to the existing
-        proposal review queue instead of acting. Ambiguous means: a role
-        already scored *some* affinity against this server's own text
+        Same pipeline for a skill or an MCP server. Unambiguous (nothing
+        existing resembles this item, no id clash): draft a role (+, for an
+        MCP, its companion skill) and create it immediately, flagged
+        ``pending`` for review — not a safety hole, because every branch
+        below that finds *any* overlap falls back to the existing proposal
+        review queue instead of acting. Ambiguous means: a role already
+        scored *some* affinity against this item's own text
         (``weak_candidates``) or against the drafted role's own goal/
         backstory (domains "AdStrike"/"BloodHound"/"ADPulse" all draft as
         "AD attack" even when their READMEs share no keywords), or the
@@ -649,7 +821,7 @@ class PlatformCatalog:
         from peon.projects.models import CatalogProposal
 
         already_pending = CatalogProposal.objects.filter(
-            status="pending", kind="mcp_role_skill", action="create", target_id=mcp_id
+            status="pending", kind="role_draft", action="create", target_id=owner_id
         ).exists()
         if already_pending:
             return
@@ -659,17 +831,19 @@ class PlatformCatalog:
             # match would just be a second, conflicting way to resolve the
             # same ambiguity. Let the review queue be the one place that
             # decides a weak-but-real match.
-            self._stage_binding_review(owner_id=mcp_id, candidates=weak_candidates)
+            self._stage_binding_review(
+                owner_kind=owner_kind, owner_id=owner_id, candidates=weak_candidates
+            )
             return
-        draft = self._draft_mcp_skill(mcp_id=mcp_id, description=description, corpus=corpus)
+        draft = self._draft_role(
+            owner_kind=owner_kind, owner_id=owner_id, description=description, corpus=corpus
+        )
         if draft is None:
             return
         role_id = draft["role_id"]
-        from orchestrator.mcp.draft import render_skill_md
-
-        skill_md = render_skill_md(mcp_id, draft)
-        payload = {
-            "mcp_id": mcp_id,
+        payload: dict[str, Any] = {
+            "owner_kind": owner_kind,
+            "owner_id": owner_id,
             "role": {
                 "role_id": role_id,
                 "kind": "technical",
@@ -677,36 +851,45 @@ class PlatformCatalog:
                 "goal": draft["goal"],
                 "backstory": draft["backstory"],
             },
-            "skill_id": mcp_id,
-            "skill_md": skill_md,
         }
-        conflict = self._role_skill_conflict(mcp_id=mcp_id, role_id=role_id, draft=draft)
+        if owner_kind == OWNER_MCP:
+            from orchestrator.crew.roles.draft import render_skill_md
+
+            payload["skill_id"] = owner_id
+            payload["skill_md"] = render_skill_md(owner_id, draft)
+        conflict = self._role_skill_conflict(
+            owner_kind=owner_kind, owner_id=owner_id, role_id=role_id, draft=draft
+        )
+        label = "MCP server" if owner_kind == OWNER_MCP else "skill"
         if conflict:
             CatalogProposal.objects.create(
-                kind="mcp_role_skill",
+                kind="role_draft",
                 action="create",
-                target_id=mcp_id,
-                title=f"New role + skill for MCP server: {mcp_id}",
+                target_id=owner_id,
+                title=f"New role for {label}: {owner_id}",
                 rationale=conflict,
                 payload=payload,
             )
             return
-        # Nothing existing resembles this server and no id clashes — safe to
-        # act without a human in the loop. Record it as an already-approved
-        # proposal so it still shows up as a readable "what did the platform
-        # just do" audit trail on the Catalog page, not a silent write.
+        # Nothing existing resembles this item and no id clashes — safe to
+        # act without a human in the loop, but still flag the new role
+        # ``pending`` since nobody has actually looked at it yet. Record it
+        # as an already-approved proposal so it still shows up as a readable
+        # "what did the platform just do" audit trail on the Catalog page,
+        # not a silent write.
+        payload["mark_pending"] = True
         with transaction.atomic():
             from peon.projects.gist import apply_proposal
 
             row = CatalogProposal.objects.create(
-                kind="mcp_role_skill",
+                kind="role_draft",
                 action="create",
-                target_id=mcp_id,
-                title=f"Auto-created role + skill for MCP server: {mcp_id}",
+                target_id=owner_id,
+                title=f"Auto-created role for {label}: {owner_id}",
                 rationale=(
-                    f"No existing role resembled {mcp_id!r} (by its own text or by the "
+                    f"No existing role resembled {owner_id!r} (by its own text or by the "
                     f"drafted role's goal/backstory) and no id collided, so role "
-                    f"{role_id!r} and skill {mcp_id!r} were created automatically."
+                    f"{role_id!r} was created automatically — confirm or edit it."
                 ),
                 payload=payload,
                 status="pending",
@@ -714,37 +897,38 @@ class PlatformCatalog:
             result = apply_proposal(str(row.pk), decision="approve")
         if not result.get("ok"):
             logger.warning(
-                "auto-apply of drafted role+skill failed for %s: %s", mcp_id, result.get("error")
+                "auto-apply of drafted role failed for %s %s: %s",
+                owner_kind, owner_id, result.get("error"),
             )
 
     def _role_skill_conflict(
-        self, *, mcp_id: str, role_id: str, draft: dict[str, Any]
+        self, *, owner_kind: str, owner_id: str, role_id: str, draft: dict[str, Any]
     ) -> str:
         """Empty string = clear to auto-apply. Non-empty = reason to ask a human instead."""
         from peon.projects.models import CatalogSkill, EngagementRole
 
         if EngagementRole.objects.filter(role_id=role_id).exists():
             return f"Drafted role id {role_id!r} already exists in the catalog."
-        if CatalogSkill.objects.filter(skill_id=mcp_id).exists():
-            return f"A skill named {mcp_id!r} already exists in the catalog (not from this server)."
+        if owner_kind == OWNER_MCP and CatalogSkill.objects.filter(skill_id=owner_id).exists():
+            return f"A skill named {owner_id!r} already exists in the catalog (not from this server)."
         try:
             from orchestrator.skills.affinity import infer_catalog_bindings
 
             applied2, candidates2 = infer_catalog_bindings(
-                owner_id=mcp_id,
-                owner_kind=OWNER_MCP,
+                owner_id=owner_id,
+                owner_kind=owner_kind,
                 description=draft["goal"],
                 body=f"{draft['goal']}\n{draft['backstory']}",
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("role-similarity re-check failed for %s: %s", mcp_id, exc)
+            logger.warning("role-similarity re-check failed for %s: %s", owner_id, exc)
             return ""
         overlap = applied2 or candidates2
         if overlap:
             names = _format_candidates(overlap)
             return (
-                f"The drafted role for {mcp_id!r} reads similar to an existing role: {names}. "
-                "Approve to create the new role anyway, or reject and bind the server to "
+                f"The drafted role for {owner_id!r} reads similar to an existing role: {names}. "
+                "Approve to create the new role anyway, or reject and bind it to "
                 "one of those existing roles manually instead."
             )
         return ""
@@ -758,42 +942,61 @@ class PlatformCatalog:
         generic MCP tool-call surface works without one, but a server-specific
         workflow (ordering, OPSEC, how its own setup/credential call works) is
         the whole value of a skill. No-op if this MCP already has one.
+
+        The companion skill is evaluated as a genuine new-skill event
+        (``bindings=None``) rather than force-bound to ``role_id`` — most
+        often it lands on that same role (the drafted text names it
+        explicitly, below, so the unbiased affinity match favours it), but it
+        can also land elsewhere or get flagged for review, same as any skill.
         """
         from peon.projects.models import CatalogSkill
 
         if CatalogSkill.objects.filter(skill_id=mcp_id).exists():
             return
-        draft = self._draft_mcp_skill(mcp_id=mcp_id, description=description, corpus=corpus)
+        draft = self._draft_role(
+            owner_kind=OWNER_MCP, owner_id=mcp_id, description=description, corpus=corpus
+        )
         if draft is None:
             return
-        from orchestrator.mcp.draft import render_skill_md
+        from orchestrator.crew.roles.draft import render_skill_md
 
+        role = self.get_role(role_id)
+        hint = (
+            f"\n\nPrimary existing role for this server: `{role_id}`"
+            + (f" — {role.goal}" if role is not None and role.goal else "")
+        )
+        draft = {**draft, "skill_body": draft["skill_body"] + hint}
         try:
             self.upsert_skill(
                 skill_md=render_skill_md(mcp_id, draft),
                 skill_id=mcp_id,
-                bindings=[{"role_id": role_id, "score": 1.0, "lead": True}],
+                bindings=None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("mcp skill create failed for %s: %s", mcp_id, exc)
 
     @staticmethod
-    def _draft_mcp_skill(*, mcp_id: str, description: str, corpus: str) -> dict[str, Any] | None:
-        """``draft_role_and_skill``, logged and swallowed on failure (never fatal)."""
-        from orchestrator.mcp.draft import draft_role_and_skill
+    def _draft_role(
+        *, owner_kind: str, owner_id: str, description: str, corpus: str
+    ) -> dict[str, Any] | None:
+        """``draft_role``, logged and swallowed on failure (never fatal)."""
+        from orchestrator.crew.roles.draft import draft_role
 
         try:
-            return draft_role_and_skill(mcp_id=mcp_id, description=description, corpus=corpus)
+            return draft_role(
+                owner_kind=owner_kind, owner_id=owner_id, description=description, corpus=corpus
+            )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("mcp role/skill draft failed for %s: %s", mcp_id, exc)
+            logger.warning("role draft failed for %s %s: %s", owner_kind, owner_id, exc)
             return None
 
     def _stage_binding_review(
-        self, *, owner_id: str, candidates: list[dict[str, Any]]
+        self, *, owner_kind: str, owner_id: str, candidates: list[dict[str, Any]]
     ) -> None:
-        """Flag an MCP server with no confident auto-bind for human review."""
+        """Flag a skill/MCP server with no confident auto-bind for human review."""
         from peon.projects.models import CatalogProposal
 
+        label = "MCP server" if owner_kind == OWNER_MCP else "skill"
         try:
             already_pending = CatalogProposal.objects.filter(
                 status="pending", kind="mcp_binding", action="create", target_id=owner_id
@@ -805,7 +1008,7 @@ class PlatformCatalog:
                 kind="mcp_binding",
                 action="create",
                 target_id=owner_id,
-                title=f"No confident role match for MCP server: {owner_id}",
+                title=f"No confident role match for {label}: {owner_id}",
                 # The review card only renders title/rationale (no payload UI),
                 # so the candidates have to be readable here, not just in
                 # payload — approving blind would defeat the review step.
@@ -813,16 +1016,175 @@ class PlatformCatalog:
                     "Auto-binding scored every role below the confidence "
                     f"threshold. Closest unconfirmed matches: {names}. "
                     "Approve to bind all of them, or reject and bind "
-                    "manually from this server's own page instead."
+                    "manually from this item's own page instead."
                 ),
                 payload={
-                    "owner_kind": OWNER_MCP,
+                    "owner_kind": owner_kind,
                     "owner_id": owner_id,
                     "candidates": candidates,
                 },
             )
         except Exception as exc:
             logger.warning("mcp binding review stage failed for %s: %s", owner_id, exc)
+
+    def _flag_skill_overlap(self, skill_id: str) -> None:
+        """Stage review when a newly bound skill reads like a role-mate's twin.
+
+        Called once, right after a skill's bindings are first set. Compares
+        only against skills sharing a role with ``skill_id`` — a skill with
+        no siblings yet (its own brand-new role, or the only skill on an
+        existing one) has nothing to compare against and this is a no-op.
+        """
+        from orchestrator.skills.overlap import find_overlap
+        from peon.projects.models import CatalogProposal
+
+        rec = self.get_skill(skill_id)
+        if rec is None:
+            return
+        own_role_ids = {
+            b.role_id for b in self.list_bindings(owner_kind=OWNER_SKILL, owner_id=skill_id)
+        }
+        sibling_ids = {
+            b.owner_id
+            for role_id in own_role_ids
+            for b in self.list_bindings(owner_kind=OWNER_SKILL, role_id=role_id)
+            if b.owner_id != skill_id
+        }
+        if not sibling_ids:
+            return
+        siblings = {
+            sib.skill_id: f"{sib.description}\n{sib.body}"
+            for sib in (self.get_skill(sid) for sid in sibling_ids)
+            if sib is not None
+        }
+        try:
+            match = find_overlap(skill_id, f"{rec.description}\n{rec.body}", siblings)
+        except Exception as exc:
+            logger.warning("overlap check failed for skill %s: %s", skill_id, exc)
+            return
+        if match is None:
+            return
+        already_pending = CatalogProposal.objects.filter(
+            status="pending", kind="skill_overlap", target_id=skill_id
+        ).exists()
+        if already_pending:
+            return
+        CatalogProposal.objects.create(
+            kind="skill_overlap",
+            action="create",
+            target_id=skill_id,
+            title=f"Possible overlap: {skill_id} vs {match.related_skill_id}",
+            rationale=match.reason,
+            payload={"skill_id": skill_id, "related_skill_id": match.related_skill_id},
+        )
+
+    # --- skill relations -----------------------------------------------------
+
+    def list_skill_relations(self, *, skill_id: str = "") -> list[dict[str, Any]]:
+        """Every declared skill<->skill relation, optionally for one skill (either side)."""
+        from django.db.models import Q
+
+        from peon.projects.models import CatalogSkillRelation
+
+        qs = CatalogSkillRelation.objects.all()
+        if skill_id:
+            qs = qs.filter(Q(skill_id=skill_id) | Q(related_skill_id=skill_id))
+        return [
+            {
+                "id": str(row.id),
+                "skill_id": row.skill_id,
+                "related_skill_id": row.related_skill_id,
+                "kind": row.kind,
+                "note": row.note,
+                "conditions": row.conditions or "",
+            }
+            for row in qs.order_by("skill_id", "related_skill_id")
+        ]
+
+    def set_skill_relation(
+        self,
+        *,
+        skill_id: str,
+        related_skill_id: str,
+        kind: str,
+        note: str = "",
+        conditions: str = "",
+    ) -> dict[str, Any]:
+        """Create or update one relation row. The only write path a human uses directly."""
+        from peon.projects.models import CatalogSkillRelation, SkillRelationKind
+
+        sid = str(skill_id or "").strip()
+        rid = str(related_skill_id or "").strip()
+        if not sid or not rid or sid == rid:
+            raise ValueError("skill_id and related_skill_id must both be set and different")
+        if kind not in SkillRelationKind.values:
+            raise ValueError(f"unknown relation kind {kind!r}")
+        if self.get_skill(sid) is None or self.get_skill(rid) is None:
+            raise ValueError("both skills must already exist in the catalog")
+        row, _ = CatalogSkillRelation.objects.update_or_create(
+            skill_id=sid,
+            related_skill_id=rid,
+            kind=kind,
+            defaults={"note": note, "conditions": (conditions or "").strip()},
+        )
+        return {
+            "id": str(row.id),
+            "skill_id": sid,
+            "related_skill_id": rid,
+            "kind": kind,
+            "note": row.note,
+            "conditions": row.conditions or "",
+        }
+
+    def delete_skill_relation(self, relation_id: str) -> None:
+        from peon.projects.models import CatalogSkillRelation
+
+        deleted, _ = CatalogSkillRelation.objects.filter(pk=relation_id).delete()
+        if not deleted:
+            raise KeyError(f"unknown relation {relation_id!r}")
+
+    def _purge_dangling_references(self, *, owner_kind: str, owner_id: str) -> None:
+        """Delete everything else in the catalog that names ``owner_id``.
+
+        Called by every delete path (role, skill, MCP) so "removed" means
+        gone everywhere — bindings, declared skill relations, any pending
+        review that was about this exact item, and learned role→skill usage
+        memory — not just the row itself. One generic sweep instead of each
+        delete method guessing which other tables might mention it.
+        """
+        from django.db.models import Q
+
+        from peon.projects.models import (
+            CatalogBinding,
+            CatalogProposal,
+            CatalogSkillRelation,
+            RoleSkillMemory,
+        )
+
+        if owner_kind == OWNER_ROLE:
+            CatalogBinding.objects.filter(role_id=owner_id).delete()
+            RoleSkillMemory.objects.filter(role_id=owner_id).delete()
+        else:
+            CatalogBinding.objects.filter(owner_kind=owner_kind, owner_id=owner_id).delete()
+            # role_skills_prompt_block() feeds this straight into planner/
+            # router/spawn prompts as "previously used" — a stale id there
+            # is a dead option the model might still try to bind.
+            for row in RoleSkillMemory.objects.all():
+                skills = [s for s in (row.skills or []) if s != owner_id]
+                if len(skills) == len(row.skills or []):
+                    continue
+                counts = dict(row.counts or {})
+                counts.pop(owner_id, None)
+                row.skills = skills
+                row.counts = counts
+                row.save(update_fields=["skills", "counts", "updated_at"])
+        if owner_kind == OWNER_SKILL:
+            CatalogSkillRelation.objects.filter(
+                Q(skill_id=owner_id) | Q(related_skill_id=owner_id)
+            ).delete()
+        for row in CatalogProposal.objects.filter(status="pending"):
+            if row.target_id == owner_id or _payload_mentions(row.payload, owner_id):
+                row.delete()
 
     # --- skills ------------------------------------------------------------
 
@@ -1034,7 +1396,8 @@ class PlatformCatalog:
         return rec
 
     def delete_skill(self, skill_id: str) -> None:
-        from peon.projects.models import CatalogBinding, CatalogFile, CatalogSkill
+        from orchestrator.skills.providers.base import SkillId
+        from peon.projects.models import CatalogFile, CatalogSkill
 
         sid = str(skill_id or "").strip()
         row = CatalogSkill.objects.filter(skill_id=sid).first()
@@ -1042,11 +1405,22 @@ class PlatformCatalog:
             raise KeyError(f"unknown skill {sid!r}")
         if sid in CORE_SKILL_IDS:
             raise ValueError(f"skill {sid!r} is a platform-core skill and cannot be deleted")
+        parsed = SkillId.parse(sid)
+        bare_name = parsed.name if parsed is not None else sid
         with transaction.atomic():
             CatalogFile.objects.filter(owner_kind=OWNER_SKILL, owner_id=sid).delete()
-            CatalogBinding.objects.filter(owner_kind=OWNER_SKILL, owner_id=sid).delete()
+            self._purge_dangling_references(owner_kind=OWNER_SKILL, owner_id=sid)
             row.delete()
         _invalidate()
+        # Catalog row is gone; also drop the pack it was imported from so the
+        # next disk sync (job_run/objectives call refresh_stale_skills before
+        # every run) does not silently re-import what was just deleted. The
+        # catalog's own ``provider`` field is a content-sniffed flavor (a
+        # Claude-style skill can still physically live under SKILLS_DIR, see
+        # infer_skill_kind()) — not reliable for picking a root, so try every
+        # configured skill root rather than branching on it.
+        for root, _mode in self._skill_disk_roots():
+            _remove_catalog_disk_dir(root, bare_name)
 
     # --- mcp ---------------------------------------------------------------
 
@@ -1235,7 +1609,9 @@ class PlatformCatalog:
         return tuple(saved)
 
     def delete_mcp(self, mcp_id: str) -> None:
-        from peon.projects.models import CatalogBinding, CatalogFile, CatalogMcp
+        from django.conf import settings
+
+        from peon.projects.models import CatalogFile, CatalogMcp
 
         mid = str(mcp_id or "").strip().lower()
         row = CatalogMcp.objects.filter(mcp_id=mid).first()
@@ -1243,9 +1619,13 @@ class PlatformCatalog:
             raise KeyError(f"unknown mcp server {mid!r}")
         with transaction.atomic():
             CatalogFile.objects.filter(owner_kind=OWNER_MCP, owner_id=mid).delete()
-            CatalogBinding.objects.filter(owner_kind=OWNER_MCP, owner_id=mid).delete()
+            self._purge_dangling_references(owner_kind=OWNER_MCP, owner_id=mid)
             row.delete()
         _invalidate()
+        # Every CatalogMcp row is imported from mcps/<id>/ (server code lives
+        # on disk, unlike a skill) — drop it so a later sync_mcps_from_disk()
+        # does not silently re-create the server just deleted.
+        _remove_catalog_disk_dir(Path(getattr(settings, "MCPS_DIR", "") or ""), mid)
 
     # --- bootstrap / disk sync ---------------------------------------------
 
@@ -1254,11 +1634,8 @@ class PlatformCatalog:
 
         roots: list[tuple[Path, str]] = []
         skills = Path(getattr(settings, "SKILLS_DIR", "") or "")
-        imported = Path(getattr(settings, "SKILLS_IMPORTED_DIR", "") or "")
         if skills.is_dir():
             roots.append((skills, "infer"))
-        if imported.is_dir() and imported.resolve() != skills.resolve():
-            roots.append((imported, "claude"))
         for extra in getattr(settings, "SKILLS_EXTRA_DIRS", ()) or ():
             path = Path(extra)
             if path.is_dir():
@@ -1488,7 +1865,6 @@ class PlatformCatalog:
         the actual rules (namespace disambiguation, kind inference, file
         collection, affinity-derived bindings) live here exactly once.
         """
-        from orchestrator.skills.affinity import read_affinity
         from orchestrator.skills.common import apply_skill_namespace, parse_frontmatter_yaml
         from orchestrator.skills.kind import catalog_id_for, infer_skill_kind
 
@@ -1510,33 +1886,21 @@ class PlatformCatalog:
             if not path.is_file():
                 continue
             rel = path.relative_to(candidate.root).as_posix()
-            if rel in {"SKILL.md", "peon.affinity.yaml"} or path.name.startswith("."):
+            if rel == "SKILL.md" or path.name.startswith("."):
                 continue
             try:
                 files[rel] = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-        try:
-            affinity = read_affinity(candidate.root)
-        except Exception:
-            affinity = None
-        binding_rows = []
-        if affinity is not None and not keep_bindings:
-            for binding in affinity.bindings:
-                if binding.score < _AFFINITY_THRESHOLD:
-                    continue
-                role = self.get_role(binding.role_id)
-                if role is None:
-                    continue
-                binding_rows.append(
-                    {"role_id": role.id, "score": binding.score, "lead": binding.lead}
-                )
+        # No bindings hint from disk — a freshly-imported skill goes through
+        # the same unified auto-infer/draft-a-role pipeline as any other new
+        # skill (``_apply_owner_bindings``), never a sidecar file.
         return self.upsert_skill(
             skill_md=text,
             files=files,
             skill_id=catalog_id_for(frontmatter_name, kind),
             provider=kind.provider,
-            bindings=binding_rows or None,
+            bindings=None,
             keep_bindings=keep_bindings,
             from_disk=from_disk,
             only_if_pristine=only_if_pristine,
@@ -1558,10 +1922,7 @@ class PlatformCatalog:
         if not slug:
             raise ValueError("skill name is required")
         skills_root = Path(getattr(settings, "SKILLS_DIR", "") or "")
-        legacy = Path(getattr(settings, "SKILLS_IMPORTED_DIR", "") or "")
         root = skills_root / slug
-        if not root.is_dir() and legacy.resolve() != skills_root.resolve():
-            root = legacy / slug
         if not root.is_dir():
             raise ValueError(f"skill directory missing: {skills_root / slug}")
         manifest = find_manifest(root)

@@ -708,6 +708,24 @@ def run_job_via_agent(
         parked = _park_after_run(job, bridge, result.output or "")
         if parked is not None:
             return parked
+    if result.ok:
+        role = RoleRegistry.shared().get(names[0]) if names else None
+        if role is not None and role.is_analyzer:
+            report_path = resolve_job_workspace(job) / "findings" / "report.md"
+            if not report_path.is_file():
+                emit(
+                    job,
+                    "status",
+                    "Analyzer finished without findings/report.md — retrying once",
+                )
+                retry_steer = (
+                    "Your previous turn ended without writing findings/report.md. "
+                    "A final answer describing the report is not enough: call "
+                    "`list_workspace_artifacts` and `list_findings` to gather "
+                    "evidence, then `write_report_note` to actually write "
+                    "findings/report.md before ending your turn."
+                )
+                result = run_agent(scope, cfg, resume=True, steer=retry_steer)
     if job.project_id and extras.get("crew_mode") == "project":
         try:
             set_crew_status(

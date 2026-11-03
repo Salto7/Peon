@@ -162,13 +162,22 @@ def install_recipe_from_suggestion(suggestion: dict[str, Any]) -> dict[str, Any]
 
 def tool_suggest_human(prompt: str) -> str:
     from orchestrator.prompts import CATALOG_INSTALL_PREFER
+    from orchestrator.toolsmith.url_fetch import install_instructions_for_prompt
 
-    return (
-        f"Operator request:\n{prompt}\n\n"
-        f"Target image: the Peon sandbox (Kali). {CATALOG_INSTALL_PREFER}\n\n"
+    parts = [f"Operator request:\n{prompt}"]
+    real_instructions = install_instructions_for_prompt(prompt)
+    if real_instructions:
+        parts.append(
+            "The operator's URL documents its own install steps — prefer these "
+            f"over a guess, translated into the catalog install cascade below:\n"
+            f"{real_instructions}"
+        )
+    parts.append(f"Target image: the Peon sandbox (Kali). {CATALOG_INSTALL_PREFER}")
+    parts.append(
         f"Existing catalog tools (avoid duplicate ids):\n"
         f"{yaml.safe_dump(catalog_summaries(), sort_keys=False)}"
     )
+    return "\n\n".join(parts)
 
 
 def tool_replan_human(
@@ -512,8 +521,17 @@ def authoring_prompt(
             seen.add(item["id"])
     mode = "catalog_wrapper" if hits else "capability"
     install_types = ", ".join(CATALOG_INSTALL_TYPES)
-    lines = [
-        f"Operator request:\n{prompt}\n",
+    lines = [f"Operator request:\n{prompt}\n"]
+    from orchestrator.toolsmith.url_fetch import reference_material_for_prompt
+
+    reference = reference_material_for_prompt(prompt)
+    if reference:
+        lines.append(
+            "The operator's URL has real documentation — ground the skill's "
+            "usage instructions in it (flags, workflows, examples) rather "
+            f"than guessing:\n{reference}\n"
+        )
+    lines += [
         f"Catalog tools matched on disk:\n{yaml.safe_dump(on_disk or ['(none)'], sort_keys=False)}",
         f"Authoring mode: {mode}",
         "Default allowed-tools: Bash Read",

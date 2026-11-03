@@ -41,7 +41,7 @@ from peon.projects.models import (
 )
 from peon.projects.objectives import ObjectiveScheduler
 from peon.projects.plan_graph import plan_graph_payload
-from peon.projects.planning import create_project_shell, run_llm_plan
+from peon.projects.planning import create_project_shell, persist_project_plan, run_llm_plan
 from peon.projects.project_status import ProjectOpsPayload
 from peon.projects.roe_ops import roe_add_path
 from peon.projects.role_job_tree import RoleJobTree
@@ -259,8 +259,80 @@ def project_create(request: HttpRequest) -> HttpResponse:
             "nav": "projects",
             "available_roles": RoleCards.picker(),
             "selected_roles": RoleCards.required_names(),
+            "workflow_list_url": "/lab/workflows/api/?published=1",
         },
     )
+
+
+def _apply_workflow_preset(
+    request: HttpRequest, *, summary: str, in_scope_raw: str, flashes: list[tuple[str, str]]
+) -> tuple[list[str], str, str, object | None]:
+    """Fold a chosen ``WorkflowPreset``'s seed inputs into the manual fields and compile its graph.
+
+    Returns ``(role_ids, summary, in_scope_raw, compiled)``. ``compiled`` is the runnable plan (objectives with
+    roles, skills, tools and dependencies) when a published workflow was picked, every required seed input was
+    supplied and the graph compiles; project creation then executes it instead of asking the LLM planner.
+    """
+    from orchestrator.workflow import WorkflowCompileError
+    from peon.projects.workflow import compile_preset, get_workflow
+
+    workflow_id = (request.POST.get("workflow_id") or "").strip()
+    if not workflow_id:
+        return [], summary, in_scope_raw, None
+    preset = get_workflow(workflow_id)
+    if preset is None or not preset["is_published"]:
+        flashes.append(
+            ("warning", f"Workflow {workflow_id!r} not found or unpublished; using manual fields.")
+        )
+        return [], summary, in_scope_raw, None
+
+    missing: list[str] = []
+    summary_lines: list[str] = []
+    scope_lines: list[str] = []
+    answers: dict[str, str] = {}
+    for seed in preset["seed_inputs"]:
+        key = str(seed.get("key") or "").strip()
+        if not key:
+            continue
+        value = (request.POST.get(f"workflow_input__{key}") or "").strip()
+        if not value:
+            if seed.get("required"):
+                missing.append(str(seed.get("label") or key))
+            continue
+        answers[key] = value
+        if seed.get("maps_to") == "scope":
+            # `coerce_targets` drops bare, unprefixed strings (e.g. "example.com")
+            # on purpose — an explicit type: prefix is how any text becomes scope.
+            target_type = str(seed.get("target_type") or "domain").strip() or "domain"
+            scope_lines.append(f"{target_type}:{value}")
+        else:
+            summary_lines.append(f"{seed.get('label') or key}: {value}")
+
+    if missing:
+        flashes.append(("warning", "Missing required workflow input(s): " + ", ".join(missing)))
+        return [], summary, in_scope_raw, None
+
+    if scope_lines:
+        in_scope_raw = (in_scope_raw + "\n" + "\n".join(scope_lines)).strip()
+    if summary_lines:
+        extra = "\n".join(summary_lines)
+        summary = (summary + "\n\n" + extra).strip() if summary else extra
+    if not summary:
+        summary = preset["description"]
+
+    role_ids = sorted(
+        {
+            str(node.get("ref_id") or "").strip()
+            for node in (preset["graph"].get("nodes") or [])
+            if str(node.get("kind") or "") == "role" and str(node.get("ref_id") or "").strip()
+        }
+    )
+    compiled = None
+    try:
+        compiled = compile_preset(preset, answers)
+    except WorkflowCompileError as exc:
+        flashes.append(("warning", f"Workflow {preset['name']!r} cannot run as designed ({exc}); planning with its roles instead."))
+    return role_ids, summary, in_scope_raw, compiled
 
 
 def _create_project_from_post(request: HttpRequest) -> dict:
@@ -275,10 +347,15 @@ def _create_project_from_post(request: HttpRequest) -> dict:
     title = (request.POST.get("title") or "").strip() or "untitled"
     summary = (request.POST.get("summary") or "").strip()
     operator_scope = bool((request.POST.get("in_scope") or "").strip())
-    in_scope = parse_target_lines(request.POST.get("in_scope") or "")
+    in_scope_raw = request.POST.get("in_scope") or ""
     sandbox_runtime = (request.POST.get("sandbox_runtime") or "").strip()
     kind = ProjectKind.resolve(request.POST.get("kind") or "")
     flashes: list[tuple[str, str]] = []
+
+    workflow_role_ids, summary, in_scope_raw, compiled = _apply_workflow_preset(
+        request, summary=summary, in_scope_raw=in_scope_raw, flashes=flashes
+    )
+    in_scope = parse_target_lines(in_scope_raw)
 
     # Uploads need a project id — create shell first without paths, then attach.
     project, scope, roe = create_project_shell(
@@ -324,7 +401,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
 
     picked = [
         str(s).strip()
-        for s in request.POST.getlist("role_ids")
+        for s in (workflow_role_ids or request.POST.getlist("role_ids"))
         if str(s).strip()
     ]
     required = RoleCards.required_names()
@@ -351,21 +428,37 @@ def _create_project_from_post(request: HttpRequest) -> dict:
         "message": f"Created project {project.title}",
     }
 
-    if llm_configured() and brief:
-        stage("plan", "Planning objectives…", "active")
+    if compiled is not None or (llm_configured() and brief):
+        stage("plan", "Compiling workflow…" if compiled is not None else "Planning objectives…", "active")
         try:
-            result = run_llm_plan(
-                description=brief,
-                mode="project",
-                title=project.title,
-                summary=project.summary,
-                in_scope=scope,
-                exclusions=list(roe.exclusions) if roe else [],
-                authorization=(roe.authorization_note if roe else ""),
-                role_ids=picked or None,
-                preferred_tags=list(project.focus_tags or []),
-                project=project,
-            )
+            if compiled is not None:
+                # the designed graph is the plan: no LLM in the loop, same persistence + scheduler as any plan
+                result = persist_project_plan(
+                    title=project.title,
+                    summary=project.summary,
+                    description=brief,
+                    plan_text=compiled.plan_text,
+                    objectives_payload=compiled.objectives,
+                    in_scope=scope,
+                    exclusions=list(roe.exclusions) if roe else [],
+                    authorization=(roe.authorization_note if roe else ""),
+                    project=project,
+                    preferred_tags=list(project.focus_tags or []),
+                    start=project.kind != ProjectKind.DURABLE,
+                )
+            else:
+                result = run_llm_plan(
+                    description=brief,
+                    mode="project",
+                    title=project.title,
+                    summary=project.summary,
+                    in_scope=scope,
+                    exclusions=list(roe.exclusions) if roe else [],
+                    authorization=(roe.authorization_note if roe else ""),
+                    role_ids=picked or None,
+                    preferred_tags=list(project.focus_tags or []),
+                    project=project,
+                )
             n_obj = len(result.objectives or [])
             job_title = result.job.title if result.job else "no ready objective"
             stages[-1] = {

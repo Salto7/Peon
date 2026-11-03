@@ -49,7 +49,14 @@ type Proposal = {
 type Urls = { delete: string; scan: string; import: string };
 type ProposalUrls = { list: string; decide: string };
 
-type Props = { listUrl: string; urls: Urls; proposalUrls: ProposalUrls; sources: Source[] };
+type Props = {
+  listUrl: string;
+  urls: Urls;
+  proposalUrls: ProposalUrls;
+  sources: Source[];
+  /** ``browse`` = sources list only; ``add`` = register/scan form (+ list). Default full. */
+  mode?: "full" | "browse" | "add";
+};
 
 const STATUS_VARIANT: Record<Source["status"], "secondary" | "outline" | "default" | "destructive"> = {
   pending: "secondary",
@@ -67,7 +74,9 @@ function withId(template: string, id: string): string {
  * pointers, and import reviewed items one at a time. Scanning only ever
  * reads files as text — nothing from a source is ever executed.
  */
-export default function MarketplacePanel({ listUrl, urls, proposalUrls, sources: initial }: Props) {
+export default function MarketplacePanel({ listUrl, urls, proposalUrls, sources: initial, mode = "full" }: Props) {
+  const showForm = mode === "full" || mode === "add";
+  const showList = mode === "full" || mode === "browse" || mode === "add";
   const ids = useId();
   const qc = useQueryClient();
   const [name, setName] = useState("");
@@ -187,9 +196,15 @@ export default function MarketplacePanel({ listUrl, urls, proposalUrls, sources:
 
   return (
     <div className="space-y-4">
-      <div className="space-y-3 rounded-lg border p-4">
-        <div className="grid gap-3 sm:grid-cols-[10rem_1fr]">
-          <div className="space-y-1.5">
+      {showForm && (
+      <div className={cn("min-w-0 space-y-3", mode !== "add" && "rounded-lg border p-4")}>
+        {mode !== "add" && (
+          <p className="text-xs text-pretty text-muted-foreground">
+            Scan a GitHub repo or zip — nothing imports until you approve each item.
+          </p>
+        )}
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+          <div className="min-w-0 space-y-1.5">
             <Label htmlFor={`${ids}-type`}>Source</Label>
             <Select value={sourceType} onValueChange={(v) => setSourceType(v as "github" | "zip")}>
               <SelectTrigger id={`${ids}-type`} className="w-full">
@@ -201,64 +216,74 @@ export default function MarketplacePanel({ listUrl, urls, proposalUrls, sources:
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-1.5">
+          <div className="min-w-0 space-y-1.5">
             <Label htmlFor={`${ids}-name`}>Name</Label>
-            <Input id={`${ids}-name`} value={name} onChange={(e) => setName(e.target.value)} placeholder="SpecterOps skills" />
+            <Input id={`${ids}-name`} value={name} onChange={(e) => setName(e.target.value)} placeholder="SpecterOps skills" className="min-w-0" />
           </div>
         </div>
         {sourceType === "github" ? (
-          <div className="grid gap-3 sm:grid-cols-[1fr_8rem_12rem]">
-            <div className="space-y-1.5">
+          <div className="grid min-w-0 gap-3">
+            <div className="min-w-0 space-y-1.5">
               <Label htmlFor={`${ids}-url`}>Repository URL</Label>
               <Input
                 id={`${ids}-url`}
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="https://github.com/owner/repo"
+                className="min-w-0"
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${ids}-ref`}>Branch/tag</Label>
-              <Input id={`${ids}-ref`} value={ref} onChange={(e) => setRef(e.target.value)} placeholder="main" />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${ids}-subpath`}>Subpath (optional)</Label>
-              <Input
-                id={`${ids}-subpath`}
-                value={subpath}
-                onChange={(e) => setSubpath(e.target.value)}
-                placeholder="plugins/bloodhound"
-              />
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+              <div className="min-w-0 space-y-1.5">
+                <Label htmlFor={`${ids}-ref`}>Branch/tag</Label>
+                <Input id={`${ids}-ref`} value={ref} onChange={(e) => setRef(e.target.value)} placeholder="main" className="min-w-0" />
+              </div>
+              <div className="min-w-0 space-y-1.5">
+                <Label htmlFor={`${ids}-subpath`}>Subpath (optional)</Label>
+                <Input
+                  id={`${ids}-subpath`}
+                  value={subpath}
+                  onChange={(e) => setSubpath(e.target.value)}
+                  placeholder="plugins/bloodhound"
+                  className="min-w-0"
+                />
+              </div>
             </div>
           </div>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-[1fr_12rem]">
-            <div className="space-y-1.5">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+            <div className="min-w-0 space-y-1.5">
               <Label htmlFor={`${ids}-file`}>Zip file</Label>
-              <Input id={`${ids}-file`} ref={fileInput} type="file" accept=".zip" />
+              <Input id={`${ids}-file`} ref={fileInput} type="file" accept=".zip" className="min-w-0" />
             </div>
-            <div className="space-y-1.5">
+            <div className="min-w-0 space-y-1.5">
               <Label htmlFor={`${ids}-subpath2`}>Subpath (optional)</Label>
               <Input
                 id={`${ids}-subpath2`}
                 value={subpath}
                 onChange={(e) => setSubpath(e.target.value)}
                 placeholder="plugins/bloodhound"
+                className="min-w-0"
               />
             </div>
           </div>
         )}
         <div className="flex justify-end">
-          <Button onClick={() => create.mutate()} disabled={create.isPending || !name.trim()}>
+          <Button onClick={() => create.mutate()} disabled={create.isPending || !name.trim()} className="w-full sm:w-auto">
             {create.isPending ? <Loader2 className="animate-spin" /> : <Plus />}
             Add source
           </Button>
         </div>
       </div>
+      )}
 
-      {sources.length === 0 ? (
-        <p className="px-1 text-sm text-muted-foreground">No marketplace sources registered yet.</p>
-      ) : (
+      {showList && sources.length === 0 ? (
+        <p className="px-1 text-sm text-muted-foreground">
+          {mode === "browse"
+            ? "No marketplace sources yet — use Add item to scan a GitHub repo or zip."
+            : "No marketplace sources registered yet."}
+        </p>
+      ) : showList ? (
         <div className="space-y-3">
           {sources.map((source) => {
             const isOpen = open === source.id;
@@ -433,7 +458,7 @@ export default function MarketplacePanel({ listUrl, urls, proposalUrls, sources:
             );
           })}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

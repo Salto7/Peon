@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 import orchestrator as _pkg
 from orchestrator.prompts import FINDINGS_GUIDANCE, INSTALL_CASCADE
@@ -26,14 +26,13 @@ _DEFAULT_SYSTEM_PREAMBLE = (
     "Obey OPERATOR INSTRUCTION / FOLLOW-UP messages when they appear.\n"
     f"{FINDINGS_GUIDANCE}"
 )
-_DEFAULT_LLM_PROVIDER = "openrouter"
 _DEFAULT_LLM_MODULE = "litellm"
-_DEFAULT_LITELLM_MODEL = "openrouter/openai/gpt-5.6-luna"
 _DEFAULT_LLM_PROXY_URL = "http://litellm:4000/v1"
 # Public SoT for upstream provider → env var (also used by peon apps bootstrap).
 LLM_PROVIDER_KEY_ENV = {
     "openrouter": "OPENROUTER_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "ollama": "LITELLM_API_KEY",
 }
 
 
@@ -47,7 +46,6 @@ _PATH_FIELDS = (
     "workspaces_dir",
     "platform_workspace_dir",
     "skills_dir",
-    "skills_imported_dir",
     "mcps_dir",
 )
 
@@ -78,17 +76,21 @@ class RuntimeConfig(BaseSettings):
         None, validation_alias=_env_names("PEON_PLATFORM_WORKSPACE_DIR")
     )
 
-    llm_provider: str = _DEFAULT_LLM_PROVIDER
+    llm_provider: str = ""
     llm_module: str = _DEFAULT_LLM_MODULE
-    litellm_model: str = Field(
-        _DEFAULT_LITELLM_MODEL, validation_alias=_env_names("LITELLM_MODEL", "LLM_MODEL")
-    )
+    litellm_model: str = Field("", validation_alias=_env_names("LITELLM_MODEL", "LLM_MODEL"))
     # Provider key first (see ``from_env``), then these in order.
+    # ``LLM_API_KEY`` is the Cognee/legacy alias used in some .env files.
     litellm_api_key: str = Field(
         "",
-        validation_alias=_env_names("LITELLM_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"),
+        validation_alias=_env_names(
+            "LITELLM_API_KEY",
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "LLM_API_KEY",
+        ),
     )
-    litellm_api_base: str | None = None
+    litellm_api_base: str | None = Field(None, validation_alias=_env_names("LITELLM_API_BASE"))
     llm_temperature: float = 0.0
     llm_max_tokens: int | None = None
     # Optional OpenAI-compatible proxy exposure (Compose profile llm-proxy).
@@ -106,9 +108,6 @@ class RuntimeConfig(BaseSettings):
     # Job/crew orchestration module (crewai only on Peon-crewAI).
     agent_module: str = "crewai"
     skills_dir: Path = Path("skills")
-    # Deprecated: defaults to skills_dir. Kept so old env / mounts still resolve.
-    skills_imported_dir: Path | None = None
-    skills_extra_dirs: Annotated[tuple[Path, ...], NoDecode] = ()
     mcps_dir: Path = Path("mcps")
 
     sandbox_image: str = "peon-sandbox:local"
@@ -120,13 +119,6 @@ class RuntimeConfig(BaseSettings):
     system_preamble: str = Field(
         _DEFAULT_SYSTEM_PREAMBLE, validation_alias=_env_names("ORCHESTRATOR_SYSTEM_PREAMBLE")
     )
-
-    @field_validator("skills_extra_dirs", mode="before")
-    @classmethod
-    def _split_dirs(cls, value: Any) -> Any:
-        if isinstance(value, str):
-            return tuple(p.strip() for p in value.replace(";", ":").split(":") if p.strip())
-        return value
 
     @field_validator("crew_reasoning_effort", "agent_module", mode="after")
     @classmethod
@@ -145,19 +137,12 @@ class RuntimeConfig(BaseSettings):
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, resolve(value))
-        if self.skills_imported_dir is None:
-            object.__setattr__(self, "skills_imported_dir", self.skills_dir)
         if self.platform_workspace_dir is None:
             object.__setattr__(self, "platform_workspace_dir", self.workspaces_dir / "platform")
-        object.__setattr__(
-            self, "skills_extra_dirs", tuple(resolve(p) for p in self.skills_extra_dirs)
-        )
         return self
 
     def ensure_dirs(self) -> None:
         self.skills_dir.mkdir(parents=True, exist_ok=True)
-        if self.skills_imported_dir.resolve() != self.skills_dir.resolve():
-            self.skills_imported_dir.mkdir(parents=True, exist_ok=True)
         self.mcps_dir.mkdir(parents=True, exist_ok=True)
         self.tools_catalog_dir.mkdir(parents=True, exist_ok=True)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
@@ -166,11 +151,6 @@ class RuntimeConfig(BaseSettings):
     def apply_env(self) -> None:
         """Export path hints used by catalog / docker exec helpers."""
         os.environ["SKILLS_DIR"] = str(self.skills_dir)
-        # Alias: imports share skills/. Extra distinct path only if configured.
-        os.environ["SKILLS_IMPORTED_DIR"] = str(self.skills_imported_dir)
-        os.environ["SKILLS_EXTRA_DIRS"] = ":".join(
-            str(path) for path in self.skills_extra_dirs
-        )
         os.environ["MCPS_DIR"] = str(self.mcps_dir)
         os.environ["TOOLS_CATALOG_DIR"] = str(self.tools_catalog_dir)
         os.environ["PROJECT_WORKSPACES_DIR"] = str(self.workspaces_dir)
@@ -186,8 +166,11 @@ class RuntimeConfig(BaseSettings):
     def from_env(cls, *, root: Path | None = None) -> RuntimeConfig:
         """Settings from the environment; relative defaults resolve under ``root``."""
         kwargs: dict[str, Any] = {"config_root": (root or Path.cwd()).resolve()}
-        provider = (os.environ.get("LLM_PROVIDER") or _DEFAULT_LLM_PROVIDER).strip()
-        provider_key = (os.environ.get(LLM_PROVIDER_KEY_ENV.get(provider, "")) or "").strip()
+        provider = (os.environ.get("LLM_PROVIDER") or "").strip()
+        key_env = LLM_PROVIDER_KEY_ENV.get(provider, "LITELLM_API_KEY")
+        provider_key = (os.environ.get(key_env) or "").strip() or (
+            os.environ.get("LLM_API_KEY") or ""
+        ).strip()
         if provider_key:
             kwargs["litellm_api_key"] = provider_key
         return cls(**kwargs)

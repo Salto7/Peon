@@ -30,13 +30,13 @@
 
   {# ── Overview ─────────────────────────────────────────────── #}
   <div data-war-pane="dashboard" class="space-y-4">
-    <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_26rem]">
+    <div class="console-grid grid gap-4">
       <div class="min-w-0 space-y-4">
-        <section id="agents-card" class="maximizable overflow-hidden rounded-xl border bg-card shadow-sm" aria-labelledby="agents-heading">
+        <section id="agents-card" class="war-card maximizable relative overflow-hidden rounded-xl border bg-card shadow-sm" aria-labelledby="agents-heading">
           <div class="flex items-center justify-between gap-2 border-b px-4 py-3">
             <h2 id="agents-heading" class="text-sm font-semibold">Agents</h2>
             <div class="flex items-center gap-2">
-              <span class="hidden text-xs text-muted-foreground sm:inline">Click an agent for context · right-click for actions</span>
+              <span class="hidden text-xs text-muted-foreground lg:inline">Click an agent for context · right-click for actions</span>
               <button type="button" data-maximize-toggle="agents-card" aria-pressed="false"
                       class="inline-flex size-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                       title="Maximise graph" aria-label="Maximise graph">
@@ -45,12 +45,13 @@
               </button>
             </div>
           </div>
-          <div id="agents-list" class="agent-tree h-[26rem]" data-project-pk="{{ project.pk }}">
+          <div id="agents-list" class="agent-tree war-agents-body" data-project-pk="{{ project.pk }}">
             <p class="agents-empty">Loading agents…</p>
           </div>
+          <span role="separator" aria-orientation="horizontal" aria-label="Resize Agents" class="war-resizer war-resizer-s" data-war-resize="agentsH" data-axis="y" title="Drag to resize"></span>
         </section>
 
-        <section class="flex h-[26rem] flex-col overflow-hidden rounded-xl border bg-card shadow-sm" data-tabset="ops" data-pk="{{ project.pk }}" id="ops-card" aria-labelledby="ops-heading">
+        <section class="war-card relative flex flex-col overflow-hidden rounded-xl border bg-card shadow-sm" data-tabset="ops" data-pk="{{ project.pk }}" id="ops-card" aria-labelledby="ops-heading">
           <div class="workspace-header flex flex-wrap items-center gap-3 border-b px-4 py-2">
             <h2 id="ops-heading" class="sr-only">Agent context and activity</h2>
             <div role="tablist" aria-label="Context and activity" class="inline-flex rounded-lg border bg-muted p-0.5">
@@ -59,6 +60,7 @@
               <button type="button" role="tab" aria-selected="false" data-workspace-tab="activity" id="tab-activity"
                       class="workspace-tab h-7 cursor-pointer rounded-md px-3 text-xs font-medium text-muted-foreground aria-selected:bg-background aria-selected:text-foreground aria-selected:shadow-sm">Activity</button>
             </div>
+            <button type="button" data-panel-toggle="ops" aria-expanded="true" class="panel-hide ml-auto" title="Collapse Context &amp; activity" aria-label="Collapse Context and activity">{% icon "panel-bottom-close" "size-4 panel-icon-open" %}{% icon "panel-bottom-open" "size-4 panel-icon-closed" %}</button>
           </div>
           <div class="workspace-pane is-active min-h-0 flex-1 overflow-y-auto p-4" data-workspace-pane="context" role="tabpanel" aria-labelledby="tab-context" id="agent-context">
             <div id="context-body" class="context-body"><p class="meta">Select an agent in the graph.</p></div>
@@ -78,13 +80,17 @@
               {% if not stream_bootstrap %}<p class="empty">Waiting for agent activity…</p>{% endif %}
             </div>
           </div>
+          <span role="separator" aria-orientation="horizontal" aria-label="Resize Context and activity" class="war-resizer war-resizer-s" data-war-resize="opsH" data-axis="y" data-panel="ops" title="Drag to resize"></span>
         </section>
       </div>
 
-      <section id="war-chat" class="flex h-[53rem] max-h-[calc(100dvh-6rem)] flex-col overflow-hidden rounded-xl border bg-card shadow-sm xl:sticky xl:top-6" aria-labelledby="chat-heading">
+      <section id="war-chat" class="war-card relative flex max-h-[calc(100dvh-6rem)] flex-col overflow-hidden rounded-xl border bg-card shadow-sm xl:sticky xl:top-6" aria-labelledby="chat-heading">
         <div class="flex items-center justify-between border-b px-4 py-3">
           <h2 id="chat-heading" class="text-sm font-semibold">Chat</h2>
-          <span class="text-xs text-muted-foreground">Ask, instruct or replan</span>
+          <div class="flex items-center gap-2">
+            <span class="hidden text-xs text-muted-foreground sm:inline">Ask, instruct or replan</span>
+            <button type="button" data-panel-toggle="chat" aria-expanded="true" class="panel-hide" title="Collapse Chat" aria-label="Collapse Chat">{% icon "panel-right-close" "size-4 panel-icon-open" %}{% icon "panel-right-open" "size-4 panel-icon-closed" %}</button>
+          </div>
         </div>
         <div id="hitl-banner" class="flex items-start gap-3 border-b border-warning/30 bg-warning/5 px-4 py-3" hidden>
           <span class="mt-0.5 text-warning">{% icon "circle-alert" %}</span>
@@ -98,48 +104,58 @@
           <p class="chat-thread-empty">Ask anything about the project.</p>
         </div>
         {% if project.status != "cancelled" %}
-        <form id="project-chat-form" class="border-t p-3"
+        <form id="project-chat-form" class="chat-form"
               data-chat-url="{% url 'project_chat' project.pk %}"
               data-inputs-url="{% url 'project_inputs' project.pk %}"
               {% if project.status == "paused" %}data-disabled="1"{% endif %}>
-          <div class="mb-2 flex items-center gap-2">
-            <label for="project-chat-to" class="shrink-0 text-xs text-muted-foreground">To</label>
-            <select id="project-chat-to" class="ui-select h-8 flex-1 py-0 text-xs" aria-label="Recipient">
-              <option value="">Everyone — project chat</option>
-            </select>
-          </div>
-          <div class="mb-2 flex gap-1" role="group" aria-label="Message mode">
-            <button type="button" data-chat-mode="chat" class="h-7 cursor-pointer rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent [&.is-active]:bg-secondary [&.is-active]:text-foreground">Ask</button>
-            <button type="button" data-chat-mode="instruct" class="h-7 cursor-pointer rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent [&.is-active]:bg-secondary [&.is-active]:text-foreground">Instruct</button>
-            <button type="button" data-chat-mode="replan" class="h-7 cursor-pointer rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent [&.is-active]:bg-secondary [&.is-active]:text-foreground">Replan</button>
-            <button type="button" data-chat-mode="stop" class="h-7 cursor-pointer rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent [&.is-active]:bg-secondary [&.is-active]:text-foreground">Stop</button>
-          </div>
-          <div class="flex items-end gap-2 rounded-lg border border-input bg-background p-1.5 shadow-sm focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/40">
-            <c-button variant="ghost" size="icon-sm" id="project-chat-plus" aria-label="Attach files" title="Attach files">{% icon "plus" %}</c-button>
-            <input type="file" id="project-chat-file" name="uploads" multiple class="sr-only" tabindex="-1" aria-hidden="true">
-            <textarea id="project-chat-input" rows="2" placeholder="Ask about the project…" aria-label="Chat message"
-                      class="max-h-40 min-h-9 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm outline-none"
+          <div class="chat-composer">
+            <textarea id="project-chat-input" rows="1" placeholder="Ask about the project…" aria-label="Chat message"
+                      class="chat-input"
                       {% if project.status == "paused" %}disabled{% endif %}></textarea>
-            <c-button size="sm" type="submit" id="project-chat-send">Send</c-button>
+            <div class="chat-composer-bar">
+              <c-button variant="ghost" size="icon-sm" id="project-chat-plus" aria-label="Attach files" title="Attach files">{% icon "plus" %}</c-button>
+              <input type="file" id="project-chat-file" name="uploads" multiple class="sr-only" tabindex="-1" aria-hidden="true">
+              <div class="chat-modes" role="group" aria-label="Message mode">
+                <button type="button" data-chat-mode="chat" class="chat-mode">Ask</button>
+                <button type="button" data-chat-mode="instruct" class="chat-mode">Instruct</button>
+                <button type="button" data-chat-mode="replan" class="chat-mode">Replan</button>
+                <button type="button" data-chat-mode="stop" class="chat-mode">Stop</button>
+              </div>
+              <div class="chat-to">
+                {# the native select stays as the source of truth (value / change); the menu below is what you see #}
+                <select id="project-chat-to" class="sr-only" tabindex="-1" aria-hidden="true">
+                  <option value="">Everyone</option>
+                </select>
+                <button type="button" id="project-chat-to-btn" class="chat-to-btn" aria-haspopup="listbox" aria-expanded="false" title="Recipient">
+                  <span class="chat-to-label">Everyone</span>{% icon "chevron-down" "size-3" %}
+                </button>
+                <ul id="project-chat-to-menu" class="chat-to-menu" role="listbox" aria-label="Recipient" hidden></ul>
+              </div>
+              <button type="submit" id="project-chat-send" class="chat-send" aria-label="Send" title="Send">{% icon "arrow-up" "size-4" %}</button>
+            </div>
           </div>
-          <p class="mt-1.5 text-[11px] text-muted-foreground">Enter to send · Shift+Enter for a new line</p>
+          <p class="chat-hint">Enter to send · Shift+Enter for a new line</p>
         </form>
         {% else %}
         <p class="border-t p-4 text-sm text-muted-foreground">This project was cancelled — chat is unavailable.</p>
         {% endif %}
+        <span role="separator" aria-orientation="vertical" aria-label="Resize Chat width" class="war-resizer war-resizer-w" data-war-resize="chatW" data-axis="x" data-invert="1" data-panel="chat" title="Drag to resize width"></span>
+        <span role="separator" aria-orientation="horizontal" aria-label="Resize Chat height" class="war-resizer war-resizer-s" data-war-resize="chatH" data-axis="y" data-panel="chat" title="Drag to resize height"></span>
       </section>
     </div>
 
-    <section id="console-workspace" class="console-workspace overflow-hidden rounded-xl border bg-card shadow-sm" data-pk="{{ project.pk }}" aria-labelledby="shell-heading">
-      <div class="flex flex-wrap items-center gap-3 border-b px-4 py-2.5">
+    <section id="console-workspace" class="war-card console-workspace relative overflow-hidden rounded-xl border bg-card shadow-sm" data-pk="{{ project.pk }}" aria-labelledby="shell-heading">
+      <div class="workspace-header flex flex-wrap items-center gap-3 border-b px-4 py-2.5">
         <h2 id="shell-heading" class="text-sm font-semibold">Sandbox shell</h2>
         <span class="text-xs text-muted-foreground" id="terminal-status">Ready</span>
-        <div class="ml-auto flex gap-2">
+        <div class="ml-auto flex items-center gap-2">
           <c-button size="sm" variant="outline" id="terminal-open">{% icon "square-terminal" %} Open shell</c-button>
           <c-button size="sm" variant="ghost" id="terminal-close">Disconnect</c-button>
+          <button type="button" data-panel-toggle="shell" aria-expanded="true" class="panel-hide panel-collapse-btn" title="Collapse Sandbox shell" aria-label="Collapse Sandbox shell">{% icon "panel-bottom-close" "size-4 panel-icon-open" %}{% icon "panel-bottom-open" "size-4 panel-icon-closed" %}</button>
         </div>
       </div>
-      <div id="terminal-host" class="terminal-host h-[22rem] bg-canvas p-2" tabindex="0" aria-label="Sandbox terminal"></div>
+      <div id="terminal-host" class="terminal-host war-shell-body bg-canvas p-2" tabindex="0" aria-label="Sandbox terminal"></div>
+      <span role="separator" aria-orientation="horizontal" aria-label="Resize Sandbox shell" class="war-resizer war-resizer-s" data-war-resize="shellH" data-axis="y" data-panel="shell" title="Drag to resize"></span>
     </section>
   </div>
 
@@ -381,6 +397,7 @@
 <script defer src="{% static 'vendor/xterm/xterm.min.js' %}"></script>
 <script defer src="{% static 'vendor/xterm/addon-fit.min.js' %}"></script>
 <script defer src="{% static 'js/war-nav.js' %}"></script>
+<script defer src="{% static 'js/console-panels.js' %}"></script>
 <script defer src="{% static 'js/agent-graph.js' %}"></script>
 <script defer src="{% static 'js/project-console-chat.js' %}"></script>
 <script defer src="{% static 'js/project-ops.js' %}"></script>

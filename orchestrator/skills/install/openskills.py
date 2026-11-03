@@ -7,8 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from orchestrator.skills.common import apply_candidate_namespace
-from orchestrator.skills.install.place import place_pack
+from orchestrator.skills.install.dragdrop import InstallOutcome, install_candidates
 from orchestrator.skills.registry_scan import discover_skill_candidates
 
 
@@ -19,7 +18,7 @@ def _reject_source(source: str) -> str:
     return text
 
 
-def install_openskills(source: str, *, revision: str = "") -> list[str]:
+def install_openskills(source: str, *, on_conflict: str = "ask") -> InstallOutcome:
     """Install into the imported root. Bytes on disk are the pack; SKILL.md is unchanged."""
     origin = _reject_source(source)
     with tempfile.TemporaryDirectory(prefix="peon-openskills-") as tmp:
@@ -47,8 +46,4 @@ def install_openskills(source: str, *, revision: str = "") -> list[str]:
         )
         if not candidates:
             raise RuntimeError("openskills install produced no SKILL.md pack")
-        ids: list[str] = []
-        for candidate in candidates:
-            apply_candidate_namespace(candidate)
-            ids.append(place_pack(candidate.root, source=origin, revision=revision))
-        return ids
+        return install_candidates(candidates, on_conflict=on_conflict)

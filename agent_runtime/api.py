@@ -1,4 +1,4 @@
-"""Runtime-agnostic session interface.
+"""Backend-agnostic session interface.
 
 Orchestrator and the control plane call this module only. Docker, OpenShell,
 and any later backend stay in their own packages.
@@ -43,7 +43,7 @@ class SessionInfo:
 
 
 @dataclass
-class RuntimeSpec:
+class SandboxSpec:
     """Plain data the control plane hands a backend. No CLI flags."""
 
     project_id: str = ""
@@ -52,7 +52,6 @@ class RuntimeSpec:
     role: str = "project"  # project | shared | lab
     workspace_host: str = ""
     skills_host: str = ""
-    skills_imported_host: str = ""
     # Additional trusted skill repositories: (host path, container path).
     extra_ro_mounts: list[tuple[str, str]] = field(default_factory=list)
     tools_host: str = ""
@@ -69,7 +68,7 @@ class RuntimeSpec:
     state_dir: str = ""
 
 
-class RuntimeSession(ABC):
+class SandboxSession(ABC):
     """One bound environment. ``exec`` is the only way to run a command."""
 
     def __init__(self, info: SessionInfo) -> None:
@@ -160,7 +159,7 @@ class RuntimeSession(ABC):
         return BaseCommandCache.parse_marker(res.stdout)
 
 
-class UnboundSession(RuntimeSession):
+class UnboundSession(SandboxSession):
     """Fail closed. Nothing runs on the host."""
 
     def exec(
@@ -217,7 +216,7 @@ class TerminalHandle(ABC):
     def close(self) -> None: ...
 
 
-class Runtime(ABC):
+class SandboxDriver(ABC):
     """Lifecycle for one backend. Registered by id (``sandbox``, ``openshell``)."""
 
     id: str
@@ -226,23 +225,30 @@ class Runtime(ABC):
     def resource_name(self, project_id: str, *, prefix: str, shared: bool) -> str: ...
 
     @abstractmethod
-    def provision(self, spec: RuntimeSpec) -> RuntimeSession: ...
+    def provision(self, spec: SandboxSpec) -> SandboxSession: ...
 
     @abstractmethod
-    def attach(self, spec: RuntimeSpec) -> RuntimeSession: ...
+    def attach(self, spec: SandboxSpec) -> SandboxSession: ...
 
     @abstractmethod
-    def destroy(self, spec: RuntimeSpec) -> dict: ...
+    def destroy(self, spec: SandboxSpec) -> dict: ...
 
     @abstractmethod
-    def status(self, spec: RuntimeSpec) -> dict: ...
+    def status(self, spec: SandboxSpec) -> dict: ...
 
     @abstractmethod
-    def open_terminal(self, spec: RuntimeSpec, *, cols: int, rows: int) -> TerminalHandle: ...
+    def open_terminal(self, spec: SandboxSpec, *, cols: int, rows: int) -> TerminalHandle: ...
 
     def find(self, label: str) -> list[str]:
         del label
         return []
+
+    def restart(self, spec: SandboxSpec) -> dict:
+        """Restart an existing container in place (no wipe). Not every backend
+        needs this — override where it applies; the default says so plainly
+        instead of silently pretending to succeed."""
+        del spec
+        return {"ok": False, "error": "restart not supported by this driver"}
 
 
 class BaseCommandCache(SharedBase):
@@ -282,7 +288,7 @@ class BaseCommandCache(SharedBase):
         )
 
 
-_current: ContextVar[RuntimeSession | None] = ContextVar("agent_runtime_session", default=None)
+_current: ContextVar[SandboxSession | None] = ContextVar("agent_runtime_session", default=None)
 
 
 class Session:
@@ -300,14 +306,14 @@ class Session:
         return cls._shared
 
     @classmethod
-    def current(cls) -> RuntimeSession:
+    def current(cls) -> SandboxSession:
         backend = _current.get()
         if backend is None:
             return UnboundSession(SessionInfo(project_id="", name="unbound", mode="unbound"))
         return backend
 
     @classmethod
-    def bind(cls, backend: RuntimeSession | None) -> None:
+    def bind(cls, backend: SandboxSession | None) -> None:
         self = cls.shared()
         prev: Token | None = getattr(self._tls, "token", None)
         if prev is not None:

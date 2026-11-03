@@ -147,6 +147,36 @@ def _get_or_create_graph(project: Project) -> AssetGraph:
     raise last
 
 
+def _with_service_protocol(props: dict[str, Any], typ: str, value: str) -> dict[str, Any]:
+    """Fold a service value's protocol into this node's accumulated set.
+
+    ``canonical_asset_key`` makes host:port the identity, so the same socket
+    named with and without a protocol — or with two different protocols,
+    e.g. DNS's tcp/53 and udp/53 — lands on one node; nothing about *that*
+    discovery is lost, it just moves from the identity to this property.
+    """
+    if typ != "service":
+        return props
+    endpoint = parse_service(value)
+    if endpoint is None or not endpoint.protocol:
+        return props
+    protocols = set(props.get("protocols") or [])
+    protocols.add(endpoint.protocol)
+    out = dict(props)
+    out["protocols"] = sorted(protocols)
+    return out
+
+
+def _richer_service_value(prev_value: str, new_value: str, typ: str) -> str:
+    """Keep whichever of two same-identity values already names a protocol."""
+    if typ != "service":
+        return new_value
+    prev_endpoint = parse_service(prev_value)
+    if prev_endpoint is not None and prev_endpoint.protocol:
+        return prev_value
+    return new_value
+
+
 def _upsert_asset(
     graph: AssetGraph,
     *,
@@ -185,7 +215,7 @@ def _upsert_asset(
             "key": key,
             "bucket": bucket_s,
             "source": (source or "")[:120],
-            "props": dict(props or {}),
+            "props": _with_service_protocol(dict(props or {}), typ, value),
         }
         _touch_source(row, source, now)
         graph.assets.append(row)
@@ -207,8 +237,9 @@ def _upsert_asset(
         _touch_source(prev, source or prev.get("source") or "", now)
     merged = dict(prev.get("props") or {})
     merged.update(props or {})
+    merged = _with_service_protocol(merged, typ, value)
     prev["props"] = merged
-    prev["value"] = value
+    prev["value"] = _richer_service_value(str(prev.get("value") or ""), value, typ)
     idx.by_id[str(prev.get("id") or nid)] = prev
     idx.by_key[key] = prev
     return prev

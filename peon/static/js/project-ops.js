@@ -176,6 +176,9 @@
   }
 
   function revealShellCard() {
+    if (window.PeonConsolePanels && typeof window.PeonConsolePanels.show === "function") {
+      window.PeonConsolePanels.show("shell");
+    }
     var shell = document.querySelector(".console-workspace");
     if (shell) {
       shell.classList.remove("is-collapsed");
@@ -1134,7 +1137,7 @@
       for (var i = 0; i < locals.length; i++) {
         var lb = locals[i];
         var bodyEl = lb.querySelector(".chat-bubble-body");
-        if (!bodyEl || bodyEl.textContent !== text) continue;
+        if (!bodyEl || (lb.dataset.full || bodyEl.textContent) !== text) continue;
         var isUserLocal = lb.classList.contains("chat-bubble-user");
         var wantUser = side === "user";
         if (isUserLocal !== wantUser) continue;
@@ -1245,6 +1248,12 @@
 
     if (isChatMessage(msg)) {
       appendChatBubble(msg);
+    } else if (window.PeonProjectConsoleChat && window.PeonProjectConsoleChat.setStatus) {
+      var liveType = String(msg.message_type || "");
+      if (liveType === "tool" || liveType === "status") {
+        // short, human line for the inline "working…" status (e.g. "bash: nmap -sV host")
+        window.PeonProjectConsoleChat.setStatus(text.split("\n")[0].slice(0, 70));
+      }
     }
 
     const metaObj = msg.metadata || {};

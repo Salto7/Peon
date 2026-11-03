@@ -24,14 +24,31 @@ _PROGRESSIVE_HINT = (
 def resolve_skill_ids(
     role: RoleSpec,
     requested: Iterable[str] | None = None,
+    *,
+    context: str = "",
 ) -> tuple[str, ...]:
-    """Skills a role may bind through dynamically inferred affinity."""
+    """Skills a role may bind through dynamically inferred affinity.
+
+    Applies catalog relations (preferred_over, does_not_run_with, depends_on, …).
+    Relation ``conditions`` that are set stay soft (prompt-only); empty
+    conditions are hard-enforced in ``apply_skill_relations``.
+    """
+    from orchestrator.skills.relations import apply_skill_relations
+
+    del context  # reserved for future structured condition matching
     req = [str(s).strip() for s in (requested or ()) if str(s).strip()]
     if not req:
-        return SkillRegistry.shared().skills_for_role(role.id) or tuple(
-            s for s in (role.skills or ()) if s and _bindable(str(s), role.id)
+        dynamic = SkillRegistry.shared().skills_for_role(role.id)
+        if dynamic:
+            return dynamic
+        # Last-resort fallback: the role's own static YAML list, used only
+        # when affinity matched nothing. skills_for_role() above already
+        # applies relations for the normal case; this static list needs the
+        # same hard-enforcement pass, not a silent bypass of it.
+        return apply_skill_relations(
+            tuple(s for s in (role.skills or ()) if s and _bindable(str(s), role.id))
         )
-    return tuple(sid for sid in req if _bindable(sid, role.id))
+    return apply_skill_relations(tuple(sid for sid in req if _bindable(sid, role.id)))
 
 
 def _bindable(skill_id: str, role_id: str) -> bool:

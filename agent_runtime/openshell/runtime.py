@@ -5,7 +5,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from agent_runtime.api import Runtime, RuntimeSession, RuntimeSpec, SessionInfo, TerminalHandle
+from agent_runtime.api import (
+    SandboxDriver,
+    SandboxSession,
+    SandboxSpec,
+    SessionInfo,
+    TerminalHandle,
+)
 from agent_runtime.openshell.cli import OpenShellCli, policy_text
 from agent_runtime.openshell.session import OpenShellSession
 from agent_runtime.pty import PtyTerminal
@@ -14,7 +20,7 @@ from agent_runtime.util import resource_name as make_resource_name
 logger = logging.getLogger(__name__)
 
 
-class OpenShellRuntime(Runtime):
+class OpenShellSandboxDriver(SandboxDriver):
     id = "openshell"
 
     def __init__(self) -> None:
@@ -24,7 +30,7 @@ class OpenShellRuntime(Runtime):
         del shared
         return make_resource_name(project_id or "lab", prefix=prefix, suffix="-os")
 
-    def _policy_path(self, spec: RuntimeSpec) -> Path:
+    def _policy_path(self, spec: SandboxSpec) -> Path:
         root = Path(spec.state_dir or ".").resolve()
         root.mkdir(parents=True, exist_ok=True)
         path = root / f"{spec.name}.policy.yaml"
@@ -32,7 +38,7 @@ class OpenShellRuntime(Runtime):
             path.write_text(policy_text(), encoding="utf-8")
         return path
 
-    def provision(self, spec: RuntimeSpec) -> RuntimeSession:
+    def provision(self, spec: SandboxSpec) -> SandboxSession:
         self._cli.require_bin()
         name = (spec.name or "").strip()
         if not name:
@@ -64,14 +70,14 @@ class OpenShellRuntime(Runtime):
             return self._session(spec, action="reused")
         return self._session(spec, action="created")
 
-    def attach(self, spec: RuntimeSpec) -> RuntimeSession:
+    def attach(self, spec: SandboxSpec) -> SandboxSession:
         self._cli.require_bin()
         st = self.status(spec)
         if not st.get("running"):
             raise RuntimeError(f"OpenShell sandbox {spec.name!r} is not running")
         return self._session(spec, action="reused")
 
-    def _session(self, spec: RuntimeSpec, *, action: str) -> OpenShellSession:
+    def _session(self, spec: SandboxSpec, *, action: str) -> OpenShellSession:
         info = SessionInfo(
             project_id=spec.project_id,
             name=spec.name,
@@ -87,7 +93,7 @@ class OpenShellRuntime(Runtime):
             logger.info("base-command probe skipped for %s: %s", spec.name, exc)
         return session
 
-    def destroy(self, spec: RuntimeSpec) -> dict:
+    def destroy(self, spec: SandboxSpec) -> dict:
         name = (spec.name or "").strip()
         if not name:
             return {"ok": False, "removed": False, "error": "name required"}
@@ -101,7 +107,7 @@ class OpenShellRuntime(Runtime):
             return {"ok": True, "removed": False, "name": name, "reason": "not found"}
         return {"ok": False, "removed": False, "name": name, "error": err[:400]}
 
-    def status(self, spec: RuntimeSpec) -> dict:
+    def status(self, spec: SandboxSpec) -> dict:
         name = spec.name
         if not self._cli.available():
             return {
@@ -124,7 +130,7 @@ class OpenShellRuntime(Runtime):
             "error": "" if listed.ok or running else (text.strip()[:300]),
         }
 
-    def open_terminal(self, spec: RuntimeSpec, *, cols: int, rows: int) -> TerminalHandle:
+    def open_terminal(self, spec: SandboxSpec, *, cols: int, rows: int) -> TerminalHandle:
         self._cli.require_bin()
         argv = [
             self._cli.require_bin(),

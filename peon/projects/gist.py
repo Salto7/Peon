@@ -563,14 +563,17 @@ def apply_proposal(proposal_id: str, *, decision: str) -> dict[str, Any]:
                 skill_md=str(row.payload.get("skill_md") or ""),
                 skill_id=row.target_id,
             )
-        elif row.kind == "mcp_role_skill":
+        elif row.kind == "role_draft":
             payload = row.payload or {}
             role = payload.get("role") or {}
-            mcp_id = str(payload.get("mcp_id") or row.target_id or "")
-            skill_id = str(payload.get("skill_id") or mcp_id)
+            owner_kind = str(payload.get("owner_kind") or "mcp")
+            owner_id = str(payload.get("owner_id") or row.target_id or "")
+            skill_id = str(payload.get("skill_id") or owner_id)
             skill_md = str(payload.get("skill_md") or "")
-            if not (mcp_id and role.get("role_id") and skill_md):
-                raise ValueError("mcp_role_skill proposal is incomplete")
+            if not (owner_id and role.get("role_id")):
+                raise ValueError("role_draft proposal is incomplete")
+            if owner_kind == "mcp" and not skill_md:
+                raise ValueError("role_draft(mcp) proposal is missing skill_md")
             with transaction.atomic():
                 saved_role = catalog.upsert_role(
                     role_id=str(role.get("role_id")),
@@ -578,18 +581,38 @@ def apply_proposal(proposal_id: str, *, decision: str) -> dict[str, Any]:
                     aliases=role.get("aliases") or [],
                     goal=str(role.get("goal") or ""),
                     backstory=str(role.get("backstory") or ""),
+                    pending=bool(payload.get("mark_pending")),
                 )
-                catalog.upsert_skill(skill_md=skill_md, skill_id=skill_id, bindings=[])
-                catalog.replace_bindings(
-                    owner_kind="skill",
-                    owner_id=skill_id,
-                    bindings=[{"role_id": saved_role.id, "score": 1.0, "lead": True}],
-                )
-                catalog.replace_bindings(
-                    owner_kind="mcp",
-                    owner_id=mcp_id,
-                    bindings=[{"role_id": saved_role.id, "score": 1.0, "lead": True}],
-                )
+                if owner_kind == "mcp":
+                    catalog.upsert_skill(skill_md=skill_md, skill_id=skill_id, bindings=[])
+                    catalog.replace_bindings(
+                        owner_kind="skill",
+                        owner_id=skill_id,
+                        bindings=[{"role_id": saved_role.id, "score": 1.0, "lead": True}],
+                    )
+                    catalog.replace_bindings(
+                        owner_kind="mcp",
+                        owner_id=owner_id,
+                        bindings=[{"role_id": saved_role.id, "score": 1.0, "lead": True}],
+                    )
+                else:
+                    catalog.replace_bindings(
+                        owner_kind="skill",
+                        owner_id=owner_id,
+                        bindings=[{"role_id": saved_role.id, "score": 1.0, "lead": True}],
+                    )
+        elif row.kind == "skill_overlap":
+            payload = row.payload or {}
+            skill_id = str(payload.get("skill_id") or row.target_id or "")
+            related_skill_id = str(payload.get("related_skill_id") or "")
+            if not (skill_id and related_skill_id):
+                raise ValueError("skill_overlap proposal is incomplete")
+            catalog.set_skill_relation(
+                skill_id=skill_id,
+                related_skill_id=related_skill_id,
+                kind="overlaps",
+                note=row.rationale,
+            )
         elif row.kind == "mcp_binding":
             payload = row.payload or {}
             owner_id = str(payload.get("owner_id") or row.target_id or "")

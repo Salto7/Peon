@@ -16,7 +16,7 @@ OpenCode driving real project work, that is a different, much bigger
 decision than this module makes today.
 
 OpenCode itself is baked into the lab image (``Docker/sandbox-lab/``) at a
-pinned version — never fetched here at authoring time. See ``Lab`` for the
+pinned version — never fetched here at authoring time. See ``LabService`` for the
 one-container lifecycle both this module and install-testing share.
 """
 
@@ -35,7 +35,7 @@ from django.conf import settings
 from orchestrator.toolsmith.draft import finalize_skill_payload, skill_result_dict, valid_skill_name
 from orchestrator.toolsmith.engine import CodeWritingEngine
 from orchestrator.utils.service import SharedServiceBase
-from peon.projects.lab_runtime import Lab
+from peon.projects.lab_service import LabService
 from peon.projects.llm_proxy import LlmProxy
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ class OpenCodeEngine(CodeWritingEngine, SharedServiceBase):
 
     def _run(self, *, kind: str, system: str, human: str) -> dict[str, Any]:
         self.require_proxy()
-        lab = Lab.shared()
+        lab = LabService.shared()
         staging = lab.staging_root()
         draft = Path(tempfile.mkdtemp(prefix=f"opencode-{kind}-", dir=str(staging)))
         rel = draft.relative_to(staging).as_posix()
@@ -99,25 +99,29 @@ class OpenCodeEngine(CodeWritingEngine, SharedServiceBase):
             # (no install step needed), so there is no reuse-for-speed
             # tradeoff left to make — every authoring task gets a known-clean
             # container, the same guarantee an install test gets.
-            lab._ensure_clean()
-            session = lab.connect()
+            # Held for the whole reset+run — a concurrent Setup/Decommission/
+            # Reset click (or an install test) must not pull the container
+            # out from under a run that can take up to 15 minutes.
+            with lab._exclusive():
+                lab._ensure_clean()
+                session = lab.connect()
 
-            model = (
-                str(getattr(settings, "OPENCODE_MODEL", None) or "peon/default").strip()
-                or "peon/default"
-            )
-            message = (
-                "Complete the Peon Toolsmith authoring task in AGENTS.md. "
-                "Write result.json when done."
-            )
-            workdir = f"/workspace/{rel}"
-            cmd = (
-                'export PATH="$HOME/.opencode/bin:/usr/local/bin:$PATH"; '
-                f"cd {json.dumps(workdir)} && "
-                f"opencode run --auto --model {json.dumps(model)} "
-                f"{json.dumps(message)}"
-            )
-            run = session.exec(cmd, timeout=900, shell=True)
+                model = (
+                    str(getattr(settings, "OPENCODE_MODEL", None) or "peon/default").strip()
+                    or "peon/default"
+                )
+                message = (
+                    "Complete the Peon Toolsmith authoring task in AGENTS.md. "
+                    "Write result.json when done."
+                )
+                workdir = f"/workspace/{rel}"
+                cmd = (
+                    'export PATH="$HOME/.opencode/bin:/usr/local/bin:$PATH"; '
+                    f"cd {json.dumps(workdir)} && "
+                    f"opencode run --auto --model {json.dumps(model)} "
+                    f"{json.dumps(message)}"
+                )
+                run = session.exec(cmd, timeout=900, shell=True)
             if run.code != 0:
                 detail = (run.stderr or run.stdout or "").strip()[:800]
                 raise RuntimeError(f"OpenCode authoring failed: {detail}")
@@ -190,9 +194,10 @@ class OpenCodeEngine(CodeWritingEngine, SharedServiceBase):
     def _write_opencode_config(self, draft: Path) -> None:
         proxy = LlmProxy.shared()
         model_id = "default"
-        litellm_model = str(
-            getattr(settings, "LITELLM_MODEL", None) or "openrouter/openai/gpt-5.6-luna"
-        )
+        litellm_model = str(getattr(settings, "LITELLM_MODEL", None) or "").strip()
+        models: dict[str, dict[str, str]] = {model_id: {"name": "default"}}
+        if litellm_model:
+            models[litellm_model] = {"name": litellm_model}
         cfg = {
             "$schema": "https://opencode.ai/config.json",
             "provider": {
@@ -203,10 +208,7 @@ class OpenCodeEngine(CodeWritingEngine, SharedServiceBase):
                         "baseURL": proxy.proxy_url(),
                         "apiKey": proxy.master_key(),
                     },
-                    "models": {
-                        model_id: {"name": "default"},
-                        litellm_model: {"name": litellm_model},
-                    },
+                    "models": models,
                 }
             },
             "model": f"peon/{model_id}",

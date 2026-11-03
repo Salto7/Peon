@@ -28,7 +28,7 @@ class AgentRunRequest:
     steer: str = ""
 
 
-class AgentRuntimeBase(ABC):
+class AgentExecutorBase(ABC):
     """Framework-agnostic Job agent execution."""
 
     @abstractmethod
@@ -46,25 +46,25 @@ class AgentRuntimeBase(ABC):
         )
 
 
-_DEFAULT: AgentRuntimeBase | None = None
+_DEFAULT: AgentExecutorBase | None = None
 
 
-def get_agent_runtime() -> AgentRuntimeBase:
+def get_agent_runtime() -> AgentExecutorBase:
     """Return Job runtime for ``AGENT_MODULE`` (crewai)."""
     global _DEFAULT
     if _DEFAULT is None:
-        # circular: crew.registry → AgentRuntimeBase
+        # circular: crew.registry → AgentExecutorBase
         from orchestrator.crew.registry import get_job_runtime
 
         _DEFAULT = get_job_runtime()
     return _DEFAULT
 
 
-def set_agent_runtime(runtime: AgentRuntimeBase | None) -> None:
+def set_agent_runtime(runtime: AgentExecutorBase | None) -> None:
     global _DEFAULT
     _DEFAULT = runtime
     if runtime is None:
-        # circular: crew.registry → AgentRuntimeBase
+        # circular: crew.registry → AgentExecutorBase
         from orchestrator.crew.registry import reset_agent_modules
 
         reset_agent_modules()

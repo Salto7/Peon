@@ -73,6 +73,13 @@ def search_json(request: HttpRequest) -> JsonResponse:
             "keywords": "cognee memory dream improve recall",
         },
         {
+            "id": "nav-lab-workflows",
+            "label": "Lab · Workflow design",
+            "group": "Navigate",
+            "href": reverse("lab_workflows"),
+            "keywords": "workflow preset design roles skills tools wire graph",
+        },
+        {
             "id": "nav-catalog-roles",
             "label": "Roles catalog",
             "group": "Navigate",

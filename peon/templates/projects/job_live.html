@@ -36,7 +36,7 @@
 </div>
 
 <c-card title="Output" flush>
-  <pre id="job-result" class="max-h-[70vh] overflow-auto p-5 font-mono text-xs leading-relaxed whitespace-pre-wrap">{{ job.result|default:"Waiting for the worker…" }}</pre>
+  <pre id="job-result" class="min-h-[max(24rem,calc(100dvh-18rem))] overflow-auto p-5 font-mono text-xs leading-relaxed whitespace-pre-wrap">{{ job.result|default:"Waiting for the worker…" }}</pre>
 </c-card>
 
 {% url 'job_live_json' project.pk job.pk as live_url %}

@@ -1,6 +1,6 @@
 """Runtime role↔skill usage memory for plan/spawn digests.
 
-Affinity sidecars are the allowlist. This table only records observed usage
+``CatalogBinding`` is the allowlist. This table only records observed usage
 so planners can prefer skills that worked before.
 """
 
