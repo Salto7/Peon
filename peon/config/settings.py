@@ -288,6 +288,4 @@ MAX_AGENTS_PER_PROJECT = max(1, int(_env("MAX_AGENTS_PER_PROJECT", "8") or 8))
 # Accept legacy DRAMATIQ_THREADS env as fallback.
 _DRAMATIQ_THREADS_RAW = _env("DRAMATIQ_MAX_THREADS") or _env("DRAMATIQ_THREADS", "8")
 DRAMATIQ_MAX_THREADS = max(1, int(_DRAMATIQ_THREADS_RAW or 8))
-# Backward-compat alias for older imports / docs.
-DRAMATIQ_THREADS = DRAMATIQ_MAX_THREADS
 JOB_STUCK_RUNNING_SECONDS = max(60, int(_env("JOB_STUCK_RUNNING_SECONDS", "7200") or 7200))

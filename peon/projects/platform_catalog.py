@@ -23,6 +23,8 @@ from typing import Any
 
 from django.db import IntegrityError, transaction
 
+from orchestrator.utils.service import SharedServiceBase
+
 logger = logging.getLogger(__name__)
 
 OWNER_SKILL = "skill"
@@ -64,6 +66,10 @@ class Binding:
     # "values": [tool names]}. None (the default) means every tool the
     # server advertises is callable — unset, not an empty allow-list.
     tools: dict[str, Any] | None = None
+    # Phase gate for MCP or skill owners: a KillChainPhase value, or "" for no
+    # gate. The owning Objective must have reached this phase before the
+    # owner's tools/binaries are usable (Core 1.3 — see
+    min_phase: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,8 @@ class McpRecord:
     # Full per-field metadata (type/description/default/choices) behind
     # env_schema's plain (name, required) pairs — see orchestrator/mcp/parse.py.
     env_schema_full: tuple[dict[str, Any], ...] = ()
+    # Set only for http/streamable-http/sse transport — see orchestrator/mcp/parse.py.
+    url: str = ""
 
 
 _README_NAMES = frozenset({"readme.md", "readme.rst", "readme.txt", "readme"})
@@ -126,6 +134,7 @@ def _mcp_affinity_corpus(file_map: dict[str, str], spec) -> str:
             spec.command,
             " ".join(spec.args),
             spec.cwd,
+            getattr(spec, "url", "") or "",
             " ".join(n for n, _req in spec.env_schema),
         )
     )
@@ -150,6 +159,89 @@ def _normalize_tools_filter(raw: Any) -> dict[str, Any] | None:
         # having curated anything yet, i.e. unset.
         return None
     return {"mode": mode, "values": cleaned}
+
+
+# Linear kill-chain order Core 1.3's phase gate compares against — the same
+# values as ``KillChainPhase``, declared here once so a gate can be checked
+# without importing the Django enum at every call site.
+KILL_CHAIN_PHASE_ORDER: tuple[str, ...] = (
+    "recon",
+    "initial-access",
+    "post-exploit",
+    "reporting",
+)
+
+
+def phase_at_least(current: str, required: str) -> bool:
+    """True when ``current`` has reached (or passed) ``required``.
+
+    An unset/unknown ``required`` is no gate (always true). An unset/unknown
+    ``current`` has reached nothing (false whenever a gate is actually set).
+    """
+    req = (required or "").strip().lower()
+    if not req or req not in KILL_CHAIN_PHASE_ORDER:
+        return True
+    cur = (current or "").strip().lower()
+    if cur not in KILL_CHAIN_PHASE_ORDER:
+        return False
+    return KILL_CHAIN_PHASE_ORDER.index(cur) >= KILL_CHAIN_PHASE_ORDER.index(req)
+
+
+def _normalize_min_phase(raw: Any) -> str:
+    """Validate a per-binding phase gate; ``""`` means "no gate"."""
+    value = str(raw or "").strip().lower()
+    if not value:
+        return ""
+    if value not in KILL_CHAIN_PHASE_ORDER:
+        raise ValueError(f"binding min_phase must be one of {KILL_CHAIN_PHASE_ORDER}")
+    return value
+
+
+_NO_BINDING = object()
+
+
+def binding_phase_denial(
+    *,
+    role_id: str,
+    owner_kind: str,
+    owner_id: str,
+    current_phase: str,
+    label: str,
+    binding: Any = _NO_BINDING,
+) -> str:
+    """Governance-framed denial when a role<->owner binding's phase gate isn't met.
+
+    Shared by the MCP-tool seam (``orchestrator/mcp/provision.py``) and the
+    skill/binary seam (``orchestrator/skills/runtime/sandbox.py``) so a
+    ``min_phase`` gate is enforced identically regardless of owner kind —
+    one mechanism, not two. Pass an already-fetched ``binding`` (e.g. a
+    caller that also needs it for a tool filter) to skip the lookup here;
+    omit it to have this function fetch it itself.
+    """
+    if binding is _NO_BINDING:
+        try:
+            rows = PlatformCatalog.shared().list_bindings(
+                role_id=role_id, owner_kind=owner_kind, owner_id=owner_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "phase-gate binding lookup failed for %s/%s/%s: %s",
+                owner_kind,
+                owner_id,
+                role_id,
+                exc,
+            )
+            return ""
+        binding = rows[0] if rows else None
+    min_phase = str(getattr(binding, "min_phase", "") or "")
+    if not min_phase or phase_at_least(current_phase, min_phase):
+        return ""
+    from orchestrator.utils.governance import frame_denial
+
+    return frame_denial(
+        f"{label} is gated to phase {min_phase!r}; this job's objective is "
+        f"at phase {current_phase or '(none)'!r}"
+    )
 
 
 def _bump() -> float:
@@ -230,16 +322,8 @@ def _payload_mentions(payload: Any, needle: str) -> bool:
     return False
 
 
-class PlatformCatalog:
+class PlatformCatalog(SharedServiceBase):
     """CRUD for the platform skill, role, and MCP catalogs."""
-
-    _shared: PlatformCatalog | None = None
-
-    @classmethod
-    def shared(cls) -> PlatformCatalog:
-        if cls._shared is None:
-            cls._shared = cls()
-        return cls._shared
 
     def revision(self) -> float:
         """Stamp registries use to drop a stale in-process cache."""
@@ -284,7 +368,7 @@ class PlatformCatalog:
         try:
             with transaction.atomic():
                 for role in DEFAULT_ROLES:
-                    _, was =                     EngagementRole.objects.get_or_create(
+                    _, was = EngagementRole.objects.get_or_create(
                         role_id=role.id,
                         defaults={
                             "kind": role.kind,
@@ -313,9 +397,7 @@ class PlatformCatalog:
                 RoleDef(
                     id=str(row.role_id),
                     kind=str(row.kind),
-                    aliases=tuple(
-                        str(a) for a in (row.aliases or []) if str(a).strip()
-                    ),
+                    aliases=tuple(str(a) for a in (row.aliases or []) if str(a).strip()),
                     protected=bool(row.protected),
                     pending=bool(row.pending),
                     goal=str(row.goal or ""),
@@ -381,8 +463,7 @@ class PlatformCatalog:
             current_protected = bool(existing.protected) or existing.kind in BOOKEND_KINDS
             if current_protected and defn.kind != existing.kind:
                 raise ValueError(
-                    f"role {defn.id!r} is protected; kind cannot change from "
-                    f"{existing.kind!r}"
+                    f"role {defn.id!r} is protected; kind cannot change from {existing.kind!r}"
                 )
             keep_protected = bool(existing.protected)
             final_kind = existing.kind if current_protected else defn.kind
@@ -390,19 +471,15 @@ class PlatformCatalog:
             keep_protected = defn.protected
             final_kind = defn.kind
 
-        if protected is not None and not (existing and keep_protected and existing.kind in BOOKEND_KINDS):
+        if protected is not None and not (
+            existing and keep_protected and existing.kind in BOOKEND_KINDS
+        ):
             keep_protected = bool(protected)
         if final_kind in BOOKEND_KINDS:
             keep_protected = True
-            clash = (
-                EngagementRole.objects.filter(kind=final_kind)
-                .exclude(role_id=defn.id)
-                .first()
-            )
+            clash = EngagementRole.objects.filter(kind=final_kind).exclude(role_id=defn.id).first()
             if clash is not None:
-                raise ValueError(
-                    f"kind {final_kind!r} already used by role {clash.role_id!r}"
-                )
+                raise ValueError(f"kind {final_kind!r} already used by role {clash.role_id!r}")
 
         self._seed_roles()
         for other in EngagementRole.objects.all().iterator():
@@ -433,9 +510,7 @@ class PlatformCatalog:
             else:
                 goal_text = str(goal).strip() or seeded_goal
             if backstory is None:
-                story_text = (
-                    source.backstory if source is not None else ""
-                ) or seeded_story
+                story_text = (source.backstory if source is not None else "") or seeded_story
             else:
                 story_text = str(backstory).strip() or seeded_story
             EngagementRole.objects.update_or_create(
@@ -477,9 +552,9 @@ class PlatformCatalog:
                 logger.warning("catalog resweep enqueue failed: %s", exc)
 
         # Deferred to commit: this call may itself be nested inside a caller's
-        # own ``transaction.atomic()`` (e.g. ``apply_proposal``'s role_draft
-        # branch) — enqueueing before that outer transaction commits would let
-        # the sweep query a role/binding state that isn't visible yet.
+        # own ``transaction.atomic()`` (e.g. ``apply_proposal``) — enqueueing
+        # before that outer transaction commits would let the sweep query a
+        # role/binding state that isn't visible yet.
         transaction.on_commit(_resweep)
         return self.get_role(defn.id)
 
@@ -509,14 +584,10 @@ class PlatformCatalog:
         from peon.projects.models import CatalogBinding, CatalogMcp, CatalogSkill
 
         bound_skills = set(
-            CatalogBinding.objects.filter(owner_kind=OWNER_SKILL).values_list(
-                "owner_id", flat=True
-            )
+            CatalogBinding.objects.filter(owner_kind=OWNER_SKILL).values_list("owner_id", flat=True)
         )
         bound_mcps = set(
-            CatalogBinding.objects.filter(owner_kind=OWNER_MCP).values_list(
-                "owner_id", flat=True
-            )
+            CatalogBinding.objects.filter(owner_kind=OWNER_MCP).values_list("owner_id", flat=True)
         )
         orphans: list[tuple[str, str]] = [
             (OWNER_SKILL, sid)
@@ -525,9 +596,9 @@ class PlatformCatalog:
             ).values_list("skill_id", flat=True)
         ] + [
             (OWNER_MCP, mid)
-            for mid in CatalogMcp.objects.exclude(
-                mcp_id__in=bound_mcps
-            ).values_list("mcp_id", flat=True)
+            for mid in CatalogMcp.objects.exclude(mcp_id__in=bound_mcps).values_list(
+                "mcp_id", flat=True
+            )
         ]
         resolved = 0
         for owner_kind, owner_id in orphans[:limit]:
@@ -568,22 +639,25 @@ class PlatformCatalog:
         }
 
     def delete_role(self, role_id: str) -> None:
-        from orchestrator.crew.roles.catalog import normalize_role_id
+        from orchestrator.crew.roles.catalog import FROZEN_ROLE_IDS, normalize_role_id
         from peon.projects.models import EngagementRole
 
         rid = normalize_role_id(role_id)
         if not rid:
             raise ValueError("invalid role id")
+        # Closed freeze list: no engagement role may be deleted from the catalog.
+        if rid in FROZEN_ROLE_IDS:
+            raise ValueError(f"role {rid!r} is frozen and cannot be deleted")
         row = EngagementRole.objects.filter(role_id=rid).first()
         if row is None:
             raise KeyError(f"unknown role {rid!r}")
         current = self.get_role(rid)
         if current is not None and current.is_protected:
             raise ValueError(f"role {rid!r} is protected and cannot be deleted")
-        with transaction.atomic():
-            self._purge_dangling_references(owner_kind=OWNER_ROLE, owner_id=rid)
-            row.delete()
-        _invalidate()
+        raise ValueError(
+            f"role {rid!r} is outside the frozen catalog and cannot be deleted; "
+            "remap or remove bindings instead"
+        )
 
     # --- bindings ----------------------------------------------------------
 
@@ -613,6 +687,7 @@ class PlatformCatalog:
                     score=float(row.score),
                     lead=bool(row.lead),
                     tools=dict(row.tools) if isinstance(row.tools, dict) else None,
+                    min_phase=str(getattr(row, "min_phase", "") or ""),
                 )
                 for row in rows
             )
@@ -656,8 +731,13 @@ class PlatformCatalog:
                 raise ValueError("score must be between 0 and 1")
             cleaned.append(
                 Binding(
-                    rid, kind, oid, score, bool(raw.get("lead")),
+                    rid,
+                    kind,
+                    oid,
+                    score,
+                    bool(raw.get("lead")),
                     tools=_normalize_tools_filter(raw.get("tools")),
+                    min_phase=_normalize_min_phase(raw.get("min_phase")),
                 )
             )
         leads = [b for b in cleaned if b.lead]
@@ -674,6 +754,7 @@ class PlatformCatalog:
                         score=b.score,
                         lead=b.lead,
                         tools=b.tools,
+                        min_phase=b.min_phase,
                     )
                     for b in cleaned
                 ]
@@ -712,18 +793,14 @@ class PlatformCatalog:
         A non-empty list always replaces with exactly those rows.
         """
         if bindings:
-            self.replace_bindings(
-                owner_kind=owner_kind, owner_id=owner_id, bindings=bindings
-            )
+            self.replace_bindings(owner_kind=owner_kind, owner_id=owner_id, bindings=bindings)
             if is_new and owner_kind == OWNER_SKILL:
                 self._flag_skill_overlap(owner_id)
             return
         if bindings is not None:
             existing = self.list_bindings(owner_kind=owner_kind, owner_id=owner_id)
             if existing:
-                self.replace_bindings(
-                    owner_kind=owner_kind, owner_id=owner_id, bindings=[]
-                )
+                self.replace_bindings(owner_kind=owner_kind, owner_id=owner_id, bindings=[])
                 return
         if rename_from and rename_from != owner_id:
             carried = self.list_bindings(owner_kind=owner_kind, owner_id=rename_from)
@@ -762,15 +839,11 @@ class PlatformCatalog:
                 tags=infer_tags,
             )
         except Exception as exc:
-            logger.warning(
-                "auto-bind failed for %s %s: %s", owner_kind, owner_id, exc
-            )
+            logger.warning("auto-bind failed for %s %s: %s", owner_kind, owner_id, exc)
             applied, candidates = [], []
         if applied:
             try:
-                self.replace_bindings(
-                    owner_kind=owner_kind, owner_id=owner_id, bindings=applied
-                )
+                self.replace_bindings(owner_kind=owner_kind, owner_id=owner_id, bindings=applied)
                 if owner_kind == OWNER_MCP:
                     lead = next((b for b in applied if b["lead"]), applied[0])
                     self._ensure_mcp_skill(
@@ -783,9 +856,7 @@ class PlatformCatalog:
                     self._flag_skill_overlap(owner_id)
                 return
             except ValueError as exc:
-                logger.warning(
-                    "auto-bind rejected for %s %s: %s", owner_kind, owner_id, exc
-                )
+                logger.warning("auto-bind rejected for %s %s: %s", owner_kind, owner_id, exc)
         self._resolve_role_for_owner(
             owner_kind=owner_kind,
             owner_id=owner_id,
@@ -804,134 +875,37 @@ class PlatformCatalog:
         corpus: str,
         weak_candidates: list[dict[str, Any]],
     ) -> None:
-        """No role bound confidently to ``owner_id`` — reuse, create, or ask.
+        """No confident bind — stage HITL against the frozen role allowlist.
 
-        Same pipeline for a skill or an MCP server. Unambiguous (nothing
-        existing resembles this item, no id clash): draft a role (+, for an
-        MCP, its companion skill) and create it immediately, flagged
-        ``pending`` for review — not a safety hole, because every branch
-        below that finds *any* overlap falls back to the existing proposal
-        review queue instead of acting. Ambiguous means: a role already
-        scored *some* affinity against this item's own text
-        (``weak_candidates``) or against the drafted role's own goal/
-        backstory (domains "AdStrike"/"BloodHound"/"ADPulse" all draft as
-        "AD attack" even when their READMEs share no keywords), or the
-        drafted role/skill id collides with something that already exists.
+        Called from skill/MCP auto-bind when affinity has no strong match.
+        Role invent is disabled: never auto-create EngagementRole rows.
+        Schemas: CatalogProposal (mcp_binding|skill_binding), CatalogBinding.
         """
+        from orchestrator.crew.roles.catalog import DEFAULT_ROLES, FROZEN_ROLE_IDS
         from peon.projects.models import CatalogProposal
 
         already_pending = CatalogProposal.objects.filter(
-            status="pending", kind="role_draft", action="create", target_id=owner_id
+            status="pending",
+            kind__in=("mcp_binding", "skill_binding"),
+            action="create",
+            target_id=owner_id,
         ).exists()
         if already_pending:
             return
-        if weak_candidates:
-            # A human already gets `_stage_binding_review` for this signal;
-            # drafting a competing *new* role on top of a plausible existing
-            # match would just be a second, conflicting way to resolve the
-            # same ambiguity. Let the review queue be the one place that
-            # decides a weak-but-real match.
-            self._stage_binding_review(
-                owner_kind=owner_kind, owner_id=owner_id, candidates=weak_candidates
-            )
-            return
-        draft = self._draft_role(
-            owner_kind=owner_kind, owner_id=owner_id, description=description, corpus=corpus
+        candidates = list(weak_candidates or [])
+        if not candidates:
+            candidates = [
+                {"role_id": r.id, "score": 0.0, "lead": False}
+                for r in DEFAULT_ROLES
+                if r.id in FROZEN_ROLE_IDS and r.kind == "technical"
+            ]
+        self._stage_binding_review(
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            candidates=candidates,
+            description=description,
+            corpus=corpus,
         )
-        if draft is None:
-            return
-        role_id = draft["role_id"]
-        payload: dict[str, Any] = {
-            "owner_kind": owner_kind,
-            "owner_id": owner_id,
-            "role": {
-                "role_id": role_id,
-                "kind": "technical",
-                "aliases": [],
-                "goal": draft["goal"],
-                "backstory": draft["backstory"],
-            },
-        }
-        if owner_kind == OWNER_MCP:
-            from orchestrator.crew.roles.draft import render_skill_md
-
-            payload["skill_id"] = owner_id
-            payload["skill_md"] = render_skill_md(owner_id, draft)
-        conflict = self._role_skill_conflict(
-            owner_kind=owner_kind, owner_id=owner_id, role_id=role_id, draft=draft
-        )
-        label = "MCP server" if owner_kind == OWNER_MCP else "skill"
-        if conflict:
-            CatalogProposal.objects.create(
-                kind="role_draft",
-                action="create",
-                target_id=owner_id,
-                title=f"New role for {label}: {owner_id}",
-                rationale=conflict,
-                payload=payload,
-            )
-            return
-        # Nothing existing resembles this item and no id clashes — safe to
-        # act without a human in the loop, but still flag the new role
-        # ``pending`` since nobody has actually looked at it yet. Record it
-        # as an already-approved proposal so it still shows up as a readable
-        # "what did the platform just do" audit trail on the Catalog page,
-        # not a silent write.
-        payload["mark_pending"] = True
-        with transaction.atomic():
-            from peon.projects.gist import apply_proposal
-
-            row = CatalogProposal.objects.create(
-                kind="role_draft",
-                action="create",
-                target_id=owner_id,
-                title=f"Auto-created role for {label}: {owner_id}",
-                rationale=(
-                    f"No existing role resembled {owner_id!r} (by its own text or by the "
-                    f"drafted role's goal/backstory) and no id collided, so role "
-                    f"{role_id!r} was created automatically — confirm or edit it."
-                ),
-                payload=payload,
-                status="pending",
-            )
-            result = apply_proposal(str(row.pk), decision="approve")
-        if not result.get("ok"):
-            logger.warning(
-                "auto-apply of drafted role failed for %s %s: %s",
-                owner_kind, owner_id, result.get("error"),
-            )
-
-    def _role_skill_conflict(
-        self, *, owner_kind: str, owner_id: str, role_id: str, draft: dict[str, Any]
-    ) -> str:
-        """Empty string = clear to auto-apply. Non-empty = reason to ask a human instead."""
-        from peon.projects.models import CatalogSkill, EngagementRole
-
-        if EngagementRole.objects.filter(role_id=role_id).exists():
-            return f"Drafted role id {role_id!r} already exists in the catalog."
-        if owner_kind == OWNER_MCP and CatalogSkill.objects.filter(skill_id=owner_id).exists():
-            return f"A skill named {owner_id!r} already exists in the catalog (not from this server)."
-        try:
-            from orchestrator.skills.affinity import infer_catalog_bindings
-
-            applied2, candidates2 = infer_catalog_bindings(
-                owner_id=owner_id,
-                owner_kind=owner_kind,
-                description=draft["goal"],
-                body=f"{draft['goal']}\n{draft['backstory']}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("role-similarity re-check failed for %s: %s", owner_id, exc)
-            return ""
-        overlap = applied2 or candidates2
-        if overlap:
-            names = _format_candidates(overlap)
-            return (
-                f"The drafted role for {owner_id!r} reads similar to an existing role: {names}. "
-                "Approve to create the new role anyway, or reject and bind it to "
-                "one of those existing roles manually instead."
-            )
-        return ""
 
     def _ensure_mcp_skill(
         self, *, mcp_id: str, description: str, corpus: str, role_id: str
@@ -961,9 +935,8 @@ class PlatformCatalog:
         from orchestrator.crew.roles.draft import render_skill_md
 
         role = self.get_role(role_id)
-        hint = (
-            f"\n\nPrimary existing role for this server: `{role_id}`"
-            + (f" — {role.goal}" if role is not None and role.goal else "")
+        hint = f"\n\nPrimary existing role for this server: `{role_id}`" + (
+            f" — {role.backstory}" if role is not None and role.backstory else ""
         )
         draft = {**draft, "skill_body": draft["skill_body"] + hint}
         try:
@@ -991,21 +964,35 @@ class PlatformCatalog:
             return None
 
     def _stage_binding_review(
-        self, *, owner_kind: str, owner_id: str, candidates: list[dict[str, Any]]
+        self,
+        *,
+        owner_kind: str,
+        owner_id: str,
+        candidates: list[dict[str, Any]],
+        description: str = "",
+        corpus: str = "",
     ) -> None:
-        """Flag a skill/MCP server with no confident auto-bind for human review."""
+        """Flag a skill/MCP server with no confident auto-bind for human review.
+
+        ``description``/``corpus`` stay in the payload for operators reviewing
+        the match context. ``kind`` carries ``owner_kind`` so the right Catalog
+        section (and its "Pending" nav badge) picks the review up — it used to
+        be hardcoded to ``"mcp_binding"`` regardless of owner, which left every
+        skill weak-match review invisible under the Skills tab.
+        """
         from peon.projects.models import CatalogProposal
 
         label = "MCP server" if owner_kind == OWNER_MCP else "skill"
+        kind = "mcp_binding" if owner_kind == OWNER_MCP else "skill_binding"
         try:
             already_pending = CatalogProposal.objects.filter(
-                status="pending", kind="mcp_binding", action="create", target_id=owner_id
+                status="pending", kind=kind, action="create", target_id=owner_id
             ).exists()
             if already_pending:
                 return
             names = _format_candidates(candidates)
             CatalogProposal.objects.create(
-                kind="mcp_binding",
+                kind=kind,
                 action="create",
                 target_id=owner_id,
                 title=f"No confident role match for {label}: {owner_id}",
@@ -1015,17 +1002,77 @@ class PlatformCatalog:
                 rationale=(
                     "Auto-binding scored every role below the confidence "
                     f"threshold. Closest unconfirmed matches: {names}. "
-                    "Approve to bind all of them, or reject and bind "
-                    "manually from this item's own page instead."
+                    "Approve to bind all of them, or reject and bind manually "
+                    "from this item's own page to a frozen catalog role."
                 ),
                 payload={
                     "owner_kind": owner_kind,
                     "owner_id": owner_id,
                     "candidates": candidates,
+                    "description": description,
+                    "corpus": corpus,
                 },
             )
         except Exception as exc:
             logger.warning("mcp binding review stage failed for %s: %s", owner_id, exc)
+
+    def recheck_bindings_on_update(
+        self,
+        *,
+        owner_kind: str,
+        owner_id: str,
+        description: str = "",
+        body: str = "",
+        tags: tuple[str, ...] = (),
+    ) -> None:
+        """Re-run role-affinity scoring after an edit changes an *existing*
+        skill/MCP's content — never writes a binding itself, only flags for
+        human review (the same ``skill_binding``/``mcp_binding`` queue a
+        fresh weak-match install already uses) when none of its current
+        role(s) still score confidently against the edited content.
+
+        Deliberately does not call (or change) ``_apply_owner_bindings``:
+        that function's own contract is "never auto-infer for an existing
+        item" (see its docstring — re-scoring an existing item against
+        today's full role list is exactly what silently rebinds something
+        on classifier noise). This is a separate, read-only check sitting
+        beside it — same scanning primitive (``infer_catalog_bindings``),
+        same review queue, but the outcome is always "ask a human", never
+        "change the binding".
+        """
+        current = self.list_bindings(owner_kind=owner_kind, owner_id=owner_id)
+        if not current:
+            return  # nothing bound yet; a fresh-install check already owns that case
+        from orchestrator.skills.affinity import infer_catalog_bindings
+
+        try:
+            applied, candidates = infer_catalog_bindings(
+                owner_id=owner_id,
+                owner_kind=owner_kind,
+                description=description,
+                body=body,
+                tags=tags,
+            )
+        except Exception as exc:
+            logger.warning(
+                "post-edit binding recheck failed for %s %s: %s", owner_kind, owner_id, exc
+            )
+            return
+        still_confident = {str(a["role_id"]) for a in applied}
+        bound_role_ids = {b.role_id for b in current}
+        if bound_role_ids & still_confident:
+            return  # at least one current binding still scores confidently — nothing to flag
+        # candidates is the honest result against the edited content — pass
+        # it through as-is (even empty) rather than substituting the old,
+        # now-stale scores the current binding was made with; those would
+        # misreport what the edited content actually scores today.
+        self._stage_binding_review(
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            candidates=candidates,
+            description=description,
+            corpus=body,
+        )
 
     def _flag_skill_overlap(self, skill_id: str) -> None:
         """Stage review when a newly bound skill reads like a role-mate's twin.
@@ -1232,9 +1279,7 @@ class PlatformCatalog:
             return None
         files = {
             str(item.path): str(item.body or "")
-            for item in CatalogFile.objects.filter(
-                owner_kind=OWNER_SKILL, owner_id=row.skill_id
-            )
+            for item in CatalogFile.objects.filter(owner_kind=OWNER_SKILL, owner_id=row.skill_id)
         }
         bindings = self.list_bindings(owner_kind=OWNER_SKILL, owner_id=row.skill_id)
         return SkillRecord(
@@ -1282,13 +1327,14 @@ class PlatformCatalog:
             file_map[rel] = str(value)
         hinted = str(skill_id or "").strip()
         parsed_id = SkillId.parse(hinted) if hinted else None
-        # Catalog rows have no directory. Validate against the manifest name
-        # so create and rename are not rejected as a folder mismatch.
-        named = re.search(r"(?m)^name:\s*([A-Za-z0-9][A-Za-z0-9-]*)\s*$", md)
+        # Catalog rows have no on-disk folder; use the frontmatter name as the
+        # synthetic directory so PEON profile validation can match.
+        from orchestrator.skills.manifest import skill_name_from_markdown
+
         directory = (
-            named.group(1).lower()
-            if named
-            else (parsed_id.name if parsed_id is not None else (hinted or "skill"))
+            skill_name_from_markdown(md)
+            or (parsed_id.name if parsed_id is not None else "")
+            or (hinted or "skill")
         )
         profile = (
             ParseProfile.CLAUDE_CODE
@@ -1328,6 +1374,7 @@ class PlatformCatalog:
         digest = _hash_payload({"md": md, "files": file_map, "provider": prov})
         current = CatalogSkill.objects.filter(skill_id=public).first()
         existed = current is not None
+        content_changed = existed and current.content_hash != digest
         if only_if_pristine and current is not None:
             if current.content_hash == digest:
                 if from_disk and not (current.manifest or {}).get("_imported_hash"):
@@ -1360,9 +1407,7 @@ class PlatformCatalog:
                     "content_hash": digest,
                 },
             )
-            CatalogFile.objects.filter(
-                owner_kind=OWNER_SKILL, owner_id=public
-            ).delete()
+            CatalogFile.objects.filter(owner_kind=OWNER_SKILL, owner_id=public).delete()
             CatalogFile.objects.bulk_create(
                 [
                     CatalogFile(
@@ -1387,6 +1432,19 @@ class PlatformCatalog:
                 infer_body=manifest.body,
                 infer_tags=tuple(manifest.tags or ()),
                 is_new=not existed,
+            )
+        if content_changed and not rename_from:
+            # An edit to an already-catalogued skill — not a create/rename,
+            # and the content (not just metadata) genuinely changed. The
+            # binding decision above never re-scores an existing item (by
+            # design); this only checks whether it still *should* match and
+            # flags a review if not. See recheck_bindings_on_update.
+            self.recheck_bindings_on_update(
+                owner_kind=OWNER_SKILL,
+                owner_id=public,
+                description=manifest.description,
+                body=manifest.body,
+                tags=tuple(manifest.tags or ()),
             )
         if rename_from and rename_from != public:
             self.delete_skill(rename_from)
@@ -1495,9 +1553,7 @@ class PlatformCatalog:
         else:
             file_map = {
                 str(item.path): str(item.body or "")
-                for item in CatalogFile.objects.filter(
-                    owner_kind=OWNER_MCP, owner_id=spec.mcp_id
-                )
+                for item in CatalogFile.objects.filter(owner_kind=OWNER_MCP, owner_id=spec.mcp_id)
             }
         digest = _hash_payload(
             {
@@ -1507,6 +1563,7 @@ class PlatformCatalog:
                 "install": spec.install,
                 "env_schema": spec.env_schema_full,
                 "reference_hosts": list(spec.reference_hosts),
+                "url": spec.url,
                 "files": file_map,
             }
         )
@@ -1523,14 +1580,13 @@ class PlatformCatalog:
                     "install": spec.install,
                     "env_schema": schema,
                     "reference_hosts": list(spec.reference_hosts),
+                    "url": spec.url,
                     "enabled": keep_enabled,
                     "content_hash": digest,
                 },
             )
             if replace_files:
-                CatalogFile.objects.filter(
-                    owner_kind=OWNER_MCP, owner_id=spec.mcp_id
-                ).delete()
+                CatalogFile.objects.filter(owner_kind=OWNER_MCP, owner_id=spec.mcp_id).delete()
                 if file_map:
                     CatalogFile.objects.bulk_create(
                         [
@@ -1603,6 +1659,8 @@ class PlatformCatalog:
                 "cwd": spec.cwd,
                 "env_schema": list(spec.env_schema_full),
             }
+            if spec.url:
+                body["url"] = spec.url
             if spec.install:
                 body["install"] = spec.install
             saved.append(self.upsert_mcp(body, enabled=enabled))
@@ -1654,9 +1712,7 @@ class PlatformCatalog:
         self._seed_roles()
         count = 0
         for root, mode in self._skill_disk_roots():
-            count += len(
-                self._import_skill_root(root, mode, keep_bindings=False)
-            )
+            count += len(self._import_skill_root(root, mode, keep_bindings=False))
         if count:
             logger.info("bootstrapped %s skills into the platform catalog", count)
         return count
@@ -1667,14 +1723,11 @@ class PlatformCatalog:
 
         self._seed_roles()
         before = {
-            str(row.skill_id): str(row.content_hash or "")
-            for row in CatalogSkill.objects.all()
+            str(row.skill_id): str(row.content_hash or "") for row in CatalogSkill.objects.all()
         }
         seen: set[str] = set()
         for root, mode in self._skill_disk_roots():
-            for skill_id in self._import_skill_root(
-                root, mode, keep_bindings=True
-            ):
+            for skill_id in self._import_skill_root(root, mode, keep_bindings=True):
                 seen.add(skill_id)
         after = {
             str(row.skill_id): str(row.content_hash or "")
@@ -1682,9 +1735,7 @@ class PlatformCatalog:
         }
         added = sorted(sid for sid in seen if sid not in before)
         modified = sorted(
-            sid
-            for sid in seen
-            if sid in before and before[sid] != after.get(sid, "")
+            sid for sid in seen if sid in before and before[sid] != after.get(sid, "")
         )
         # Disk is additive: catalog-only skills (UI-authored) are not removed.
         return {"added": added, "removed": [], "modified": modified}
@@ -1725,16 +1776,11 @@ class PlatformCatalog:
             return {"added": [], "removed": [], "modified": []}
         from peon.projects.models import CatalogSkill
 
-        before = {
-            str(r.skill_id): str(r.content_hash or "")
-            for r in CatalogSkill.objects.all()
-        }
+        before = {str(r.skill_id): str(r.content_hash or "") for r in CatalogSkill.objects.all()}
         seen: set[str] = set()
         for root, mode in self._skill_disk_roots():
             seen.update(
-                self._import_skill_root(
-                    root, mode, keep_bindings=True, only_if_pristine=True
-                )
+                self._import_skill_root(root, mode, keep_bindings=True, only_if_pristine=True)
             )
         after = {
             str(r.skill_id): str(r.content_hash or "")
@@ -1755,14 +1801,9 @@ class PlatformCatalog:
         from peon.projects.models import CatalogMcp
 
         try:
-            rows = CatalogMcp.objects.filter(enabled=True).values_list(
-                "reference_hosts", flat=True
-            )
+            rows = CatalogMcp.objects.filter(enabled=True).values_list("reference_hosts", flat=True)
             return frozenset(
-                str(h).strip().lower()
-                for hosts in rows
-                for h in (hosts or ())
-                if str(h).strip()
+                str(h).strip().lower() for hosts in rows for h in (hosts or ()) if str(h).strip()
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("reference_hosts unavailable: %s", exc)
@@ -1793,10 +1834,7 @@ class PlatformCatalog:
         root = Path(getattr(settings, "MCPS_DIR", "") or "")
         if not root.is_dir():
             return {"added": [], "removed": [], "modified": []}
-        before = {
-            str(row.mcp_id): str(row.content_hash or "")
-            for row in CatalogMcp.objects.all()
-        }
+        before = {str(row.mcp_id): str(row.content_hash or "") for row in CatalogMcp.objects.all()}
         from orchestrator.mcp.install import refresh_mcp_root
 
         ids = refresh_mcp_root(root, keep_bindings=True)
@@ -1807,9 +1845,7 @@ class PlatformCatalog:
         seen = set(ids)
         added = sorted(mid for mid in seen if mid not in before)
         modified = sorted(
-            mid
-            for mid in seen
-            if mid in before and before[mid] != after.get(mid, "")
+            mid for mid in seen if mid in before and before[mid] != after.get(mid, "")
         )
         return {"added": added, "removed": [], "modified": modified}
 
@@ -1828,9 +1864,7 @@ class PlatformCatalog:
         default = PEON_PROVIDER if mode == "infer" else CLAUDE_PROVIDER
         source = "native" if mode == "infer" else "imported"
         try:
-            candidates = discover_skill_candidates(
-                root, source=source, skip_helpers=True
-            )
+            candidates = discover_skill_candidates(root, source=source, skip_helpers=True)
         except Exception as exc:
             logger.warning("skill bootstrap scan failed for %s: %s", root, exc)
             return []
@@ -2032,10 +2066,9 @@ def _mcp_from_row(row, bindings: tuple[Binding, ...], files: dict[str, str]) -> 
         install=install,
         env_schema=tuple(schema),
         env_schema_full=tuple(schema_full),
+        url=str(getattr(row, "url", "") or ""),
         enabled=bool(row.enabled),
         files=files,
         bindings=bindings,
-        reference_hosts=tuple(
-            str(h) for h in (getattr(row, "reference_hosts", None) or ())
-        ),
+        reference_hosts=tuple(str(h) for h in (getattr(row, "reference_hosts", None) or ())),
     )

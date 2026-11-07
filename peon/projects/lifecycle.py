@@ -9,6 +9,11 @@ from django.db import transaction
 from django.utils import timezone as dj_tz
 
 from orchestrator.utils.commands import as_shell_cli, looks_like_agent_command
+from orchestrator.utils.stream_events import (
+    EVENT_PROJECT_INSTRUCTION,
+    EVENT_PROJECT_INSTRUCTION_ACKED,
+    envelope,
+)
 from peon.projects.job_claim import emit
 from peon.projects.models import (
     FINISHED_PROJECT_STATUSES,
@@ -20,6 +25,7 @@ from peon.projects.models import (
     JobDirectiveKind,
     JobStatus,
     ObjectiveStatus,
+    OperatorPromptKind,
     Project,
     ProjectStatus,
 )
@@ -38,16 +44,23 @@ _PROJECT_PAUSE_NOTE = "Paused with project"
 
 
 def cancel_open_objectives_for_roles(project: Project | None, role_ids: Iterable[str]) -> int:
-    """Mark still-open objectives for the given roles as cancelled."""
+    """Mark still-open objectives for the given roles as cancelled.
+
+    Goes through ``ObjectiveScheduler.mark`` (row-locked, same path
+    ``apply_directive``'s kill branch uses for a single objective) rather
+    than flipping ``status`` directly, so a BLOCKED objective's open
+    ``blocked_objective`` HITL prompt is auto-resolved here too instead of
+    being left dangling once the objective it refers to is cancelled.
+    """
     if project is None:
         return 0
     names = {str(s).strip() for s in role_ids if str(s).strip()}
     if not names:
         return 0
+    sched = ObjectiveScheduler()
     n = 0
     for obj in project.objectives.filter(role_id__in=names, status__in=_OPEN_OBJECTIVE):
-        obj.status = ObjectiveStatus.CANCELLED
-        obj.save(update_fields=["status", "updated_at"])
+        sched.mark(obj, ObjectiveStatus.CANCELLED, reason="role cancelled")
         n += 1
     return n
 
@@ -464,23 +477,18 @@ def route_operator_instruction(
             str(primary.id),
             "log",
             text,
-            {
-                "event": "project_instruction",
-                "role": "user",
-                "tag": "you",
-                "project_id": str(project.id),
-            },
+            envelope(EVENT_PROJECT_INSTRUCTION, role="user", tag="you", project_id=str(project.id)),
         )
         record_stream_message(
             str(primary.id),
             "log",
             f"Instruction injected into {len(steered)} agent(s) ({mode}).",
-            {
-                "event": "project_instruction_acked",
-                "role": "assistant",
-                "tag": "steer",
-                "project_id": str(project.id),
-            },
+            envelope(
+                EVENT_PROJECT_INSTRUCTION_ACKED,
+                role="assistant",
+                tag="steer",
+                project_id=str(project.id),
+            ),
         )
     return {
         "mode": mode,
@@ -797,3 +805,56 @@ def apply_directive(job: Job, action: str, *, cascade: bool = True) -> Job:
                 cancel_open_objectives_for_roles(job.project, job.role_ids or [])
             reconcile_project_status(job.project)
     return job
+
+
+def sweep_project_budgets(*, limit: int = 200) -> dict[str, list[str]]:
+    """Flag projects whose cumulative LLM spend has crossed the configured budget.
+
+    Core 2.5: advisory only, same convention
+    as ``peon.projects.a2a.sweep_child_timeouts`` — reads ``LlmCallLog``
+    (already written by every call through ``orchestrator/utils/llm_usage.py``,
+    no new telemetry needed) and raises one deduped
+    ``OperatorPromptKind.BUDGET_EXCEEDED`` per over-budget project. Never
+    pauses or cancels anything.
+    """
+    from django.db.models import Sum
+
+    from peon.projects.db import iter_project_aliases
+    from peon.projects.hitl import create_operator_prompt_once
+    from peon.projects.models import LlmCallLog
+    from peon.projects.runtime_settings import PeonSettings
+    from peon.projects.streaming import anchor_job
+
+    budget = PeonSettings.get_float("AGENT_PROJECT_BUDGET_USD", 0.0)
+    if budget <= 0:
+        return {"flagged": []}
+    project_ids = [pid for pid, _ in iter_project_aliases()][:limit]
+    if not project_ids:
+        return {"flagged": []}
+    spend = (
+        LlmCallLog.objects.using("default")
+        .filter(project_id__in=project_ids)
+        .values("project_id")
+        .annotate(total=Sum("cost_usd"))
+    )
+    flagged: list[str] = []
+    for row in spend:
+        total = row["total"] or 0.0
+        if total <= budget:
+            continue
+        project = Project.objects.filter(pk=row["project_id"]).first()
+        if project is None:
+            continue
+        job = anchor_job(project)
+        if job is None:
+            continue
+        prompt = create_operator_prompt_once(
+            project,
+            f"Project LLM spend is ${total:.2f}, over the ${budget:.2f} budget "
+            "— review usage, or raise AGENT_PROJECT_BUDGET_USD if expected.",
+            job=job,
+            kind=OperatorPromptKind.BUDGET_EXCEEDED,
+        )
+        if prompt is not None:
+            flagged.append(str(project.pk))
+    return {"flagged": flagged}

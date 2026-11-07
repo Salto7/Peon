@@ -1,4 +1,9 @@
-"""Target shape normalization and coercion for RoE / findings."""
+"""Engagement subjects: open producer types, no Peon type inference.
+
+A node is ``{type, value}`` — ``type`` is whatever the producer declared.
+Identity is the exact label (``value``); same string merges into one node.
+The only structural contract is ``service`` → ``host:port[/protocol]``.
+"""
 
 from __future__ import annotations
 
@@ -11,22 +16,13 @@ from urllib.parse import urlparse
 
 from orchestrator.utils.paths import format_target_lines
 
+# ── tokens / line parsing ──────────────────────────────────────────────────
+
 _NON_SLUG = re.compile(r"[^a-z0-9_]+")
 _TYPE_PREFIX = re.compile(
     r"^(?P<type>[a-z_][a-z0-9_]{0,31})\s*:\s*(?P<value>.+)$",
     re.I,
 )
-
-_EMAIL_RE = re.compile(r"\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", re.I)
-_URL_RE = re.compile(
-    r"(?:https?|ftps?|wss?|git)://[^\s,;\)\]\"'<>]+",
-    re.I,
-)
-_IP_RE = re.compile(
-    r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}"
-    r"(?:25[0-5]|2[0-4]\d|[01]?\d?\d)(?:/\d{1,2})?\b"
-)
-_ASN_RE = re.compile(r"^AS(\d{1,10})$", re.I)
 _SERVICE_RE = re.compile(
     r"^(?:\[(?P<bracket_host>[^\]\s]+)\]|(?P<host>[^:/\s]+))"
     r":(?P<port>\d{1,5})(?:/(?P<protocol>[a-z][a-z0-9_-]{0,15}))?$",
@@ -38,8 +34,12 @@ _HOSTNAME_RE = re.compile(
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$",
     re.I,
 )
-# Digest lengths only (md5/sha1/sha256/sha512) — standards, not file extensions.
-_HASH_RE = re.compile(r"^(?:[a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{64}|[a-f0-9]{128})$", re.I)
+_ASSET_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.&'-]{0,63}$")
+_QUOTED_ASSET_RE = re.compile(
+    r"""['\"“”‘’`]\s*([A-Za-z][A-Za-z0-9 .&'-]{1,60})\s*['\"“”‘’`]"""
+)
+_SENTENCE_PUNCT_RE = re.compile(r"[.?!:;]")
+
 _STOP = frozenset(
     {
         "example.com",
@@ -50,7 +50,6 @@ _STOP = frozenset(
         "openrouter.ai",
     }
 )
-# Planner / objective metadata — never engagement subjects (``Phase: recon`` etc.).
 _NON_SUBJECT_TYPES = frozenset(
     {
         "phase",
@@ -73,17 +72,9 @@ _NON_SUBJECT_TYPES = frozenset(
         "seq",
     }
 )
-# Typed aliases that normalize to a bare asset name (``asset:Brand``).
 _ASSET_NAME_TYPES = frozenset(
     {"asset", "organization", "organisation", "company", "org", "vendor", "name"}
 )
-# One name token: letter start, then letters/digits/simple punct (no spaces).
-_ASSET_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.&'-]{0,63}$")
-# Quoted subject inside prose: company 'Brand' / "Org Name".
-_QUOTED_ASSET_RE = re.compile(
-    r"""['\"“”‘’`]\s*([A-Za-z][A-Za-z0-9 .&'-]{1,60})\s*['\"“”‘’`]"""
-)
-_SENTENCE_PUNCT_RE = re.compile(r"[.?!:;]")
 
 def sanitize_label(raw: str | None, *, default: str = "", max_len: int = 32) -> str:
     """Lowercase slug: ``[a-z][a-z0-9_]{0,max_len-1}``. Empty → default."""
@@ -96,7 +87,11 @@ def sanitize_label(raw: str | None, *, default: str = "", max_len: int = 32) -> 
 
 
 def split_typed_line(text: str) -> tuple[str, str] | None:
-    """Parse ``type:value`` if the type token is a valid slug; else None."""
+    """Parse ``type:value`` if the type token is a valid slug; else None.
+
+    URI schemes (``https://…``, ``git://…``) are not producer prefixes — the
+    value would start with ``//``.
+    """
     match = _TYPE_PREFIX.match((text or "").strip())
     if not match:
         return None
@@ -104,18 +99,18 @@ def split_typed_line(text: str) -> tuple[str, str] | None:
     value = match.group("value").strip()
     if not typ or not value:
         return None
+    if value.startswith("//"):
+        return None
     return typ, value
 
 
-def normalize_netblock(value: str) -> str | None:
-    """Canonical CIDR (``192.168.10.1/24`` → ``192.168.10.0/24``)."""
-    raw = (value or "").strip()
-    if not raw or "/" not in raw:
-        return None
-    try:
-        return str(ipaddress.ip_network(raw, strict=False))
-    except ValueError:
-        return None
+def is_subject_type(typ: str) -> bool:
+    """False for planner/objective metadata labels that must not authorize scope."""
+    return sanitize_label(typ) not in _NON_SUBJECT_TYPES
+
+
+# ── IP / net helpers (scope coverage — not type inference) ─────────────────
+
 
 
 def normalize_ip(value: str) -> str | None:
@@ -142,12 +137,7 @@ def _as_network(value: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | N
 
 
 def target_authorized_by_scope(target: str, scope_values: Iterable[str]) -> bool:
-    """True when ``target`` equals / is covered by an authorized scope entry.
-
-    CIDR/IP: a narrower netblock or host inside an authorized supernet is allowed
-    (``192.168.10.64/26`` under ``192.168.10.0/24``). Hostnames/URLs keep
-    exact/substring match for non-IP targets.
-    """
+    """True when ``target`` equals / is covered by an authorized scope entry."""
     needle = (target or "").strip().lower()
     if not needle:
         return False
@@ -161,11 +151,9 @@ def target_authorized_by_scope(target: str, scope_values: Iterable[str]) -> bool
         return False
     for s in scope:
         auth = _as_network(s)
-        if auth is None:
+        if auth is None or want.version != auth.version:
             continue
         try:
-            if want.version != auth.version:
-                continue
             if want.subnet_of(auth) or want == auth:
                 return True
         except (TypeError, ValueError):
@@ -191,12 +179,7 @@ def hostname_of(value: str) -> str:
 
 
 def is_passive_reference_host(host: str) -> bool:
-    """True for hosts an MCP server declares as reference infrastructure.
-
-    Research APIs / registries a tool *queries* are provenance, not engagement
-    targets. Which hosts those are is declared by each server's manifest
-    (``reference_hosts``); the platform does not enumerate them.
-    """
+    """True for hosts an MCP server declares as reference infrastructure."""
     h = (host or "").strip().lower().rstrip(".")
     if not h:
         return False
@@ -206,9 +189,12 @@ def is_passive_reference_host(host: str) -> bool:
     return h in refs or any(h.endswith("." + ref) for ref in refs)
 
 
+# ── service contract (only when producer type is already ``service``) ──────
+
+
 @dataclass(frozen=True)
 class ServiceEndpoint:
-    """Parsed structured service asset (``host:port[/protocol]``)."""
+    """Canonical service asset: ``host:port[/protocol]``."""
 
     host: str
     port: int
@@ -220,9 +206,23 @@ class ServiceEndpoint:
         base = f"{rendered_host}:{self.port}"
         return f"{base}/{self.protocol}" if self.protocol else base
 
+    @property
+    def identity(self) -> str:
+        """Stable key fragment: host:port (protocol is a property, not identity)."""
+        return f"{self.host}:{self.port}"
+
+
+def _normalize_host_token(raw_host: str, *, bracketed: bool = False) -> str | None:
+    host = normalize_ip(raw_host)
+    if host is not None:
+        return host
+    if bracketed or not _HOSTNAME_RE.fullmatch(raw_host):
+        return None
+    return raw_host.lower().rstrip(".")
+
 
 def parse_service(value: str) -> ServiceEndpoint | None:
-    """Parse and normalize the service asset contract."""
+    """Parse the service contract. Anything else → None (no free-text salvage)."""
     raw = (value or "").strip().rstrip(".,;")
     match = _SERVICE_RE.fullmatch(raw)
     if not match:
@@ -231,23 +231,18 @@ def parse_service(value: str) -> ServiceEndpoint | None:
     if not 1 <= port <= 65535:
         return None
     raw_host = match.group("bracket_host") or match.group("host") or ""
-    host = normalize_ip(raw_host)
+    host = _normalize_host_token(raw_host, bracketed=bool(match.group("bracket_host")))
     if host is None:
-        if match.group("bracket_host") or not _HOSTNAME_RE.fullmatch(raw_host):
-            return None
-        host = raw_host.lower().rstrip(".")
+        return None
     protocol = (match.group("protocol") or "").lower()
     return ServiceEndpoint(host=host, port=port, protocol=protocol)
 
 
-def format_service(host: str, port: int, protocol: str = "") -> str | None:
-    """Build the canonical service value from structured fields."""
-    raw_host = (host or "").strip()
-    normalized_host = normalize_ip(raw_host)
+def format_service(host: str, port: int | str, protocol: str = "") -> str | None:
+    """Build a canonical service value from structured fields (the only composer)."""
+    normalized_host = _normalize_host_token((host or "").strip())
     if normalized_host is None:
-        if not _HOSTNAME_RE.fullmatch(raw_host):
-            return None
-        normalized_host = raw_host.lower().rstrip(".")
+        return None
     try:
         port_i = int(port)
     except (TypeError, ValueError):
@@ -258,31 +253,28 @@ def format_service(host: str, port: int, protocol: str = "") -> str | None:
     return ServiceEndpoint(normalized_host, port_i, protocol_s).value
 
 
-def detect_shape(value: str) -> str:
-    """Standards shape of a bare value: ip|netblock|url|email|asn|service|hash|''."""
-    v = (value or "").strip().rstrip(".,;")
-    if not v:
-        return ""
-    if _URL_RE.match(v):
-        return "url"
-    if _EMAIL_RE.fullmatch(v):
-        return "email"
-    if _ASN_RE.fullmatch(v):
-        return "asn"
-    if _HASH_RE.fullmatch(v):
-        return "hash"
-    if normalize_netblock(v):
-        return "netblock"
-    if normalize_ip(v):
-        return "ip"
-    if parse_service(v):
-        return "service"
-    return ""
+def resolve_service(
+    value: str,
+    *,
+    host: str = "",
+    port: int | str | None = None,
+    protocol: str = "",
+) -> str | None:
+    """Resolve a service value from contract text and/or structured parts."""
+    endpoint = parse_service(value)
+    if endpoint is not None:
+        return endpoint.value
+    digit = (value or "").strip()
+    if digit.isdigit() and host:
+        return format_service(host, digit, protocol)
+    if host and port is not None:
+        return format_service(host, port, protocol)
+    return None
 
 
 def _clean_value(value: str) -> str | None:
     v = (value or "").strip().rstrip(".,;")
-    if not v or len(v) < 1:
+    if not v:
         return None
     if v.lower() in _STOP:
         return None
@@ -291,84 +283,55 @@ def _clean_value(value: str) -> str | None:
     return v[:1024]
 
 
-def accept_asset(value: str, typ: str = "") -> dict[str, str] | None:
-    """Accept and canonicalize a producer asset.
+# ── accept / identity (producer type is authoritative) ─────────────────────
 
-    Intrinsic shapes are authoritative; producer types remain available for
-    values without an unambiguous standards shape.
+
+def accept_asset(value: str, typ: str = "") -> dict[str, str] | None:
+    """Accept one producer asset. Type is never inferred from the value.
+
+    - Any non-empty producer type + cleaned value → stored as-is.
+    - ``service`` alone requires the ``host:port[/proto]`` contract.
+    - Missing type → ``other`` (opaque); producers should type explicitly.
     """
     v = _clean_value(value)
     if not v:
         return None
     hint = sanitize_label(typ)
-
-    # Standards normalize when the value is that shape (regardless of hint).
-    shape = detect_shape(v)
-    if shape == "netblock":
-        canon = normalize_netblock(v)
-        if canon:
-            return {"type": "netblock", "value": canon}
-    if shape == "ip":
-        canon = normalize_ip(v) or v.split("/")[0]
-        return {"type": "ip", "value": canon[:128]}
-    if shape == "url":
-        return {"type": "url", "value": v}
-    if shape == "email":
-        return {"type": "email", "value": v[:320]}
-    if shape == "asn":
-        m = _ASN_RE.fullmatch(v)
-        return {"type": "asn", "value": f"AS{m.group(1)}" if m else v}
-    if shape == "service":
+    if hint == "service":
         endpoint = parse_service(v)
-        if endpoint:
-            return {"type": "service", "value": endpoint.value}
-    if shape == "hash":
-        return {"type": "hash", "value": v.lower()}
-
-    # Producer supplied a type — trust it (Amass: type comes from the plugin).
+        return {"type": "service", "value": endpoint.value} if endpoint else None
     if hint:
         return {"type": hint, "value": v}
-
-    return None
+    return {"type": "other", "value": v}
 
 
 def canonical_asset_key(typ: str, value: str) -> str:
-    """Stable identity shared by RoE, findings, and the graph.
+    """Stable identity = exact label (value), independent of producer type.
 
-    A service's identity is its host:port — protocol is an attribute of
-    that socket (a host can answer both tcp and udp on the same port
-    number), never part of what makes two sightings "the same asset".
-    Whether a given producer happened to name the protocol stays an
-    accumulated property on the one node (``_upsert_asset``), not a second
-    node keyed by how complete that one call was.
+    Same display string → same node (``ip`` + ``host`` for one address merge).
+    For ``service``, the label collapses to ``host:port`` so protocol variants
+    of the same socket share one node.
     """
     accepted = accept_asset(value, typ)
     if accepted is None:
-        family = sanitize_label(typ, default="other") or "other"
         clean = (value or "").strip().lower()
+        family = sanitize_label(typ, default="other") or "other"
     else:
-        family = accepted["type"]
         clean = accepted["value"].lower()
-    if family in {"host", "fqdn", "domain", "hostname"}:
-        family = "host"
-    elif family == "service":
+        family = accepted["type"]
+    if family == "service":
         endpoint = parse_service(clean)
         if endpoint is not None:
-            clean = f"{endpoint.host}:{endpoint.port}"
-    return f"{family}:{clean}"[:400]
+            clean = endpoint.identity
+    return clean[:400]
 
 
-def is_subject_type(typ: str) -> bool:
-    """False for planner/objective metadata labels that must not authorize scope."""
-    return sanitize_label(typ) not in _NON_SUBJECT_TYPES
+# ── asset names (org / brand) ──────────────────────────────────────────────
 
 
 def _asset_tokens(value: str) -> list[str] | None:
-    """Split a candidate asset name into 1–3 structural tokens, or None."""
     cleaned = _clean_value(value)
     if not cleaned:
-        return None
-    if detect_shape(cleaned):
         return None
     if "@" in cleaned or "/" in cleaned or "://" in cleaned or "," in cleaned:
         return None
@@ -383,33 +346,19 @@ def _asset_tokens(value: str) -> list[str] | None:
 
 
 def _is_proper_name_tokens(words: list[str]) -> bool:
-    """True when tokens look like a proper name (Title Case or ALL CAPS).
-
-    Structural only — no word lists. Rejects lowercase prose crumbs
-    (``find all brands``, ``qwqkodqwdk``) without an allow/deny vocabulary.
-    """
+    """Structural proper-name form (Title Case / ALL CAPS) — no word lists."""
     if not words:
         return False
     if len(words) == 1:
         token = words[0]
-        # Single token: Title Case (Brand) or ALL CAPS (ORG), not all-lower.
         if token.isupper() and token.isalpha() and len(token) >= 2:
             return True
         return token[0].isupper() and not token.islower()
-    # Multi-word: every token starts uppercase (Org Name, Multi-Word Brand).
     return all(w[0].isupper() for w in words)
 
 
 def as_asset_name(value: str, *, explicit: bool = False) -> dict[str, str] | None:
-    """Accept a bare asset name as an authorized subject.
-
-    Shape contract (not a vocabulary):
-    - 1–3 tokens matching ``_ASSET_TOKEN_RE``
-    - no sentence punctuation / URLs / standards shapes
-    - auto-deduce requires a proper-name shape
-    - ``explicit=True`` (operator ``asset:…``) also allows a single lowercase
-      token (``asset:brand``); multi-word still needs proper-name shape
-    """
+    """Accept a bare asset name (1–3 tokens, proper-name form unless explicit)."""
     words = _asset_tokens(value)
     if not words:
         return None
@@ -422,10 +371,14 @@ def as_asset_name(value: str, *, explicit: bool = False) -> dict[str, str] | Non
     return {"type": "asset", "value": " ".join(words)}
 
 
+# ── coerce ─────────────────────────────────────────────────────────────────
+
+
 def coerce_target(raw: Any) -> dict[str, str] | None:
-    """Normalize one target to ``{type, value, notes?}``. Trusts producer type."""
+    """Normalize one target to ``{type, value, notes?}``. Never invents types."""
     if raw is None:
         return None
+
     if isinstance(raw, dict):
         value = str(raw.get("value") or raw.get("target") or "").strip()
         if not value:
@@ -440,11 +393,7 @@ def coerce_target(raw: Any) -> dict[str, str] | None:
             return as_asset_name(value, explicit=True)
         accepted = accept_asset(value, typ)
         if accepted is None:
-            # Dict producers always keep the row (authorization by value).
-            cleaned = _clean_value(value)
-            if not cleaned:
-                return None
-            accepted = {"type": typ or "other", "value": cleaned}
+            return None
         notes = str(raw.get("notes") or "").strip()
         out = dict(accepted)
         if notes:
@@ -461,54 +410,80 @@ def coerce_target(raw: Any) -> dict[str, str] | None:
             return None
         if typ in _ASSET_NAME_TYPES:
             return as_asset_name(value, explicit=True)
-        return accept_asset(value, typ) or {
-            "type": typ,
-            "value": value[:1024],
-        }
-    accepted = accept_asset(text)
-    if accepted:
-        return accepted
+        return accept_asset(value, typ)
     named = as_asset_name(text)
     if named:
         return named
-    # Bare string with no standards shape — keep as other (seed/brief text).
-    cleaned = _clean_value(text)
-    if not cleaned:
-        return None
-    return {"type": "other", "value": cleaned}
+    return accept_asset(text, "other")
+
+
+def prefer_producer_type(previous: str, new: str) -> str:
+    """Prefer a concrete producer type over empty/other. First concrete wins."""
+    if previous in {"", "other"} and new not in {"", "other"}:
+        return new
+    if previous not in {"", "other"}:
+        return previous
+    return new or previous or "other"
+
+
+def prefer_by_rank(
+    previous: str,
+    new: str,
+    ranks: dict[str, int],
+    *,
+    default: str = "",
+) -> str:
+    """Keep the higher-ranked label; on a tie prefer ``new``."""
+    if ranks.get(new, 0) >= ranks.get(previous, 0):
+        return new or previous or default
+    return previous or new or default
+
+
+def merge_typed_rows(
+    rows: Iterable[dict[str, str]],
+    *,
+    on_dup: Any = None,
+) -> list[dict[str, str]]:
+    """De-dupe ``{type,value,…}`` rows by ``canonical_asset_key``.
+
+    On collision, merge types via ``prefer_producer_type`` and optionally run
+    ``on_dup(prev, new)`` for field-specific merges (notes, relation, …).
+    """
+    by_key: dict[str, dict[str, str]] = {}
+    order: list[str] = []
+    for row in rows:
+        if not row or not str(row.get("value") or "").strip():
+            continue
+        key = canonical_asset_key(row.get("type", ""), row["value"])
+        prev = by_key.get(key)
+        if prev is None:
+            by_key[key] = dict(row)
+            order.append(key)
+            continue
+        prev["type"] = prefer_producer_type(prev.get("type", ""), row.get("type", ""))
+        if on_dup is not None:
+            on_dup(prev, row)
+        elif row.get("notes") and not prev.get("notes"):
+            prev["notes"] = row["notes"]
+    return [by_key[k] for k in order]
 
 
 def coerce_targets(raw: Iterable[Any] | None) -> list[dict[str, str]]:
-    """Normalize targets and de-duplicate by canonical identity."""
-    by_value: dict[str, dict[str, str]] = {}
-    order: list[str] = []
-    for item in raw or []:
-        target = coerce_target(item)
-        if target is None:
-            continue
-        key = canonical_asset_key(target.get("type", ""), target["value"])
-        prev = by_value.get(key)
-        if prev is None:
-            by_value[key] = target
-            order.append(key)
-            continue
-        # Prefer non-other producer type; otherwise keep first.
-        if prev.get("type") in {"", "other"} and target.get("type") not in {"", "other"}:
-            by_value[key] = target
-    return [by_value[k] for k in order]
+    """Normalize targets and de-duplicate by exact label (value)."""
+    return merge_typed_rows(
+        target for item in (raw or []) if (target := coerce_target(item)) is not None
+    )
 
 
 def format_targets(raw: Iterable[Any] | None) -> list[str]:
-
     return format_target_lines(coerce_targets(raw))
 
 
 def extract_targets(*texts: str) -> list[dict[str, str]]:
-    """Standards shapes + subject ``type:value`` + quoted/proper names.
+    """Typed lines and quoted/proper names from free text.
 
-    Free-text briefs are not scraped for vocabulary: only typed lines, quoted
-    spans, whole-line proper names, and IP/URL/email shapes. Open prose goes
-    through ``SubjectCanonicalizer.suggest_assets`` at the RoE provisioner.
+    Does not scrape URLs/IPs/emails into invented types — producers must type
+    subjects (``ip:…``, ``url:…``, …) or pass structured ``{type,value}``.
     """
     blob = "\n".join(t for t in texts if t)
     found: list[dict[str, str]] = []
@@ -530,42 +505,24 @@ def extract_targets(*texts: str) -> list[dict[str, str]]:
             accepted = accept_asset(value, typ)
             if accepted:
                 found.append(accepted)
-            else:
-                cleaned = _clean_value(value)
-                if cleaned:
-                    found.append({"type": typ, "value": cleaned})
             continue
-        # Whole-line asset name (RoE textarea / brief that is just "Brand").
         named = as_asset_name(item)
         if named:
             found.append(named)
 
-    # Quoted names inside prose are operator-explicit (company 'brand' / "Org").
     for match in _QUOTED_ASSET_RE.finditer(blob):
         named = as_asset_name(match.group(1), explicit=True)
         if named:
             found.append(named)
 
-    def _add(typ: str, value: str) -> None:
-        accepted = accept_asset(value, typ)
-        if accepted:
-            found.append(accepted)
-
-    for match in _URL_RE.finditer(blob):
-        _add("url", match.group(0))
-    for match in _EMAIL_RE.finditer(blob):
-        _add("email", match.group(0))
-    for match in _IP_RE.finditer(blob):
-        raw = match.group(0)
-        _add("netblock" if "/" in raw else "ip", raw)
-
     return coerce_targets(found)
 
+
 def parse_target_lines(raw: str) -> list[dict[str, str]]:
-    """Parse textarea lines: ``type:value`` or bare values."""
-    parts: list[str] = []
-    for line in (raw or "").replace(",", "\n").splitlines():
-        item = line.strip()
-        if item:
-            parts.append(item)
+    """Parse textarea lines: ``type:value`` or bare values (as ``other``)."""
+    parts = [
+        item
+        for line in (raw or "").replace(",", "\n").splitlines()
+        if (item := line.strip())
+    ]
     return coerce_targets(parts)

@@ -42,7 +42,7 @@ _COMMAND_TYPES = (
 def _idle_fields(job: Job) -> dict:
     """A2A state plus, for parked agents, what they are waiting on."""
     from peon.projects.a2a import a2a_state
-    from peon.projects.models import JobStatus, ObjectiveStatus
+    from peon.projects.models import JobStatus
 
     out = {
         "a2a_state": a2a_state(job.status),

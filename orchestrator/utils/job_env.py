@@ -1,16 +1,14 @@
 """Job-scoped environment via ContextVar (safe under Dramatiq / tool threads).
 
 Worker threads must not share process-global ``os.environ`` for job fields.
-``JobEnv.bind`` / ``overlay`` store values. The bound runtime session reads
-them through the env lookup the control plane installs. Stream emitters
-read via ``JobEnv.get`` (ContextVar first, then ``os.environ``).
+``JobEnv.bind`` stores values. The bound runtime session reads them through
+the env lookup the control plane installs. Stream emitters read via
+``JobEnv.get`` (ContextVar first, then ``os.environ``).
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
-from contextlib import contextmanager
 from contextvars import ContextVar, Token
 
 _job_env: ContextVar[dict[str, str] | None] = ContextVar("job_env", default=None)
@@ -45,18 +43,3 @@ class JobEnv:
             return str(cur.get(key) or default)
         return (os.environ.get(key) or default).strip() or default
 
-    @classmethod
-    @contextmanager
-    def overlay(cls, updates: dict[str, str]) -> Iterator[None]:
-        """Temporarily merge keys for the current context (role id/command)."""
-        merged = dict(cls.current())
-        for k, v in (updates or {}).items():
-            if v is None or str(v) == "":
-                merged.pop(str(k), None)
-            else:
-                merged[str(k)] = str(v)
-        token = cls.bind(merged)
-        try:
-            yield
-        finally:
-            cls.reset(token)

@@ -355,6 +355,7 @@ class ProjectPlanner(PlannerBase):
         filtered_roles_index: str = "",
         focus_tags: list[str] | None = None,
         role_ids: list[str] | None = None,
+        lessons_context: str = "",
     ) -> list:
         parts = [
             f"Project: {project_title}",
@@ -373,6 +374,14 @@ class ProjectPlanner(PlannerBase):
             parts.append(roles)
         if existing_objectives_summary.strip():
             parts.append("Existing objectives:\n" + existing_objectives_summary.strip())
+        if lessons_context.strip():
+            # Already framed (see orchestrator.utils.governance.frame_recalled_lesson)
+            # as unverified prior-engagement context, not instructions — weigh it
+            # against this engagement's own facts, don't copy it into objectives.
+            parts.append(
+                "Lessons from earlier engagements (may not apply here):\n"
+                + lessons_context.strip()
+            )
         self.append_context(
             parts,
             prior_plan=(prior_plan or "").strip()[:4000],

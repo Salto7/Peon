@@ -50,10 +50,9 @@ def save_skill_source(
     if not md:
         raise ValueError("skill_md is required")
     file_map = {str(k): str(v) for k, v in (files or {}).items()}
-    import re
+    from orchestrator.skills.manifest import skill_name_from_markdown
 
-    matched = re.search(r"(?m)^name:\s*([A-Za-z0-9-]+)\s*$", md)
-    lint_name = (matched.group(1).lower() if matched else "") or (
+    lint_name = skill_name_from_markdown(md) or (
         parsed.name if parsed is not None else ""
     )
     checked: dict[str, Any] = {"compatible": True}

@@ -37,6 +37,12 @@ EVENT_REPORT_NOTE = "report_note"
 EVENT_READ_ARTIFACT = "read_artifact"
 EVENT_WRITE_ARTIFACT = "write_artifact"
 EVENT_RECORD_FINDING = "record_finding"
+EVENT_ROLE_START = "crewai_role_start"
+EVENT_ROLE_DONE = "crewai_role_done"
+EVENT_PROJECT_CREW_START = "crew_project_start"
+EVENT_PROJECT_CREW_DONE = "crew_project_done"
+EVENT_PROJECT_INSTRUCTION = "project_instruction"
+EVENT_PROJECT_INSTRUCTION_ACKED = "project_instruction_acked"
 
 _HOST_TOKEN_RE = re.compile(
     r"(?:https?://[^\s\"']+|"
@@ -77,17 +83,17 @@ def payload_get(meta: Mapping[str, Any] | None, key: str, default: Any = None) -
     return payload_of(meta).get(key, default)
 
 
-def payload_str(meta: Mapping[str, Any] | None, key: str) -> str:
+def _payload_str(meta: Mapping[str, Any] | None, key: str) -> str:
     val = payload_get(meta, key, "")
     return str(val or "").strip()
 
 
 def payload_command(meta: Mapping[str, Any] | None) -> str:
-    return payload_str(meta, "command")
+    return _payload_str(meta, "command")
 
 
 def payload_cli(meta: Mapping[str, Any] | None) -> str:
-    return payload_str(meta, "cli").lower()
+    return _payload_str(meta, "cli").lower()
 
 
 def payload_hosts(meta: Mapping[str, Any] | None) -> list[str]:

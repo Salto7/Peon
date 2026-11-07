@@ -17,32 +17,27 @@ type Proposal = {
 type Props = {
   listUrl: string;
   decideUrl: string;
-  kind: "role" | "skill" | "mcp_binding" | "role_draft" | "skill_overlap";
+  kind: "role" | "skill" | "mcp_binding" | "skill_binding" | "skill_overlap";
 };
 
 const APPROVED_MESSAGE: Record<Props["kind"], string> = {
   role: "Role created",
   skill: "Skill created",
   mcp_binding: "Binding applied",
-  role_draft: "Role created",
+  skill_binding: "Binding applied",
   skill_overlap: "Marked as overlapping",
 };
 
 /**
- * Pending role/skill proposals (Dream-suggested or marketplace-discovered),
- * pending mcp_binding proposals (a skill/MCP install whose role auto-bind
- * scored every role below threshold — see
- * PlatformCatalog._stage_binding_review), and pending role_draft proposals
- * (same trigger, but a dedicated role drafted from the item's own
- * description instead of reusing an existing one — for an MCP server this
- * also creates its companion skill; see
- * PlatformCatalog._resolve_role_for_owner), shown as cards in the same
- * section as the real ones — tagged "Pending", never assignable until
- * approved here. ``skill_overlap`` proposals (a newly bound skill reads like
- * a sibling already on its role — see
- * ``orchestrator.skills.overlap.find_overlap``) approve into a
- * ``CatalogSkillRelation`` row instead of a binding; see SkillRelations for
- * direct, no-review editing of that same table. Shares the
+ * Pending role/skill proposals (Dream-suggested or marketplace-discovered)
+ * and pending mcp_binding/skill_binding proposals (an MCP/skill install whose
+ * role auto-bind scored every role below threshold — see
+ * PlatformCatalog._stage_binding_review), shown as cards in the same section
+ * as the real ones — tagged "Pending", never assignable until approved here.
+ * ``skill_overlap`` proposals (a newly bound skill reads like a sibling
+ * already on its role — see ``orchestrator.skills.overlap.find_overlap``)
+ * approve into a ``CatalogSkillRelation`` row instead of a binding; see
+ * SkillRelations for direct, no-review editing of that same table. Shares the
  * ["catalog-proposals"] query with ProposalBadge/MarketplacePanel (one
  * QueryClient per page), so deciding anywhere keeps every view in sync.
  */
@@ -50,12 +45,14 @@ export default function PendingProposals({ listUrl, decideUrl, kind }: Props) {
   const qc = useQueryClient();
   const { data } = useQuery({
     queryKey: ["catalog-proposals"],
-    queryFn: () => api<{ proposals: Proposal[] }>(`${listUrl}?status=pending`).then((r) => r.proposals),
+    queryFn: () =>
+      api<{ proposals: Proposal[] }>(`${listUrl}?status=pending`).then((r) => r.proposals),
     refetchInterval: 30_000,
   });
   const proposals = (data ?? []).filter((p) => p.kind === kind);
 
   const decide = useMutation({
+    // Mounted from catalog/list.html; CatalogProposal decide API — no role invent.
     mutationFn: ({ id, decision }: { id: string; decision: "approve" | "reject" }) =>
       api<{ ok: boolean; error?: string }>(decideUrl, { json: { id, decision } }),
     onSuccess: (res, { decision }) => {
@@ -63,14 +60,13 @@ export default function PendingProposals({ listUrl, decideUrl, kind }: Props) {
         toast.error(res.error || "Could not apply the proposal");
         return;
       }
-      if (decision === "approve") {
-        toast.success(APPROVED_MESSAGE[kind]);
-        // The new row is server-rendered; reload so it shows up in the grid.
-        window.setTimeout(() => window.location.reload(), 400);
+      if (decision === "reject") {
+        toast.success("Proposal rejected");
+        qc.invalidateQueries({ queryKey: ["catalog-proposals"] });
         return;
       }
-      toast.success("Proposal rejected");
-      qc.invalidateQueries({ queryKey: ["catalog-proposals"] });
+      toast.success(APPROVED_MESSAGE[kind]);
+      window.setTimeout(() => window.location.reload(), 400);
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -80,7 +76,10 @@ export default function PendingProposals({ listUrl, decideUrl, kind }: Props) {
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 min-[120rem]:grid-cols-5">
       {proposals.map((p) => (
-        <article key={p.id} className="flex flex-col gap-3 rounded-xl border border-dashed bg-card p-4 shadow-sm">
+        <article
+          key={p.id}
+          className="flex flex-col gap-3 rounded-xl border border-dashed bg-card p-4 shadow-sm"
+        >
           <div className="flex items-start gap-2">
             <h3 className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium">
               {p.target_id || p.title}

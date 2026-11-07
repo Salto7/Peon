@@ -15,7 +15,7 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
-def load_role_skill_map() -> dict[str, dict[str, Any]]:
+def _load_role_skill_map() -> dict[str, dict[str, Any]]:
     try:
         from peon.projects.models import RoleSkillMemory
     except Exception:
@@ -91,12 +91,10 @@ def upsert_role_skills(
     if not observed:
         return entry
 
-    text = (
-        f"Role `{rid}` uses skills: {', '.join(merged) or '(none)'}. "
-        f"source={source}"
-    )
+    text = f"Role `{rid}` uses skills: {', '.join(merged) or '(none)'}. source={source}"
     try:
-        from orchestrator.crew.memory import MemoryService
+        from orchestrator.crew.cognee_backend import CogneeBackend
+        from orchestrator.crew.memory import MemoryService, project_dataset
 
         MemoryService.remember_peon(
             text,
@@ -106,29 +104,30 @@ def upsert_role_skills(
             refs=[rid, *merged[:8]],
         )
         if project_id:
-            MemoryService.remember_into(
-                None,
-                text,
+            CogneeBackend.shared().remember(
                 {
-                    "scope": "project",
-                    "category": "method",
+                    "kind": "method",
+                    "summary": text[:8000],
                     "event": "role_skills",
                     "role_id": rid,
-                    "skill_ids": merged,
                     "project_id": str(project_id),
+                    "indications": ["method"],
+                    "meta": {
+                        "scope": "project",
+                        "skill_ids": merged,
+                        "source": source,
+                    },
                 },
+                dataset_name=project_dataset(str(project_id)),
+                self_improvement=False,
             )
             try:
                 from orchestrator.agent.transcript import append_jsonl, record_from_event
                 from orchestrator.utils.paths import safe_workspace_key
 
-                ws = (
-                    Path(
-                        getattr(settings, "PROJECT_WORKSPACES_DIR", "")
-                        or "workspaces"
-                    ).resolve()
-                    / safe_workspace_key(str(project_id))
-                )
+                ws = Path(
+                    getattr(settings, "PROJECT_WORKSPACES_DIR", "") or "workspaces"
+                ).resolve() / safe_workspace_key(str(project_id))
                 append_jsonl(
                     ws / "transcript.jsonl",
                     record_from_event(
@@ -149,7 +148,7 @@ def upsert_role_skills(
 
 def role_skills_prompt_block(*, limit: int = 24) -> str:
     """Compact observed usage for planners / routers / spawn."""
-    store = load_role_skill_map()
+    store = _load_role_skill_map()
     if not store:
         return ""
     lines = ["## Observed role → skills (runtime memory)"]

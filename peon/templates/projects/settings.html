@@ -14,65 +14,95 @@
 </div>
 {% endif %}
 
+{# Rendered by settings_page view; sole settings UI. User: "add a search field in the settings page" #}
+<div class="mb-6">
+  <label for="settings-search" class="sr-only">Search settings</label>
+  <input
+    id="settings-search"
+    type="search"
+    placeholder="Search settings by name, key, or help…"
+    autocomplete="off"
+    class="ui-input max-w-xl"
+  >
+  <p id="settings-search-empty" class="mt-2 hidden text-sm text-muted-foreground">No settings match.</p>
+</div>
+
 <div class="grid gap-8 lg:grid-cols-[12rem_1fr]">
   <nav aria-label="Settings sections" class="hidden lg:block">
-    <ul class="sticky top-8 space-y-0.5 text-sm">
-      <li><a href="#appearance" class="block rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">Appearance</a></li>
+    <p class="mb-2 px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Sections</p>
+    <ul class="sticky top-8 space-y-0.5 text-sm" id="settings-nav">
+      <li data-settings-nav="appearance"><a href="#appearance" class="block rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">Appearance</a></li>
       {% for cat in categories %}
-      <li><a href="#{{ cat.id }}" class="block rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">{{ cat.label }}</a></li>
+      <li data-settings-nav="{{ cat.id }}"><a href="#{{ cat.id }}" class="block rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">{{ cat.label }}</a></li>
       {% endfor %}
     </ul>
   </nav>
 
-  <div class="min-w-0 space-y-6">
-    <c-card title="Appearance" description="Saved in this browser only." id="appearance" class="scroll-mt-8">
-      <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <p class="text-sm font-medium">Theme</p>
-          <p class="ui-help">Dark is the default.</p>
-        </div>
-        <div role="group" aria-label="Theme" class="inline-flex rounded-lg border bg-muted p-0.5">
-          <button type="button" data-theme-set="dark" class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground dark:bg-background dark:text-foreground dark:shadow-sm">{% icon "moon" %} Dark</button>
-          <button type="button" data-theme-set="light" class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground light:bg-background light:text-foreground light:shadow-sm">{% icon "sun" %} Light</button>
-        </div>
+  <div class="min-w-0 space-y-8">
+    <section class="space-y-3 scroll-mt-8" aria-labelledby="appearance-heading" data-settings-section="appearance">
+      <div>
+        <h2 id="appearance-heading" class="text-sm font-semibold tracking-tight">Appearance</h2>
+        <p class="mt-0.5 text-xs text-muted-foreground">Saved in this browser only.</p>
       </div>
-    </c-card>
-
-    <form method="post" action="{% url 'settings_page' %}" class="space-y-6">
-      {% csrf_token %}
-      {% for cat in categories %}
-      <c-card title="{{ cat.label }}" id="{{ cat.id }}" class="scroll-mt-8" flush>
-        <div class="grid xl:grid-cols-2">
-          {% for f in cat.fields %}
-          <div class="grid gap-3 border-b px-5 py-4 last:border-b-0 md:grid-cols-[1fr_minmax(0,18rem)] md:items-start xl:[&:nth-child(odd):not(:last-child)]:border-r xl:[&:nth-last-child(-n+2)]:border-b-0">
-            <div class="space-y-1">
-              <label for="{{ f.key }}" class="flex flex-wrap items-center gap-2 text-sm font-medium">
-                {{ f.label }}
-                {% if f.restart_required %}<c-badge tone="warning">Restart required</c-badge>{% endif %}
-              </label>
-              <p class="ui-help">{{ f.help }}</p>
-              <p class="ui-help">Default <code class="ui-code">{{ f.env_default|default:"—" }}</code> · <code class="font-mono">{{ f.key }}</code></p>
-            </div>
-            <div class="md:justify-self-end md:w-full {% if f.kind == 'bool' %}md:text-right{% endif %}">
-              {% if f.kind == "bool" %}
-              <input type="hidden" name="{{ f.key }}" value="false">
-              <input id="{{ f.key }}" name="{{ f.key }}" value="true" type="checkbox" role="switch" class="ui-switch" {% if f.value %}checked{% endif %}>
-              {% elif f.kind == "choice" %}
-              <select id="{{ f.key }}" name="{{ f.key }}" class="ui-select">
-                {% for opt in f.choices %}<option value="{{ opt }}" {% if f.value == opt %}selected{% endif %}>{{ opt }}</option>{% endfor %}
-              </select>
-              {% elif f.kind == "str" %}
-              <input id="{{ f.key }}" name="{{ f.key }}" type="text" value="{{ f.value }}" autocomplete="off" class="ui-input">
-              {% elif f.kind == "float" %}
-              <input id="{{ f.key }}" name="{{ f.key }}" type="number" step="any" min="{{ f.min }}" max="{{ f.max }}" value="{{ f.value }}" required class="ui-input tabular-nums">
-              {% else %}
-              <input id="{{ f.key }}" name="{{ f.key }}" type="number" min="{{ f.min }}" max="{{ f.max }}" value="{{ f.value }}" required class="ui-input tabular-nums">
-              {% endif %}
-            </div>
+      <c-card id="appearance">
+        <div class="flex flex-wrap items-center justify-between gap-4" data-settings-row data-settings-hay="theme appearance dark light">
+          <div>
+            <p class="text-sm font-medium">Theme</p>
+            <p class="ui-help">Dark is the default.</p>
           </div>
-          {% endfor %}
+          <div role="group" aria-label="Theme" class="inline-flex rounded-lg border bg-muted p-0.5">
+            <button type="button" data-theme-set="dark" class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground dark:bg-background dark:text-foreground dark:shadow-sm">{% icon "moon" %} Dark</button>
+            <button type="button" data-theme-set="light" class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground light:bg-background light:text-foreground light:shadow-sm">{% icon "sun" %} Light</button>
+          </div>
         </div>
       </c-card>
+    </section>
+
+    <form method="post" action="{% url 'settings_page' %}" class="space-y-8">
+      {% csrf_token %}
+      {% for cat in categories %}
+      <section class="space-y-3 scroll-mt-8" aria-labelledby="{{ cat.id }}-heading" data-settings-section="{{ cat.id }}">
+        <div>
+          <h2 id="{{ cat.id }}-heading" class="text-sm font-semibold tracking-tight">{{ cat.label }}</h2>
+          <p class="mt-0.5 text-xs text-muted-foreground">Install-wide overrides; restart when marked.</p>
+        </div>
+        <c-card id="{{ cat.id }}" flush>
+          <div class="grid xl:grid-cols-2">
+            {% for f in cat.fields %}
+            <div
+              class="grid gap-3 border-b px-5 py-4 last:border-b-0 md:grid-cols-[1fr_minmax(0,18rem)] md:items-start xl:[&:nth-child(odd):not(:last-child)]:border-r xl:[&:nth-last-child(-n+2)]:border-b-0"
+              data-settings-row
+              data-settings-hay="{{ f.label }} {{ f.key }} {{ f.help }}"
+            >
+              <div class="space-y-1">
+                <label for="{{ f.key }}" class="flex flex-wrap items-center gap-2 text-sm font-medium">
+                  {{ f.label }}
+                  {% if f.restart_required %}<c-badge tone="warning">Restart required</c-badge>{% endif %}
+                </label>
+                <p class="ui-help">{{ f.help }}</p>
+                <p class="ui-help">Default <code class="ui-code">{{ f.env_default|default:"—" }}</code> · <code class="font-mono">{{ f.key }}</code></p>
+              </div>
+              <div class="md:justify-self-end md:w-full {% if f.kind == 'bool' %}md:text-right{% endif %}">
+                {% if f.kind == "bool" %}
+                <input type="hidden" name="{{ f.key }}" value="false">
+                <input id="{{ f.key }}" name="{{ f.key }}" value="true" type="checkbox" role="switch" class="ui-switch" {% if f.value %}checked{% endif %}>
+                {% elif f.kind == "choice" %}
+                <select id="{{ f.key }}" name="{{ f.key }}" class="ui-select">
+                  {% for opt in f.choices %}<option value="{{ opt }}" {% if f.value == opt %}selected{% endif %}>{{ opt }}</option>{% endfor %}
+                </select>
+                {% elif f.kind == "str" %}
+                <input id="{{ f.key }}" name="{{ f.key }}" type="text" value="{{ f.value }}" autocomplete="off" class="ui-input">
+                {% elif f.kind == "float" %}
+                <input id="{{ f.key }}" name="{{ f.key }}" type="number" step="any" min="{{ f.min }}" max="{{ f.max }}" value="{{ f.value }}" required class="ui-input tabular-nums">
+                {% else %}
+                <input id="{{ f.key }}" name="{{ f.key }}" type="number" min="{{ f.min }}" max="{{ f.max }}" value="{{ f.value }}" required class="ui-input tabular-nums">
+                {% endif %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </c-card>
+      </section>
       {% endfor %}
       <div class="sticky bottom-0 -mx-4 flex justify-end border-t bg-background/90 px-4 py-3 backdrop-blur md:mx-0 md:rounded-xl md:border">
         <c-button type="submit">Save changes</c-button>
@@ -80,4 +110,33 @@
     </form>
   </div>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var input = document.getElementById("settings-search");
+  var empty = document.getElementById("settings-search-empty");
+  if (!input) return;
+  function apply() {
+    var q = (input.value || "").trim().toLowerCase();
+    var any = false;
+    document.querySelectorAll("[data-settings-section]").forEach(function (sec) {
+      var rows = sec.querySelectorAll("[data-settings-row]");
+      var visible = 0;
+      rows.forEach(function (row) {
+        var hay = (row.getAttribute("data-settings-hay") || "").toLowerCase();
+        var on = !q || hay.indexOf(q) !== -1;
+        row.hidden = !on;
+        if (on) visible += 1;
+      });
+      sec.hidden = q !== "" && visible === 0;
+      var nav = document.querySelector('[data-settings-nav="' + sec.getAttribute("data-settings-section") + '"]');
+      if (nav) nav.hidden = sec.hidden;
+      if (!sec.hidden) any = true;
+    });
+    if (empty) empty.classList.toggle("hidden", !q || any);
+  }
+  input.addEventListener("input", apply);
+})();
+</script>
 {% endblock %}

@@ -42,6 +42,7 @@ SANDBOX_RUNTIME_TOOLS: tuple[str, ...] = (
     "sandbox_status",
     "provision_cli",
     "bash",
+    "explore_branches",
     "run_periodic",
     "roe_status",
     "assert_in_scope",
@@ -90,7 +91,14 @@ MANAGER_RUNTIME_TOOLS: tuple[str, ...] = (
 # Tools that execute commands / external calls. A dispatch-only supervisor
 # (a specialist job with no parent) does not get these: it spawns a worker.
 EXECUTION_TOOLS: frozenset[str] = frozenset(
-    {"bash", "run_skill_script", "run_periodic", "provision_cli", "call_mcp_tool"}
+    {
+        "bash",
+        "explore_branches",
+        "run_skill_script",
+        "run_periodic",
+        "provision_cli",
+        "call_mcp_tool",
+    }
 )
 # What a supervisor needs to read the outcome of the work it dispatched.
 SUPERVISOR_INSPECTION_TOOLS: tuple[str, ...] = (

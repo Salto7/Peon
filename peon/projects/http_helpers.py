@@ -12,8 +12,6 @@ from django.db import models
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect
 
-from orchestrator.utils.strings import as_str_list
-
 _M = TypeVar("_M", bound=models.Model)
 _V = TypeVar("_V", bound=Callable[..., Any])
 
@@ -49,16 +47,15 @@ def with_project_context(view: _V) -> _V:
     return _wrapped  # type: ignore[return-value]
 
 
-def split_csv(value: Any) -> list[str]:
-    """Split a comma/semicolon-separated string (or pass through a list)."""
-    return as_str_list(value)
-
-
 def wants_json(request: HttpRequest) -> bool:
-    """True when the client asked for JSON (Accept or XHR)."""
+    """True when the client asked for JSON (Accept, XHR, or JSON Content-Type).
+
+    catalog's local ``_wants_json``). Sole Accept/XHR/content-type probe.
+    """
     return (
         "application/json" in (request.headers.get("Accept") or "")
         or request.headers.get("X-Requested-With") == "XMLHttpRequest"
+        or (request.content_type or "").startswith("application/json")
     )
 
 

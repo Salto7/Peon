@@ -35,7 +35,11 @@ from orchestrator.utils.stream_events import (
     payload_hosts,
 )
 from peon.projects.findings import FindingStore
-from peon.projects.hitl import create_operator_prompt
+from peon.projects.hitl import (
+    PHASE_ADVANCE_OPTION,
+    create_operator_prompt,
+    create_operator_prompt_once,
+)
 from peon.projects.models import (
     TERMINAL_JOB_STATUSES,
     Finding,
@@ -52,7 +56,7 @@ from peon.projects.models import (
 from peon.projects.objectives import ObjectiveScheduler
 from peon.projects.runtime_settings import PeonSettings
 from peon.projects.streaming import emit_job_stream
-from peon.projects.target_shapes import coerce_targets
+from peon.projects.targets import coerce_targets
 from peon.projects.tasks import enqueue_job
 from peon.projects.workspaces import resolve_job_workspace
 
@@ -329,17 +333,20 @@ class JobAgentBridge(AgentBridgeBase):
                         .count()
                     )
                     if active >= max(cfg.max_subagents + 1, 2):
-                        return (
-                            f"Error: too many active agents on this objective "
-                            f"(max {cfg.max_subagents + 1})"
-                        )
+                        reason = f"too many active agents on this objective (max {cfg.max_subagents + 1})"
+                        self.request_spawn_cap_approval(reason)
+                        return f"Error: {reason}"
                 else:
                     depth = self._spawn_depth()
                     if depth >= cfg.max_subagent_depth:
-                        return f"Error: child depth limit ({cfg.max_subagent_depth})"
+                        reason = f"child depth limit ({cfg.max_subagent_depth})"
+                        self.request_spawn_cap_approval(reason)
+                        return f"Error: {reason}"
                     active = self._job.children.exclude(status__in=TERMINAL_JOB_STATUSES).count()
                     if active >= cfg.max_subagents:
-                        return f"Error: too many active child agents (max {cfg.max_subagents})"
+                        reason = f"too many active child agents (max {cfg.max_subagents})"
+                        self.request_spawn_cap_approval(reason)
+                        return f"Error: {reason}"
 
                 roles = list(role_ids) or list(self._job.role_ids or [])
                 resolved = self._resolve_child_skills(roles, skill_ids)
@@ -1092,6 +1099,63 @@ class JobAgentBridge(AgentBridgeBase):
             for f in rows
         )
 
+    def search_evidence(
+        self, kind: str = "", host: str = "", finding_seq: int = 0
+    ) -> str:
+        """Evidence anywhere in this project — not just what this job itself captured."""
+        if not self._job.project_id:
+            return "No project on this job."
+        from peon.projects.findings import EvidenceStore
+
+        rows = EvidenceStore.search(
+            self._job.project,
+            kind=kind,
+            host=host,
+            finding_seq=finding_seq or None,
+        )
+        if not rows:
+            return "No evidence found."
+        return "\n".join(
+            f"{e.kind} v{e.version} {e.path} (job={str(e.job_id)[:8] if e.job_id else '-'})"
+            + (f" — {e.notes[:120]}" if e.notes else "")
+            for e in rows
+        )
+
+    def record_observation(self, asset_key: str, text: str) -> str:
+        """Note something about an asset-graph node — not confirmed, not structural."""
+        if not self._job.project_id:
+            return "No project on this job."
+        from peon.projects.exploration import ExplorationStore
+
+        row = ExplorationStore.record_observation(
+            self._job.project,
+            asset_key,
+            text,
+            job=self._job,
+            objective=self._job.objective,
+        )
+        if row is None:
+            return "Error: asset_key and text are both required."
+        return f"Noted: {row.asset_key}: {row.text[:80]}"
+
+    def record_intent(self, asset_key: str, text: str, status: str = "planned") -> str:
+        """Plan something about an asset-graph node (probe next, skip, …)."""
+        if not self._job.project_id:
+            return "No project on this job."
+        from peon.projects.exploration import ExplorationStore
+
+        row = ExplorationStore.record_intent(
+            self._job.project,
+            asset_key,
+            text,
+            job=self._job,
+            objective=self._job.objective,
+            status=status,
+        )
+        if row is None:
+            return "Error: asset_key and text are both required."
+        return f"Intent [{row.status}] {row.asset_key}: {row.text[:80]}"
+
     def write_workspace_artifact(self, path: str, content: str) -> str:
         """Write a text deliverable under ``workspace/`` (no command execution).
 
@@ -1349,6 +1413,56 @@ class JobAgentBridge(AgentBridgeBase):
             return None
         return getattr(self._job.project, "roe", None)
 
+    def current_phase(self) -> str:
+        """This job's Objective's ``KillChainPhase`` value, or "" if none."""
+        objective = getattr(self._job, "objective", None)
+        return str(getattr(objective, "phase", "") or "")
+
+    def request_phase_advance(self, required_phase: str) -> None:
+        """Escalate once when a Core 1.3 phase gate blocks this job (UI-1).
+
+        Deduped per job via ``create_operator_prompt_once`` — asked at most
+        once while unresolved, regardless of how many denied tool calls hit
+        the same gate. "Advance phase" is a deliberate operator override of
+        a pacing control, not a security boundary like the hard scope
+        blocklist, so a human approving it here is by design.
+        """
+        if not self._job.objective_id or self._job.objective is None:
+            return
+        from peon.projects.models import OperatorPromptKind
+
+        current = self._job.objective.phase
+        create_operator_prompt_once(
+            self._job.project,
+            f"This job is blocked waiting for phase {required_phase!r} "
+            f"(objective is at {current!r}). Advance the objective now, or "
+            "leave it for later.",
+            job=self._job,
+            kind=OperatorPromptKind.PHASE_ADVANCE_REQUEST,
+            options=[PHASE_ADVANCE_OPTION, "Not now"],
+        )
+
+    def request_spawn_cap_approval(self, reason: str) -> None:
+        """Escalate once when Core 1.4's fan-out cap blocks a spawn (UI-1).
+
+        Notification only — the cap itself stays hard. Approving here tells
+        the operator intends to let this job's work continue some other
+        way (consolidate into fewer children, raise the cap in Settings),
+        not an automatic one-shot bypass.
+        """
+        from peon.projects.models import OperatorPromptKind
+
+        create_operator_prompt_once(
+            self._job.project,
+            f"This job tried to spawn a child agent and hit the fan-out cap: "
+            f"{reason}. The cap is not bypassed automatically — raise "
+            "AGENT_MAX_SUBAGENTS/AGENT_MAX_SUBAGENT_DEPTH in Settings if this "
+            "job genuinely needs more, or tell it to consolidate.",
+            job=self._job,
+            kind=OperatorPromptKind.SPAWN_CAP_REQUEST,
+            options=["Acknowledged", "Raise the cap"],
+        )
+
     def roe_summary(self) -> str:
 
         roe = self._roe()
@@ -1366,19 +1480,31 @@ class JobAgentBridge(AgentBridgeBase):
         return ""
 
     def assert_in_scope(self, target: str) -> str:
-        """Empty string = allowed; otherwise denial reason."""
+        """Empty string = allowed; otherwise a governance-framed denial reason."""
+        from orchestrator.utils.governance import frame_denial
+
+        reason = self._assert_in_scope_reason(target)
+        return frame_denial(reason) if reason else reason
+
+    def _assert_in_scope_reason(self, target: str) -> str:
+        """Empty string = allowed; otherwise the raw (unframed) denial reason."""
 
         value = (target or "").strip()
         if not value:
             return "empty target"
-        roe = self._roe()
-        if roe is None:
-            return "no RoE on project"
-        from peon.projects.target_shapes import (
+        from orchestrator.utils.governance import hard_blocklist_reason
+        from peon.projects.targets import (
             hostname_of,
             is_passive_reference_host,
             target_authorized_by_scope,
         )
+
+        blocked = hard_blocklist_reason(hostname_of(value) or value)
+        if blocked:
+            return blocked
+        roe = self._roe()
+        if roe is None:
+            return "no RoE on project"
 
         exclusions = [
             (t.get("value") or "").strip().lower()
@@ -1453,6 +1579,66 @@ class JobAgentBridge(AgentBridgeBase):
                 )
         return ""
 
+    # Catalog-CLI "done" rounds scanned/required for a stagnation signal.
+    _STAGNATION_WINDOW = 40
+    _STAGNATION_THRESHOLD = 5
+
+    def stagnation_note(self, command: str) -> str:
+        """Non-empty nudge when this job keeps probing with no new Finding.
+
+        Orchestrator-owned productivity signal (per
+        actually wrote (Finding rows), not the agent's own "found something"
+        claim. Only counts catalog/recon CLI rounds — the same scope
+        ``duplicate_scan_reason`` already uses. Escalates to the operator at
+        most once per stagnation episode via the existing HITL prompt path;
+        the agent itself gets a nudge on every call past the threshold.
+        """
+        cmd = (command or "").strip()
+        cli = catalog_cli_in_command(cmd)
+        if not cli:
+            return ""
+        from peon.projects.db import project_alias_or_default
+
+        alias = project_alias_or_default(self._job.project_id)
+        last_finding_at = (
+            Finding.objects.using(alias)
+            .filter(job=self._job)
+            .order_by("-created_at")
+            .values_list("created_at", flat=True)
+            .first()
+        )
+        rows = (
+            StreamMessage.objects.using(alias)
+            .filter(job_id=self._job.id, message_type=StreamMessageType.TOOL)
+            .order_by("-id")
+            .values("metadata", "created_at")[: self._STAGNATION_WINDOW]
+        )
+        from orchestrator.utils.stream_events import payload_get
+
+        streak = 0
+        for row in rows:
+            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if not is_event(meta, EVENT_RUN_CLI) or payload_get(meta, "phase") != "done":
+                continue
+            if last_finding_at and row["created_at"] <= last_finding_at:
+                break
+            streak += 1
+        if streak < self._STAGNATION_THRESHOLD:
+            return ""
+        from peon.projects.models import OperatorPromptKind
+
+        create_operator_prompt_once(
+            self._job.project,
+            f"Job has run {streak} catalog probes with no new finding recorded "
+            "since — check whether it's stuck repeating one approach.",
+            job=self._job,
+            kind=OperatorPromptKind.STAGNATION,
+        )
+        return (
+            f"[productivity] {streak} catalog probes since the last recorded "
+            "finding — consider a different host/technique, or ask the operator."
+        )
+
     def assert_command_allowed(self, command: str) -> str:
         """Block active probe commands when RoE scope is empty or target denied.
 
@@ -1460,14 +1646,16 @@ class JobAgentBridge(AgentBridgeBase):
         not a probe — even when filenames contain host-like tokens. Host checks
         apply only when a catalog/role CLI is invoked.
         """
+        from orchestrator.utils.governance import frame_denial
+
         cmd = (command or "").strip()
         if not cmd:
-            return "empty command"
+            return frame_denial("empty command")
         if not catalog_cli_in_command(cmd):
             return ""
         roe = self._roe()
         if roe is None:
-            return "no RoE on project"
+            return frame_denial("no RoE on project")
 
         scope_vals = [
             (t.get("value") or "").strip() for t in coerce_targets(roe.in_scope) if t.get("value")
@@ -1476,7 +1664,7 @@ class JobAgentBridge(AgentBridgeBase):
         if not found:
             return ""
         if not scope_vals:
-            return "in_scope is empty — cannot run networked probe commands"
+            return frame_denial("in_scope is empty — cannot run networked probe commands")
         for hit in found:
             reason = self.assert_in_scope(hit)
             if reason:

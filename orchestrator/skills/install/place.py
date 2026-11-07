@@ -8,10 +8,9 @@ from pathlib import Path
 import yaml
 
 from orchestrator.config import get_config
-from orchestrator.skills.common import split_frontmatter
+from orchestrator.skills.common import find_manifest, split_frontmatter
 from orchestrator.skills.install.validate import validate_pack
-from orchestrator.skills.manifest import ParseProfile, SkillParseError, find_skill_manifest
-from orchestrator.skills.model import parse_skill_md
+from orchestrator.skills.manifest import ParseProfile, SkillParseError, parse_skill_manifest
 from orchestrator.skills.providers.base import CLAUDE_PROVIDER, PEON_PROVIDER, SkillId
 from orchestrator.skills.registry import SkillRegistry
 
@@ -26,14 +25,14 @@ class SkillConflictError(ValueError):
 
 
 def _frontmatter_name(skill_dir: Path) -> str:
-    manifest = find_skill_manifest(skill_dir)
+    manifest = find_manifest(skill_dir)
     if manifest is None:
         raise ValueError(f"{skill_dir} has no SKILL.md")
     try:
-        spec = parse_skill_md(manifest, profile=ParseProfile.AGENTSKILLS)
+        parsed_manifest = parse_skill_manifest(manifest, profile=ParseProfile.AGENTSKILLS)
     except SkillParseError as exc:
         raise ValueError(exc.message) from exc
-    parsed = SkillId.parse(spec.id)
+    parsed = SkillId.parse(parsed_manifest.command_name)
     if parsed is None or parsed.provider != PEON_PROVIDER:
         raise ValueError(f"{skill_dir.name} frontmatter name is not a bare skill id")
     return parsed.name
@@ -90,7 +89,7 @@ def place_pack(skill_dir: Path, *, overwrite: bool = False) -> str:
     import tempfile
 
     root = Path(skill_dir)
-    manifest = find_skill_manifest(root)
+    manifest = find_manifest(root)
     if manifest is None:
         raise ValueError(f"{root} has no SKILL.md")
     try:
@@ -114,7 +113,7 @@ def place_pack(skill_dir: Path, *, overwrite: bool = False) -> str:
         staged = Path(staged_tmp.name) / name
         shutil.copytree(root, staged)
         work = staged
-        manifest = find_skill_manifest(work)
+        manifest = find_manifest(work)
         if manifest is None:
             staged_tmp.cleanup()
             raise ValueError(f"{root} has no SKILL.md after staging")

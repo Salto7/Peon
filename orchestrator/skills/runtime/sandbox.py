@@ -69,6 +69,65 @@ def job_role_id(*, required: bool = True) -> str:
     return str(extras.get("role_id") or "").strip().lower()
 
 
+def current_job_phase() -> str:
+    """This job's Objective ``KillChainPhase`` via its bridge; "" if unbound/unknown."""
+    try:
+        job = get_job()
+    except RuntimeError:
+        return ""
+    checker = getattr(job.bridge, "current_phase", None)
+    return str(checker() if callable(checker) else "")
+
+
+def _skill_binary_phase_denial(name: str, role_id: str, skill_ids: tuple[str, ...]) -> str:
+    """Phase gate for a binary provided by one of this job's bound skills.
+
+    Mirrors ``orchestrator/mcp/provision.py:_binding_phase_denial`` for the
+    skill/binary seam, via the shared
+    ``platform_catalog.binding_phase_denial`` so a ``min_phase`` gate works
+    the same way for a skill binding as it does for an MCP-server binding.
+    Allowed as soon as any skill that provides this binary clears its gate.
+    """
+    from orchestrator.skills.bind import load_skill_specs
+    from peon.projects.platform_catalog import binding_phase_denial
+
+    providers = [
+        doc.skill_id
+        for doc in load_skill_specs(skill_ids, role_id=role_id)
+        if name in (doc.allow_binaries or ())
+    ]
+    if not providers:
+        return ""
+    current = current_job_phase()
+    denials = [
+        denial
+        for skill_id in providers
+        if (
+            denial := binding_phase_denial(
+                role_id=role_id,
+                owner_kind="skill",
+                owner_id=skill_id,
+                current_phase=current,
+                label=f"skill {skill_id!r}",
+            )
+        )
+    ]
+    if denials and len(denials) == len(providers):
+        try:
+            from peon.projects.platform_catalog import PlatformCatalog
+
+            rows = PlatformCatalog.shared().list_bindings(
+                role_id=role_id, owner_kind="skill", owner_id=providers[0]
+            )
+            min_phase = str(getattr(rows[0], "min_phase", "") or "") if rows else ""
+            if min_phase:
+                get_job().bridge.request_phase_advance(min_phase)
+        except Exception:
+            pass
+        return denials[0]
+    return ""
+
+
 def role_binary_denial(binary: str) -> str:
     """Explain a catalog ownership mismatch, including valid handoff roles."""
     name = (binary or "").strip().lower()
@@ -82,9 +141,17 @@ def role_binary_denial(binary: str) -> str:
     from orchestrator.skills.bind import effective_binaries, resolve_skill_ids
 
     extras = getattr(get_job(), "extras", None) or {}
-    allowed = effective_binaries(role, resolve_skill_ids(role, extras.get("skill_ids")))
+    skill_ids = resolve_skill_ids(role, extras.get("skill_ids"))
+    allowed = effective_binaries(role, skill_ids)
     if not allowed or name in allowed:
+        if allowed:
+            phase_denial = _skill_binary_phase_denial(name, role_id, skill_ids)
+            if phase_denial:
+                return phase_denial
         return ""
+    from orchestrator.utils.skill_gap import record_skill_gap
+
+    record_skill_gap(role_id, "binary", name)
     owners = []
     for candidate in registry.list_roles():
         if candidate.is_manager:
@@ -96,7 +163,9 @@ def role_binary_denial(binary: str) -> str:
         if owners
         else " No catalog role currently owns this binary."
     )
-    return (
+    from orchestrator.utils.governance import frame_denial
+
+    return frame_denial(
         f"binary {name!r} not allowlisted for role {role_id}. "
         f"Allowed: {', '.join(allowed)}.{handoff}"
     )
@@ -367,14 +436,19 @@ def _exec_error(result, fallback: str) -> str:
 
 
 def _configured_skill_env(session) -> dict[str, str]:
-    """Forward only operator-selected environment keys into skill scripts."""
+    """Forward only operator-selected environment keys into skill scripts.
+
+    env-name validation.
+    """
+    from orchestrator.utils.strings import is_env_name
+
     raw = session.env_get("SKILLS_FORWARD_ENV")
     if not raw:
         return {}
     values: dict[str, str] = {}
     for item in re.split(r"[,:;\s]+", raw):
         key = item.strip()
-        if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        if not key or not is_env_name(key):
             continue
         value = session.env_get(key)
         if value:
@@ -459,11 +533,15 @@ class SandboxTools:
             return None, blocked
         return cmd, ""
 
-    def bash(self, command: str) -> str:
-        """Claude Bash tool."""
+    def bash_result(self, command: str) -> tuple[str | None, ShellResult]:
+        """RoE-gated shell run.
+
+        Returns ``(cmd, result)``. ``cmd`` is None when the command was refused
+        before execution — then ``result.stderr`` holds the deny message.
+        """
         cmd, err = self._prepare_shell(command)
         if err:
-            return err
+            return None, ShellResult(1, "", err)
         assert cmd is not None
         emit_event(
             "tool",
@@ -478,7 +556,17 @@ class SandboxTools:
             EVENT_RUN_CLI,
             cli_payload(cmd, phase="done", exit_code=result.code),
         )
-        return render_tool_output(Session.current(), result, label="bash")
+        return cmd, result
+
+    def bash(self, command: str) -> str:
+        """Claude Bash tool — rendered text for the model."""
+        cmd, result = self.bash_result(command)
+        if cmd is None:
+            return result.stderr or "Error: command refused"
+        out = render_tool_output(Session.current(), result, label="bash")
+        checker = getattr(get_job().bridge, "stagnation_note", None)
+        note = checker(cmd) if callable(checker) else ""
+        return f"{out}\n{note}" if note else out
 
     def periodic(
         self,

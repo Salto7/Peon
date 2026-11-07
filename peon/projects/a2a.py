@@ -17,6 +17,7 @@ Model (see also ``AgentMessage``):
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 import uuid
@@ -37,6 +38,8 @@ from peon.projects.models import (
     ObjectiveStatus,
     Project,
 )
+
+from peon.projects.db import ensure_project_database
 
 logger = logging.getLogger(__name__)
 
@@ -135,12 +138,6 @@ def render_messages(messages: Iterable[AgentMessage]) -> str:
 # ── plumbing helpers ─────────────────────────────────────────────────────
 
 
-def _alias(project_id: Any) -> str:
-    from peon.projects.db import ensure_project_database
-
-    return ensure_project_database(project_id)
-
-
 def _emit(job: Job, message_type: str, content: str, **meta: Any) -> None:
     try:
         from peon.projects.job_claim import emit
@@ -173,20 +170,16 @@ def _reopen_project(project_id: Any) -> None:
 # ── idle / wake ──────────────────────────────────────────────────────────
 
 
-def dependencies_met(job: Job) -> bool:
-    if not job.objective_id or job.objective is None:
-        return True
-    from peon.projects.objectives import ObjectiveScheduler
-
-    return ObjectiveScheduler().dependencies_met(job.objective)
-
-
 def can_wake(job: Job) -> bool:
     """A job parked on dependencies must not start before they are met."""
     if job.status != JobStatus.IDLE:
         return False
     if job.idle_reason == "dependencies":
-        return dependencies_met(job)
+        if not job.objective_id or job.objective is None:
+            return True
+        from peon.projects.objectives import ObjectiveScheduler
+
+        return ObjectiveScheduler().dependencies_met(job.objective)
     return True
 
 
@@ -194,7 +187,7 @@ def park_idle(job: Job, *, reason: str, note: str = "", checkpoint: bool = False
     """Move a claimed/running job to IDLE (no polling; wakes on a message)."""
     from peon.projects.db import using_project
 
-    alias = _alias(job.project_id)
+    alias = ensure_project_database(job.project_id)
     with using_project(job.project_id):
         updated = Job.objects.using(alias).filter(
             pk=job.pk, status__in=[JobStatus.RUNNING, JobStatus.PENDING]
@@ -230,7 +223,7 @@ def wake_job(job: Job, *, reason: str) -> bool:
     """IDLE → PENDING and enqueue. Returns True only for the call that woke it."""
     from peon.projects.db import using_project
 
-    alias = _alias(job.project_id)
+    alias = ensure_project_database(job.project_id)
     resume = job.started_at is not None  # ran before ⇒ a checkpoint exists
     with using_project(job.project_id):
         updated = Job.objects.using(alias).filter(
@@ -279,7 +272,7 @@ def resume_completed_job(job: Job) -> Job:
     from peon.projects import lifecycle
     from peon.projects.db import using_project
 
-    alias = _alias(job.project_id)
+    alias = ensure_project_database(job.project_id)
     with using_project(job.project_id):
         job.resume_from_checkpoint = True
         job.save(using=alias, update_fields=["resume_from_checkpoint"])
@@ -338,7 +331,7 @@ def send_message(
         or (((from_job.role_ids or [""])[0] if from_job else "") or "")
         or "system"
     )
-    alias = _alias(project.pk)
+    alias = ensure_project_database(project.pk)
     if from_job is not None:
         cap = _message_cap_exceeded(from_job, to_job, alias)
         if cap is not None:
@@ -439,7 +432,7 @@ def sent_message_status(from_job: Job, *, limit: int = 10) -> list[dict[str, Any
     (``delivered_at`` is set once the recipient's inbox actually drains it) and
     whether a reply has come back.
     """
-    alias = _alias(from_job.project_id)
+    alias = ensure_project_database(from_job.project_id)
     rows = (
         AgentMessage.objects.using(alias)
         .filter(from_job=from_job)
@@ -468,7 +461,7 @@ def sent_message_status(from_job: Job, *, limit: int = 10) -> list[dict[str, Any
 
 
 def unread(job: Job) -> list[AgentMessage]:
-    alias = _alias(job.project_id)
+    alias = ensure_project_database(job.project_id)
     return list(
         AgentMessage.objects.using(alias)
         .filter(to_job=job, delivered_at__isnull=True)
@@ -480,7 +473,7 @@ def drain_inbox(job: Job) -> list[AgentMessage]:
     """Return and mark delivered every unread message for ``job``."""
     from peon.projects.db import using_project
 
-    alias = _alias(job.project_id)
+    alias = ensure_project_database(job.project_id)
     with using_project(job.project_id), transaction.atomic(using=alias):
         rows = list(
             AgentMessage.objects.using(alias)
@@ -547,7 +540,7 @@ def deliver_handoffs(objective: Objective) -> int:
     """Send each completed dependency's result to this objective's idle agents."""
     from peon.projects.db import using_project
 
-    alias = _alias(objective.project_id)
+    alias = ensure_project_database(objective.project_id)
     sent = 0
     with using_project(objective.project_id):
         idle = list(
@@ -612,6 +605,53 @@ def _parent_handoff_text(child: Job) -> str:
     return "\n\n".join(lines)
 
 
+def sweep_child_timeouts(*, now=None, limit: int = 200) -> dict[str, Any]:
+    """Flag spawned children that have run past their wall-clock budget.
+
+    Core 1.4: fan-out already caps concurrent
+    and recursive children (``peon/projects/agent_bridge.py:_spawn_linked``);
+    this is the missing third leg — a child with no cap on wall-clock time
+    runs forever unnoticed. Does not cancel: raises one
+    ``OperatorPromptKind.CHILD_TIMEOUT`` per child (deduped while unresolved,
+    same convention as ``JobAgentBridge.stagnation_note``) so a human decides
+    whether to let it run, nudge it, or cancel it — "per-member approval",
+    not an auto-kill.
+    """
+    from peon.projects.db import iter_project_aliases, using_project
+    from peon.projects.hitl import create_operator_prompt_once
+    from peon.projects.models import OperatorPromptKind
+    from peon.projects.runtime_settings import PeonSettings
+
+    clock = now or dj_tz.now()
+    timeout_sec = PeonSettings.get_int("AGENT_CHILD_TIMEOUT_SEC", 3600)
+    flagged: list[str] = []
+    for pid, alias in iter_project_aliases():
+        with using_project(pid):
+            stuck = list(
+                Job.objects.using(alias)
+                .filter(
+                    parent__isnull=False,
+                    started_at__isnull=False,
+                    started_at__lte=clock - dt.timedelta(seconds=timeout_sec),
+                )
+                .exclude(status__in=TERMINAL_JOB_STATUSES | {JobStatus.IDLE, JobStatus.PAUSED})
+                .order_by("started_at")[:limit]
+            )
+            for child in stuck:
+                elapsed_min = int((clock - child.started_at).total_seconds() // 60)
+                prompt = create_operator_prompt_once(
+                    child.project,
+                    f"Child job {child.title!r} has run {elapsed_min} min "
+                    f"(budget {timeout_sec // 60} min) without finishing — "
+                    "let it continue, nudge it, or cancel it.",
+                    job=child,
+                    kind=OperatorPromptKind.CHILD_TIMEOUT,
+                )
+                if prompt is not None:
+                    flagged.append(str(child.id))
+    return {"ok": True, "flagged": flagged}
+
+
 def deliver_parent_handoff(child: Job) -> bool:
     """Push a terminal child's result to its parent, waking it only if parked.
 
@@ -624,7 +664,7 @@ def deliver_parent_handoff(child: Job) -> bool:
         return False
     from peon.projects.db import using_project
 
-    alias = _alias(child.project_id)
+    alias = ensure_project_database(child.project_id)
     with using_project(child.project_id):
         parent = Job.objects.using(alias).filter(pk=child.parent_id).first()
         if parent is None or parent.status in TERMINAL_JOB_STATUSES:
@@ -659,7 +699,7 @@ GOVERNANCE_PROFILE = "governance"
 
 def governance_pm(project: Project) -> Job | None:
     """The live resident governance PM for ``project`` (or None)."""
-    alias = _alias(project.pk)
+    alias = ensure_project_database(project.pk)
     return (
         Job.objects.using(alias)
         .filter(project_id=project.pk, profile=GOVERNANCE_PROFILE)
@@ -672,7 +712,7 @@ def governance_pm(project: Project) -> Job | None:
 def ensure_governance_pm(project: Project) -> Job | None:
     """Create the single resident IDLE governance PM if none is live."""
     from orchestrator.crew.roles.registry import RoleRegistry
-    from peon.projects.db import ensure_project_database, using_project
+    from peon.projects.db import using_project
 
     manager_id, _ = RoleRegistry.shared().engagement_bookends()
     if not manager_id or governance_pm(project) is not None:
@@ -748,7 +788,7 @@ def cancel_governor(project: Project) -> int:
     """Retire the resident governance PM when the engagement finishes."""
     from peon.projects.db import using_project
 
-    alias = _alias(project.pk)
+    alias = ensure_project_database(project.pk)
     with using_project(project.pk):
         return Job.objects.using(alias).filter(
             project_id=project.pk,
@@ -767,7 +807,7 @@ def sweep_orphan_standby(project: Project) -> int:
     """Cancel idle agents whose objective vanished, finished or was cancelled."""
     from peon.projects.db import using_project
 
-    alias = _alias(project.pk)
+    alias = ensure_project_database(project.pk)
     n = 0
     with using_project(project.pk):
         qs = Job.objects.using(alias).filter(
@@ -806,7 +846,7 @@ def resolve_recipient(
     text = (spec or "").strip().lower()
     if not text:
         return None, "recipient is required: the agent id from list_team"
-    alias = _alias(project.pk)
+    alias = ensure_project_database(project.pk)
     agents = list(Job.objects.using(alias).filter(project_id=project.pk).select_related("objective"))
 
     compact = text.replace("-", "")
@@ -844,7 +884,7 @@ def resolve_recipient(
 
 def team_listing(project: Project, *, viewer: Job | None = None) -> str:
     """One line per agent: who to message and what state it is in."""
-    alias = _alias(project.pk)
+    alias = ensure_project_database(project.pk)
     jobs = (
         Job.objects.using(alias)
         .filter(project_id=project.pk)

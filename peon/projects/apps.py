@@ -212,15 +212,22 @@ def _boot_services(kind: str) -> None:
     except Exception as exc:
         logger.warning("llm proxy kick skipped: %s", exc)
     try:
-        from peon.projects.tasks import ensure_dream_scheduler, ensure_durable_scheduler
+        from peon.projects.tasks import (
+            ensure_child_timeout_watchdog,
+            ensure_dream_scheduler,
+            ensure_durable_scheduler,
+            ensure_project_budget_watchdog,
+        )
 
         # The worker runs the actors: on its boot, replace whatever chain exists
         # (it may be from older code); the web process only fills a gap.
         force = kind == "worker"
         logger.info(
-            "schedulers: durable=%s dream=%s",
+            "schedulers: durable=%s dream=%s child_timeout=%s project_budget=%s",
             ensure_durable_scheduler(force=force),
             ensure_dream_scheduler(force=force),
+            ensure_child_timeout_watchdog(force=force),
+            ensure_project_budget_watchdog(force=force),
         )
     except Exception as exc:
         logger.warning("scheduler kick failed: %s", exc)

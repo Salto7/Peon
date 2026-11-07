@@ -14,11 +14,18 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { requestConfirm } from "@/lib/behaviors";
 import type { ProjectContext } from "./types";
+import { projectUrls } from "./urls";
 
 type Entry = {
   name: string;
@@ -44,20 +51,20 @@ const KIND_TONE: Record<string, Tone> = {
 /** What the agents remember: engagement notes and platform lessons. */
 export default function MemoryPanel({ ctx }: { ctx: ProjectContext }) {
   const qc = useQueryClient();
-  const base = `/projects/${ctx.pk}`;
+  const urls = projectUrls(ctx.pk);
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["memory", ctx.pk],
-    queryFn: ({ signal }) => api<Listing>(`${base}/memory.json`, { signal }),
+    queryFn: ({ signal }) => api<Listing>(urls.memoryJson, { signal }),
     refetchInterval: 20_000,
   });
 
   const forget = useMutation({
     mutationFn: (e: Entry) =>
-      api(`${base}/memory/`, { json: { action: "forget", scope: e.scope, name: e.name } }),
+      api(urls.memory, { json: { action: "forget", scope: e.scope, name: e.name } }),
     onSuccess: () => {
       toast.success("Memory forgotten");
       qc.invalidateQueries({ queryKey: ["memory", ctx.pk] });
@@ -76,7 +83,10 @@ export default function MemoryPanel({ ctx }: { ctx: ProjectContext }) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative min-w-56 flex-1">
-          <Search className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" aria-hidden />
+          <Search
+            className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+            aria-hidden
+          />
           <Input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -112,7 +122,7 @@ export default function MemoryPanel({ ctx }: { ctx: ProjectContext }) {
           />
           <Section
             title="Platform lessons"
-            hint="Generic lessons shared across engagements. Never contain targets, IPs, emails or URLs."
+            hint="Only lessons that match this project's roles, skills, or tools — not the full archive. Never contain targets, IPs, emails or URLs."
             entries={platform}
             open={open}
             setOpen={setOpen}
@@ -124,7 +134,7 @@ export default function MemoryPanel({ ctx }: { ctx: ProjectContext }) {
                 onConfirm: () => forget.mutate(e),
               })
             }
-            empty="No platform lessons yet."
+            empty="No platform lessons match this project's roles, skills, or tools yet."
           />
         </>
       )}
@@ -181,10 +191,14 @@ function Section({
                     onClick={() => setOpen(isOpen ? null : key)}
                   >
                     <span className="flex flex-wrap items-center gap-2">
-                      <ToneBadge tone={KIND_TONE[e.kind] ?? "neutral"}>{humanize(e.kind)}</ToneBadge>
+                      <ToneBadge tone={KIND_TONE[e.kind] ?? "neutral"}>
+                        {humanize(e.kind)}
+                      </ToneBadge>
                       <span className="font-mono text-[13px] font-medium">{e.name}</span>
                     </span>
-                    <span className="mt-1 block text-sm text-muted-foreground">{e.description}</span>
+                    <span className="mt-1 block text-sm text-muted-foreground">
+                      {e.description}
+                    </span>
                   </button>
                   <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
                     <span title="Times agents recalled this" className="tabular-nums">
@@ -216,7 +230,9 @@ function Section({
           })}
         </ul>
       ) : (
-        <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">{empty}</p>
+        <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+          {empty}
+        </p>
       )}
     </section>
   );
@@ -236,10 +252,16 @@ function AddDialog({
   onSaved: () => void;
 }) {
   const ids = useId();
-  const [form, setForm] = useState({ name: "", kind: "fact", description: "", body: "", scope: "project" });
+  const [form, setForm] = useState({
+    name: "",
+    kind: "fact",
+    description: "",
+    body: "",
+    scope: "project",
+  });
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
   const save = useMutation({
-    mutationFn: () => api(`/projects/${pk}/memory/`, { json: { action: "save", ...form } }),
+    mutationFn: () => api(projectUrls(pk).memory, { json: { action: "save", ...form } }),
     onSuccess: () => {
       toast.success("Memory saved");
       onSaved();
@@ -267,7 +289,13 @@ function AddDialog({
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor={`${ids}-name`}>Name</Label>
-              <Input id={`${ids}-name`} required value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="skip-cdn-hosts" />
+              <Input
+                id={`${ids}-name`}
+                required
+                value={form.name}
+                onChange={(e) => set({ name: e.target.value })}
+                placeholder="skip-cdn-hosts"
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor={`${ids}-kind`}>Kind</Label>
@@ -287,11 +315,23 @@ function AddDialog({
           </div>
           <div className="space-y-1.5">
             <Label htmlFor={`${ids}-desc`}>One-line description</Label>
-            <Input id={`${ids}-desc`} required value={form.description} onChange={(e) => set({ description: e.target.value })} placeholder="Never scan CDN-fronted hosts" />
+            <Input
+              id={`${ids}-desc`}
+              required
+              value={form.description}
+              onChange={(e) => set({ description: e.target.value })}
+              placeholder="Never scan CDN-fronted hosts"
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor={`${ids}-body`}>Details</Label>
-            <Textarea id={`${ids}-body`} rows={5} value={form.body} onChange={(e) => set({ body: e.target.value })} placeholder="Why this matters and how agents should apply it." />
+            <Textarea
+              id={`${ids}-body`}
+              rows={5}
+              value={form.body}
+              onChange={(e) => set({ body: e.target.value })}
+              placeholder="Why this matters and how agents should apply it."
+            />
           </div>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>

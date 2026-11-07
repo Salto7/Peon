@@ -9,18 +9,25 @@ from typing import Any
 
 from django.db.models import Count, Q
 
-from peon.projects.models import Finding, FindingStatus, Job, Objective, Project
-from peon.projects.roe_ops import add_candidates
-from peon.projects.target_discovery import SubjectCanonicalizer
-from peon.projects.target_shapes import coerce_targets, sanitize_label
+from peon.projects.models import (
+    Evidence,
+    Finding,
+    FindingEvidence,
+    FindingStatus,
+    Job,
+    Objective,
+    Project,
+)
+from peon.projects.roe_ops import add_candidates, known_roe_values
+from peon.projects.target_discovery import subjects_from_finding
+from peon.projects.targets import sanitize_label
 
 logger = logging.getLogger(__name__)
 
 # Ranking scale for reports/UI — not a domain taxonomy.
-_SEVERITY_RANK = frozenset({"critical", "high", "medium", "low", "info"})
-_SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
+SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
+_SEVERITY_RANK = frozenset(SEVERITY_ORDER)
 
-# Excluded from client-facing report sections.
 
 class FindingNormalizer:
     """Coerce agent/queue dicts into Finding field values."""
@@ -70,9 +77,7 @@ class FindingNormalizer:
             "metadata": meta,
         }
         # Prefer explicit subjects; else derive from host/port/url/… — never evidence_path.
-        subjects = SubjectCanonicalizer.from_finding(
-            {**base, "subjects": record.get("subjects")}
-        )
+        subjects = subjects_from_finding({**base, "subjects": record.get("subjects")})
         if not subjects:
             return None
         base["subjects"] = subjects
@@ -131,7 +136,24 @@ class FindingStore:
         from peon.projects.asset_graph import AssetGraphEngine
 
         AssetGraphEngine(project).sync(findings=[finding])
+        if finding.severity in {"high", "critical"}:
+            self._notify_finding(project, finding, "New finding")
         return finding
+
+    @staticmethod
+    def _notify_finding(project: Project, finding: Finding, headline: str) -> None:
+        """Fan out a notification (Core 5.1) — never raises into the caller's path."""
+        try:
+            from peon.projects.tasks import enqueue_notification
+
+            enqueue_notification(
+                f"Peon: {headline} — {project.title}",
+                f"FIND-{finding.seq} [{finding.severity}] {finding.title}"
+                + (f" host={finding.host}" if finding.host else ""),
+                extra={"project_id": str(project.pk), "finding_id": str(finding.pk)},
+            )
+        except Exception as exc:
+            logger.warning("finding notification enqueue failed: %s", exc, exc_info=True)
 
     @staticmethod
     def _queue_discovered_candidates(project: Project, row: dict[str, Any]) -> None:
@@ -140,33 +162,44 @@ class FindingStore:
         if roe is None:
             return
 
-        found = SubjectCanonicalizer.from_finding(row)
+        found = subjects_from_finding(row)
         if not found:
             return
-        known = {
-            t["value"].lower()
-            for t in (
-                coerce_targets(roe.seed)
-                + coerce_targets(roe.in_scope)
-                + coerce_targets(roe.exclusions)
-                + coerce_targets(roe.candidates)
-            )
-            if t.get("value")
-        }
+        known = known_roe_values(roe, "seed", "in_scope", "exclusions", "candidates")
         novel = [t for t in found if t.get("value", "").lower() not in known]
         if novel:
             add_candidates(roe, novel)
+            try:
+                from peon.projects.tasks import enqueue_candidate_classification
+
+                enqueue_candidate_classification(str(project.pk), [t["value"] for t in novel])
+            except Exception as exc:
+                logger.warning("candidate scope-hint enqueue failed: %s", exc, exc_info=True)
+
+    @staticmethod
+    def confirm_gate_reason(finding: Finding) -> str:
+        """Why CONFIRMED is blocked ("" when evidence proof is linked)."""
+        if EvidenceStore.has_proof(finding):
+            return ""
+        return "cannot confirm without evidence — link at least one Evidence as role=proof first"
 
     def triage(self, finding: Finding, action: str = "", *, status: str = "") -> Finding | None:
-        """Apply a FindingStatus value (``status`` preferred; ``action`` alias)."""
+        """Apply a FindingStatus value (``status`` preferred; ``action`` alias).
+
+        A transition to ``CONFIRMED`` is gated by ``confirm_gate_reason``.
+        """
         raw = (status or action or "").strip().lower()
         allowed = {c.value for c in FindingStatus}
         if raw not in allowed:
             return None
         if finding.status == raw:
             return finding
+        if raw == FindingStatus.CONFIRMED and self.confirm_gate_reason(finding):
+            return None
         finding.status = raw
         finding.save(update_fields=["status", "updated_at"])
+        if raw == FindingStatus.CONFIRMED:
+            self._notify_finding(finding.project, finding, "Finding confirmed")
         return finding
 
     def set_severity(
@@ -253,11 +286,9 @@ class FindingStore:
             qs = qs.filter(status=status)
         if severity and severity != "all":
             qs = qs.filter(severity=severity)
-        order = {s: i for i, s in enumerate(_SEVERITY_ORDER)}
+        order = {s: i for i, s in enumerate(SEVERITY_ORDER)}
         rows = list(qs[: max(1, min(limit, 500))])
-        rows.sort(
-            key=lambda f: (order.get(f.severity, 99), f.seq, str(f.created_at))
-        )
+        rows.sort(key=lambda f: (order.get(f.severity, 99), f.seq, str(f.created_at)))
         return rows
 
     @staticmethod
@@ -310,9 +341,7 @@ def _finding_queue_schema() -> dict[str, Any] | None:
     if _FINDING_QUEUE_SCHEMA is not None:
         return _FINDING_QUEUE_SCHEMA
     try:
-        _FINDING_QUEUE_SCHEMA = json.loads(
-            _FINDING_QUEUE_SCHEMA_PATH.read_text(encoding="utf-8")
-        )
+        _FINDING_QUEUE_SCHEMA = json.loads(_FINDING_QUEUE_SCHEMA_PATH.read_text(encoding="utf-8"))
     except OSError:
         _FINDING_QUEUE_SCHEMA = {}
     return _FINDING_QUEUE_SCHEMA or None
@@ -378,9 +407,7 @@ class FindingQueueIngestor:
         archive = path.with_suffix(path.suffix + self.archive_suffix)
         try:
             existing = (
-                archive.read_text(encoding="utf-8", errors="replace")
-                if archive.is_file()
-                else ""
+                archive.read_text(encoding="utf-8", errors="replace") if archive.is_file() else ""
             )
             archive.write_text(existing + text, encoding="utf-8")
             path.write_text("", encoding="utf-8")
@@ -392,3 +419,71 @@ class FindingQueueIngestor:
 def ingest_workspace_findings(job: Job, workspace: Path) -> int:
     """Ingest ``workspace/findings_queue.jsonl`` (skills write the queue)."""
     return FindingQueueIngestor().ingest(job, workspace)
+
+
+class EvidenceStore:
+    """Index workspace evidence files and link them to Findings (Core 3.1).
+
+    Never stores bytes — ``Evidence.path`` points at a file under the job
+    workspace using the same storage/safety contract as
+    ``JobAgentBridge.write_workspace_artifact``. This is the structure a bare
+    ``Finding.evidence_path`` string lacks: a content hash, a kind/source
+    taxonomy, and a per-link role once attached to a Finding.
+    """
+
+    @staticmethod
+    def link(finding: Finding, evidence: Evidence, *, role: str = "proof") -> FindingEvidence:
+        """Attach ``evidence`` to ``finding`` under ``role``; idempotent per triple."""
+        from peon.projects.db import ensure_project_database
+
+        alias = ensure_project_database(finding.project_id)
+        link, _ = FindingEvidence.objects.using(alias).get_or_create(
+            project_id=finding.project_id,
+            finding=finding,
+            evidence=evidence,
+            role=sanitize_label(role, default="proof"),
+        )
+        return link
+
+    @staticmethod
+    def has_proof(finding: Finding) -> bool:
+        """True once at least one ``Evidence`` is linked under role ``proof``."""
+        from peon.projects.db import ensure_project_database
+
+        alias = ensure_project_database(finding.project_id)
+        return FindingEvidence.objects.using(alias).filter(finding=finding, role="proof").exists()
+
+    @staticmethod
+    def search(
+        project: Project,
+        *,
+        kind: str = "",
+        host: str = "",
+        finding_seq: int | None = None,
+        limit: int = 50,
+    ) -> list[Evidence]:
+        """Evidence anywhere in ``project`` — not just what the caller's own job captured.
+
+        Core 3.6: a worker that never
+        captured a piece of evidence itself can still find it, by kind, by
+        the host of the Finding it supports, or by Finding seq.
+        """
+        from peon.projects.db import ensure_project_database
+
+        alias = ensure_project_database(project.pk)
+        qs = Evidence.objects.using(alias).filter(project=project)
+        if kind.strip():
+            qs = qs.filter(kind=sanitize_label(kind, default=kind))
+        if host.strip() or finding_seq is not None:
+            finding_qs = Finding.objects.using(alias).filter(project=project)
+            if host.strip():
+                finding_qs = finding_qs.filter(host__icontains=host.strip())
+            if finding_seq is not None:
+                finding_qs = finding_qs.filter(seq=finding_seq)
+            linked_ids = (
+                FindingEvidence.objects.using(alias)
+                .filter(finding_id__in=finding_qs.values_list("id", flat=True))
+                .values_list("evidence_id", flat=True)
+            )
+            qs = qs.filter(id__in=list(linked_ids))
+        return list(qs.order_by("-created_at")[: max(1, limit)])

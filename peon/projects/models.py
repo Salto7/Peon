@@ -180,6 +180,13 @@ class Project(models.Model):
     failed_jobs = models.PositiveIntegerField(default=0)
     open_prompts = models.PositiveIntegerField(default=0)
     last_error_summary = models.CharField(max_length=500, blank=True, default="")
+    traffic_capture_token = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Bearer token for the browser-extension traffic-capture ingest "
+        "endpoint (UI-11) — generated on demand, never derived from project id.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -754,6 +761,11 @@ class OperatorPromptKind(models.TextChoices):
     BLOCKED_OBJECTIVE = "blocked_objective", "Blocked objective"
     FAILURE_EXHAUSTED = "failure_exhausted", "Failure replans exhausted"
     PLAN_CHANGE = "plan_change", "Plan change"
+    STAGNATION = "stagnation", "Stagnation detected"
+    CHILD_TIMEOUT = "child_timeout", "Child job exceeded time budget"
+    BUDGET_EXCEEDED = "budget_exceeded", "Project LLM spend exceeded budget"
+    PHASE_ADVANCE_REQUEST = "phase_advance_request", "Phase advance requested"
+    SPAWN_CAP_REQUEST = "spawn_cap_request", "Spawn cap reached"
 
 
 class OperatorPrompt(ProjectScopedModel):
@@ -777,7 +789,11 @@ class OperatorPrompt(ProjectScopedModel):
         max_length=32,
         choices=OperatorPromptKind.choices,
         default=OperatorPromptKind.AGENT_ASK,
-        help_text="agent_ask | blocked_objective | failure_exhausted | plan_change",
+        help_text=(
+            "agent_ask | blocked_objective | failure_exhausted | plan_change | "
+            "stagnation | child_timeout | budget_exceeded | phase_advance_request | "
+            "spawn_cap_request"
+        ),
     )
     question = models.TextField()
     options = models.JSONField(default=list, blank=True)
@@ -802,6 +818,7 @@ class ScheduleKind(models.TextChoices):
     CRON = "cron", "Cron"
     INTERVAL = "interval", "Interval"
     ONCE = "once", "Once"
+    CONDITION = "condition", "Condition"
 
 
 class ProjectSchedule(ProjectScopedModel):
@@ -842,6 +859,13 @@ class ProjectSchedule(ProjectScopedModel):
         default=0,
         help_text="Seconds between runs when kind=interval.",
     )
+    condition_threshold = models.PositiveIntegerField(
+        default=1,
+        help_text=(
+            "kind=condition only: minimum new Findings recorded since this "
+            "schedule last fired (or was created) before it fires again."
+        ),
+    )
     enabled = models.BooleanField(default=True)
     skip_if_running = models.BooleanField(
         default=True,
@@ -880,6 +904,7 @@ class StreamMessageType(models.TextChoices):
     RESULT = "result", "Result"
     ERROR = "error", "Error"
     STATUS = "status", "Status"
+    MEMORY = "memory", "Memory"  # Core 6.1/UI-9: recalled lessons injected into this job's prompt
 
 
 class StreamMessage(ProjectScopedModel):
@@ -1007,6 +1032,143 @@ class Finding(ProjectScopedModel):
         return f"FIND-{self.seq}: {self.title}"
 
 
+class Evidence(ProjectScopedModel):
+    """Hash-verified index over a workspace evidence file.
+
+    Does not store bytes: ``path`` points at a file under the job workspace
+    using the same storage/safety contract as
+    ``JobAgentBridge.write_workspace_artifact``/``Finding.evidence_path``.
+    This model is the structure a bare path string lacks — a content hash to
+    detect staleness, a kind/source taxonomy, and (via ``FindingEvidence``)
+    which findings it supports and in what role.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+    )
+    job = models.ForeignKey(
+        Job,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="evidence",
+    )
+    kind = models.CharField(
+        max_length=32,
+        default="file",
+        help_text="Free-form evidence kind slug (command_output, screenshot, traffic, file, note); not a closed enum.",
+    )
+    source = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="What captured this (sandbox, rules_of_engagement, browser-extension, operator).",
+    )
+    path = models.CharField(
+        max_length=1024,
+        help_text="Workspace-relative path (under workspace/ or findings/) — never raw bytes.",
+    )
+    content_hash = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="sha256 of the file's bytes at capture time; empty if the file was unreadable.",
+    )
+    version = models.PositiveIntegerField(
+        default=1,
+        help_text="Recapturing the same (job, path) increments this rather than overwriting history.",
+    )
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["project", "kind"]),
+            models.Index(fields=["project", "path"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"Evidence({self.kind}:{self.path})"
+
+
+class FindingEvidence(ProjectScopedModel):
+    """Link: which ``Evidence`` supports which ``Finding``, and in what role.
+
+    A role is per-link (not per-evidence) because the same captured artifact
+    can be ``proof`` for one finding and merely ``context`` for another.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+    )
+    finding = models.ForeignKey(Finding, on_delete=models.CASCADE, related_name="evidence_links")
+    evidence = models.ForeignKey(Evidence, on_delete=models.CASCADE, related_name="finding_links")
+    role = models.CharField(
+        max_length=32,
+        default="proof",
+        help_text="Free-form link role slug (proof, context, reference); not a closed enum.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["finding", "evidence", "role"], name="unique_finding_evidence_role")
+        ]
+        indexes = [models.Index(fields=["project", "role"])]
+
+    def __str__(self) -> str:
+        return f"FindingEvidence({self.finding_id} <- {self.evidence_id} [{self.role}])"
+
+
+class FindingRetestVerdict(models.TextChoices):
+    REPRODUCED = "reproduced", "Reproduced"
+    FIXED = "fixed", "Fixed"
+    INCONCLUSIVE = "inconclusive", "Inconclusive"
+
+
+class FindingRetest(ProjectScopedModel):
+    """A later check on whether a Finding still holds (Core 3.5).
+
+    Always created alongside a verification ``FindingEvidence`` link — a
+    retest with nothing behind it is just a status flip, not a retest. See
+    Writers should create a ``FindingEvidence`` link in the same transaction.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+    )
+    finding = models.ForeignKey(Finding, on_delete=models.CASCADE, related_name="retests")
+    job = models.ForeignKey(
+        Job,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="finding_retests",
+    )
+    verdict = models.CharField(max_length=16, choices=FindingRetestVerdict.choices)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["project", "finding"])]
+
+    def __str__(self) -> str:
+        return f"FindingRetest({self.finding_id} -> {self.verdict})"
+
+
 class AssetGraph(ProjectScopedModel):
     """Engagement asset graph (open types / relations).
 
@@ -1042,6 +1204,87 @@ class AssetGraph(ProjectScopedModel):
 
     def __str__(self) -> str:
         return f"AssetGraph<{self.project_id}> {len(self.assets or [])} assets"
+
+
+class ExplorationEntryBase(ProjectScopedModel):
+    """Shared shape for Core 4.1's two exploration-graph models.
+
+    ``asset_key`` is a soft reference to one ``AssetGraph.assets[].id`` /
+    ``canonical_asset_key()`` value, not a real FK — the asset graph is a
+    JSON blob per project, not a queryable table.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="+",
+        db_constraint=False,
+    )
+    asset_key = models.CharField(max_length=128, db_index=True)
+    job = models.ForeignKey(Job, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    objective = models.ForeignKey(
+        Objective, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        abstract = True
+
+
+class Observation(ExplorationEntryBase):
+    """An agent's noteworthy perception about one asset-graph node (Core 4.1).
+
+    Informal and exploratory — not a ``Finding`` (confirmed, reportable)
+    and not an entry in ``AssetGraph.assets`` (structural fact). Example:
+    "this subdomain looks like a staging environment" before anything is
+    confirmed.
+    """
+
+    finding = models.ForeignKey(
+        Finding, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    evidence = models.ForeignKey(
+        Evidence, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["project", "asset_key"])]
+
+    def __str__(self) -> str:
+        return f"Observation({self.asset_key}): {self.text[:60]}"
+
+
+class IntentStatus(models.TextChoices):
+    PLANNED = "planned", "Planned"
+    IN_PROGRESS = "in_progress", "In progress"
+    DONE = "done", "Done"
+    SKIPPED = "skipped", "Skipped"
+
+
+class Intent(ExplorationEntryBase):
+    """An agent's plan regarding one asset-graph node (Core 4.1).
+
+    More granular than ``Objective`` (a kill-chain step): "probe this host
+    next" or "skip this, out of scope" tied to one specific asset.
+    """
+
+    status = models.CharField(
+        max_length=16, choices=IntentStatus.choices, default=IntentStatus.PLANNED
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["project", "asset_key"]),
+            models.Index(fields=["project", "status"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"Intent({self.asset_key}) [{self.status}]: {self.text[:60]}"
 
 
 class JobCheckpoint(ProjectScopedModel):
@@ -1128,9 +1371,12 @@ class CatalogMcp(HashedCatalogRow):
     mcp_id = models.CharField(max_length=128, primary_key=True)
     description = models.TextField(blank=True, default="")
     transport = models.CharField(max_length=16, default="stdio")
-    command = models.CharField(max_length=256)
+    command = models.CharField(max_length=256, blank=True, default="")
     args = models.JSONField(default=list, blank=True)
     cwd = models.CharField(max_length=256, blank=True, default="")
+    url = models.CharField(
+        max_length=500, blank=True, default="", help_text="Endpoint for http/streamable-http/sse transport."
+    )
     install = models.JSONField(null=True, blank=True)
     env_schema = models.JSONField(default=list, blank=True)
     # Hosts this server queries as reference infrastructure (research APIs,
@@ -1211,6 +1457,12 @@ class CatalogBinding(models.Model):
     # {"mode": "include"|"exclude", "values": [...]}. Null = every tool the
     # server advertises is callable. Unused for skill bindings.
     tools = models.JSONField(null=True, blank=True)
+    # Phase gate for this role<->owner binding (MCP server or skill): the
+    # owning Objective's KillChainPhase must have reached this value before
+    # the owner's tools/binaries are usable. "" (default) = no gate.
+    min_phase = models.CharField(
+        max_length=32, choices=KillChainPhase.choices, blank=True, default=""
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -1235,10 +1487,10 @@ class CatalogProposal(models.Model):
     Dream never calls ``PlatformCatalog.upsert_role``/``upsert_skill``
     directly — it writes one of these, and a human approves or rejects it
     from the Dream page before the catalog itself changes. ``mcp_binding``
-    and ``role_draft`` are the same queue used by a different producer: a
-    skill/MCP install whose role resolution scored every role below the
-    confidence threshold, or drafted a brand-new role, respectively (see
-    ``PlatformCatalog._resolve_role_for_owner``). ``skill_overlap`` flags a
+    / ``skill_binding`` are also used when a skill/MCP install's role
+    affinity scores every frozen role below confidence (see
+    ``PlatformCatalog._resolve_role_for_owner``). Legacy ``role_draft``
+    rows may still exist but invent is disabled. ``skill_overlap`` flags a
     newly bound skill that reads like it solves the same problem as a
     sibling already bound to its role (see
     ``orchestrator.skills.overlap.find_overlap``); approving writes a
@@ -1247,7 +1499,8 @@ class CatalogProposal(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     kind = models.CharField(
-        max_length=16, help_text="role | skill | role_draft | mcp_binding | skill_overlap"
+        max_length=16,
+        help_text="role | skill | role_draft | mcp_binding | skill_binding | skill_overlap",
     )
     action = models.CharField(max_length=16, help_text="create | update")
     target_id = models.CharField(
@@ -1363,9 +1616,12 @@ class ProjectMcpConfig(ProjectScopedModel):
 
 
 class CredentialKind(models.TextChoices):
-    """Shape of a stored credential (soft hint — drives form fields, not validation)."""
+    """Shape of a stored credential (soft hint — drives form fields, not validation).
 
-    PASSWORD = "password", "Password"
+    UI (CredentialsPanel / KeystoreEditor) labels ``password`` as Credentials.
+    """
+
+    PASSWORD = "password", "Credentials"
     NTLM_HASH = "ntlm_hash", "NTLM hash"
     KERBEROS_TICKET = "kerberos_ticket", "Kerberos ticket"
     SSH_KEY = "ssh_key", "SSH key"
@@ -1462,6 +1718,45 @@ class LlmCallLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.purpose}:{self.model} ${self.cost_usd:.4f}"
+
+
+class SkillGapKind(models.TextChoices):
+    MCP = "mcp", "MCP server"
+    BINARY = "binary", "Binary"
+
+
+class SkillGapEvent(models.Model):
+    """A role tried to use a capability it has no binding for (Core 5.3).
+
+    Platform-wide like ``LlmCallLog`` — role↔skill/MCP bindings are platform
+    config, not per-project. One row per ``(role_id, gap_kind, name)``;
+    repeats increment ``count``/bump ``last_seen_at`` rather than growing the
+    table, since the point is "how often, which" — a per-call audit trail
+    already exists per job via ``StreamMessage``.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    role_id = models.CharField(max_length=128, db_index=True)
+    gap_kind = models.CharField(max_length=16, choices=SkillGapKind.choices)
+    name = models.CharField(max_length=160)
+    count = models.PositiveIntegerField(default=1)
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-last_seen_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["role_id", "gap_kind", "name"], name="unique_skill_gap_event"
+            )
+        ]
+        indexes = [models.Index(fields=["gap_kind", "count"])]
+
+    def __str__(self) -> str:
+        return f"SkillGapEvent({self.role_id}/{self.gap_kind}:{self.name}) x{self.count}"
+
+
+# ObjectivePreset removed — unused (no views/URLs/frontend). Dropped in 0062.
 
 
 class WorkflowPreset(models.Model):

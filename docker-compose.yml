@@ -59,7 +59,8 @@ services:
       DEBUG: ${DEBUG:-true}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,web,edge}
       PROJECT_WORKSPACES_DIR: /workspaces
-      # Host root is mounted below; the app sees configured child paths.
+      # Optional colon-separated Claude skill trees. Mount the host path yourself
+      # if set (e.g. ./my-skills:/extra-skills:ro + SKILLS_EXTRA_CONTAINER_DIRS=/extra-skills).
       SKILLS_EXTRA_DIRS: ${SKILLS_EXTRA_CONTAINER_DIRS:-}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost:8000}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://localhost:8000,https://127.0.0.1:8000}
@@ -88,7 +89,6 @@ services:
       - ./manage.py:/app/manage.py
       - ./skills:/app/skills
       - ./mcps:/app/mcps
-      - ${SKILLS_EXTRA_HOST_ROOT:-./external-skills}:/external-skills:ro
       - ./tools:/app/tools
     # Dev: auto-reload on code edits and on `npm run dev` rebuilds (manifest.json).
     command:
@@ -135,7 +135,6 @@ services:
       DEBUG: ${DEBUG:-true}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,web,edge}
       PROJECT_WORKSPACES_DIR: /workspaces
-      # Must match child paths below the read-only external-root mount.
       SKILLS_EXTRA_DIRS: ${SKILLS_EXTRA_CONTAINER_DIRS:-}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost:8000}
       STREAM_SOCKET_PATH: /tmp/peon/stream.sock
@@ -160,7 +159,6 @@ services:
       - ./manage.py:/app/manage.py
       - ./skills:/app/skills
       - ./mcps:/app/mcps
-      - ${SKILLS_EXTRA_HOST_ROOT:-./external-skills}:/external-skills:ro
       - ./tools:/app/tools
       - /var/run/docker.sock:/var/run/docker.sock
     entrypoint: ["/entrypoint-worker.sh"]

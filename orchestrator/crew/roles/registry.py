@@ -43,32 +43,23 @@ def _build_role(
     manager_id: str = "",
 ) -> RoleSpec:
     skill_ids = skills.skills_for_role(defn.id)
-    specs = [
-        s
-        for sid in skill_ids
-        if (s := skills.get(sid)) is not None
-    ]
+    specs = [s for sid in skill_ids if (s := skills.get(sid)) is not None]
     tools: list[str] = []
     binaries: list[str] = []
     tags: list[str] = []
     for skill in specs:
         tools.extend(_skill_crew_tools(skill))
-        binaries.extend(
-            str(name).strip().lower() for name in (skill.allow_binaries or ())
-        )
+        binaries.extend(str(name).strip().lower() for name in (skill.allow_binaries or ()))
         tags.extend(str(tag).strip().lower() for tag in (skill.tags or ()))
 
     descriptions = [s.description.strip() for s in specs if s.description.strip()]
     label = _label(defn.id)
     skill_list = ", ".join(f"`{s}`" for s in skill_ids) or "(none)"
-    goal = (defn.goal or "").strip()
+    # Role rows are backstory-only; CrewAI still needs a short goal string —
+    # derive from lead skill description, never from a stored role goal.
+    goal = (descriptions[0] if descriptions else f"Execute bound skills for `{defn.id}`.").strip()
     backstory = (defn.backstory or "").strip()
     if defn.kind == "engagement-pm":
-        if not goal:
-            goal = (
-                "Review RoE and the objective sequence, dispatch specialists, "
-                "and hand off to the analyzer. Do not probe targets."
-            )
         if not backstory:
             backstory = f"You are the engagement lead (`{defn.id}`)."
         reports_to = ""
@@ -77,8 +68,6 @@ def _build_role(
         max_iter = 12
         caps = ("orchestrate", "replan", "handover")
     elif defn.kind == "analyzer":
-        if not goal:
-            goal = "Turn workspace evidence into findings and a report. No probing."
         if not backstory:
             backstory = f"You are the reporting specialist (`{defn.id}`)."
         reports_to = manager_id
@@ -87,25 +76,16 @@ def _build_role(
         max_iter = 12
         caps = ("report",)
     else:
-        if not goal:
-            goal = descriptions[0] if descriptions else (
-                f"Lead authorized work for `{defn.id}` using the skills bound to you."
-            )
         if not backstory:
-            backstory = (
-                f"You are `{defn.id}`, a technical expert. Run the authorized "
-                "scope as given. Stay in RoE scope."
-            )
+            backstory = f"You are `{defn.id}`, a technical specialist. Stay in RoE scope."
         reports_to = manager_id
         allow_delegation = False
         advanced_reasoning = False
         max_iter = 25
-        caps = tuple(unique(tags) or ("recon", "expert"))
+        caps = tuple(unique(tags) or ("technical",))
         if descriptions:
             backstory = (
-                backstory
-                + "\n\nSkill focus:\n"
-                + "\n".join(f"- {d}" for d in descriptions[:6])
+                backstory + "\n\nSkill focus:\n" + "\n".join(f"- {d}" for d in descriptions[:6])
             )
         backstory = f"{backstory}\n\nBound skills: {skill_list}".strip()
 
@@ -163,10 +143,7 @@ class RoleRegistry(SharedServiceBase):
         skills = SkillRegistry.shared()
         defs = load_role_catalog()
         manager_id = next((d.id for d in defs if d.kind == "engagement-pm"), "")
-        return {
-            defn.id: _build_role(defn, skills, manager_id=manager_id)
-            for defn in defs
-        }
+        return {defn.id: _build_role(defn, skills, manager_id=manager_id) for defn in defs}
 
     def get_registry(self) -> dict[str, RoleSpec]:
         stamp = self._disk_stamp()
@@ -225,11 +202,7 @@ class RoleRegistry(SharedServiceBase):
 
     def manager(self) -> RoleSpec | None:
         return next(
-            (
-                role
-                for role in self.list_roles()
-                if role.kind == "engagement-pm" or role.is_manager
-            ),
+            (role for role in self.list_roles() if role.kind == "engagement-pm" or role.is_manager),
             None,
         )
 

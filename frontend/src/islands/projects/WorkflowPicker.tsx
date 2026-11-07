@@ -17,20 +17,16 @@ type WorkflowRow = {
   name: string;
   description: string;
   seed_inputs: SeedInput[];
+  /** From ``WorkflowPreset.is_published`` — drafts are selectable on create. */
+  is_published?: boolean;
   graph?: { nodes?: GraphNode[] };
 };
 
-const count = (w: WorkflowRow, kind: GraphNode["kind"]) => (w.graph?.nodes ?? []).filter((n) => n.kind === kind).length;
+const count = (w: WorkflowRow, kind: GraphNode["kind"]) =>
+  (w.graph?.nodes ?? []).filter((n) => n.kind === kind).length;
 
 type Props = { listUrl: string };
 
-/**
- * Project-creation toggle: pick a published ``WorkflowPreset`` and the form
- * narrows to just its declared seed inputs (named ``workflow_input__<key>``,
- * real inputs inside the surrounding legacy ``<form>`` — picked up by its
- * existing ``new FormData(form)`` submit, no change needed there). Manual
- * sections (``[data-manual-section]``) hide while a workflow is active.
- */
 export default function WorkflowPicker({ listUrl }: Props) {
   const ids = useId();
   const [workflows, setWorkflows] = useState<WorkflowRow[]>([]);
@@ -78,10 +74,16 @@ export default function WorkflowPicker({ listUrl }: Props) {
         <div className="space-y-4">
           <div className="space-y-1.5">
             <Label id={`${ids}-workflow`}>Workflow</Label>
-            <div role="radiogroup" aria-labelledby={`${ids}-workflow`} className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            <div
+              role="radiogroup"
+              aria-labelledby={`${ids}-workflow`}
+              className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+            >
               {workflows.map((w) => {
                 const on = w.workflow_id === workflowId;
-                const roles = (w.graph?.nodes ?? []).filter((n) => n.kind === "role").map((n) => n.ref_id);
+                const roles = (w.graph?.nodes ?? [])
+                  .filter((n) => n.kind === "role")
+                  .map((n) => n.ref_id);
                 return (
                   <button
                     key={w.workflow_id}
@@ -93,16 +95,34 @@ export default function WorkflowPicker({ listUrl }: Props) {
                       on ? "border-primary ring-2 ring-primary/25" : ""
                     }`}
                   >
-                    <span className="truncate font-mono text-[13px] font-medium">{w.name}</span>
-                    {w.description && <span className="line-clamp-2 text-xs text-muted-foreground">{w.description}</span>}
+                    <span className="flex items-center gap-2">
+                      <span className="truncate font-mono text-[13px] font-medium">{w.name}</span>
+                      {!w.is_published ? (
+                        <span className="rounded border px-1 py-0.5 text-[10px] text-muted-foreground">
+                          draft
+                        </span>
+                      ) : null}
+                    </span>
+                    {w.description && (
+                      <span className="line-clamp-2 text-xs text-muted-foreground">
+                        {w.description}
+                      </span>
+                    )}
                     <span className="mt-auto flex flex-wrap items-center gap-1 pt-1 text-[11px] text-muted-foreground">
                       <span className="org-agent-tag">{count(w, "role")} roles</span>
                       <span className="org-agent-tag">{count(w, "skill")} skills</span>
-                      {count(w, "tool") > 0 && <span className="org-agent-tag">{count(w, "tool")} tools</span>}
-                      <span className="ml-auto">{w.seed_inputs.length ? `${w.seed_inputs.length} input(s)` : "no input"}</span>
+                      {count(w, "tool") > 0 && (
+                        <span className="org-agent-tag">{count(w, "tool")} tools</span>
+                      )}
+                      <span className="ml-auto">
+                        {w.seed_inputs.length ? `${w.seed_inputs.length} input(s)` : "no input"}
+                      </span>
                     </span>
                     {roles.length > 0 && (
-                      <span className="truncate text-[10.5px] text-muted-foreground">{roles.slice(0, 4).join(" → ")}{roles.length > 4 ? " …" : ""}</span>
+                      <span className="truncate text-[10.5px] text-muted-foreground">
+                        {roles.slice(0, 4).join(" → ")}
+                        {roles.length > 4 ? " …" : ""}
+                      </span>
                     )}
                   </button>
                 );

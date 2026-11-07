@@ -64,6 +64,7 @@ def create_schedule(
     kind: str = ScheduleKind.INTERVAL,
     cron: str = "",
     interval_seconds: int = 0,
+    condition_threshold: int = 1,
     objective: Objective | None = None,
     enabled: bool = True,
     skip_if_running: bool = True,
@@ -86,6 +87,7 @@ def create_schedule(
             ),
             cron=(cron or "").strip()[:64],
             interval_seconds=max(0, int(interval_seconds or 0)),
+            condition_threshold=max(1, int(condition_threshold or 1)),
             enabled=bool(enabled),
             skip_if_running=bool(skip_if_running),
         )
@@ -115,10 +117,27 @@ def _has_running(schedule: ProjectSchedule) -> bool:
     return False
 
 
+def _condition_met(schedule: ProjectSchedule, alias: str) -> bool:
+    """New Findings recorded since this schedule last fired (or was created).
+
+    Core 5.2: the only condition today is "N new findings" — the kind the
+    fixed `next_run_at` re-check cadence (``compute_next_run``'s 60s poll
+    for ``condition``) exists to notice without a second scheduler.
+    """
+    from peon.projects.models import Finding
+
+    since = schedule.last_run_at or schedule.created_at
+    count = (
+        Finding.objects.using(alias)
+        .filter(project_id=schedule.project_id, created_at__gt=since)
+        .count()
+    )
+    return count >= max(1, schedule.condition_threshold)
+
+
 def fire_schedule(schedule: ProjectSchedule) -> Job | None:
     """Enqueue one Job for a due schedule; advance next_run_at."""
     from peon.projects.db import ensure_project_database, using_project
-    from peon.projects.models import Project
 
     alias = ensure_project_database(schedule.project_id)
     project = Project.objects.get(pk=schedule.project_id)
@@ -136,6 +155,9 @@ def fire_schedule(schedule: ProjectSchedule) -> Job | None:
         if not schedule.enabled:
             return None
         if schedule.skip_if_running and _has_running(schedule):
+            arm_schedule(schedule)
+            return None
+        if schedule.kind == ScheduleKind.CONDITION and not _condition_met(schedule, alias):
             arm_schedule(schedule)
             return None
 

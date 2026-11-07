@@ -6,47 +6,60 @@
   <c-button href="{% url 'project_create' %}">{% icon "plus" %} New project</c-button>
 </c-page-header>
 
-<c-card flush>
-  {% if projects %}
-  {% url 'project_list' as projects_url %}
-  {% include "includes/project_bulk_bar.html" with form_id="projects-bulk" %}
-  <div class="ui-table-wrap">
-    <table class="ui-table">
-      <thead>
-        <tr>
-          <th class="w-10"><input type="checkbox" class="ui-checkbox" data-bulk-all="projects-bulk" aria-label="Select all projects"></th>
-          <th>Project</th>
-          <th>Kind</th>
-          <th>Status</th>
-          <th>Created</th>
-          <th class="w-12"><span class="sr-only">Actions</span></th>
-        </tr>
-      </thead>
-      <tbody>
-      {% for p in projects %}
-        <tr>
-          <td><input type="checkbox" class="ui-checkbox" name="project_ids" value="{{ p.pk }}" form="projects-bulk" data-bulk-row aria-label="Select {{ p.title }}"></td>
-          <td class="w-full max-w-0"><a class="ui-link block truncate" href="{% url 'project_detail' p.pk %}">{{ p.title }}</a></td>
-          <td><c-badge>{{ p.get_kind_display }}</c-badge></td>
-          <td><c-status value="{{ p.status }}" label="{{ p.get_status_display }}" /></td>
-          <td class="whitespace-nowrap text-muted-foreground" title="{{ p.created_at|date:'c' }}">{{ p.created_at|timesince }} ago</td>
-          <td class="text-right">
-            <c-menu label="Actions for {{ p.title }}">
-              <a class="ui-menu-item" href="{% url 'project_detail' p.pk %}">{% icon "external-link" %} Open</a>
-              <div class="ui-menu-sep"></div>
-              {% project_actions project=p mode="menu" next=projects_url %}
-            </c-menu>
-          </td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
+{% if projects %}
+<section class="space-y-3" aria-labelledby="projects-list-heading">
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h2 id="projects-list-heading" class="text-sm font-semibold tracking-tight">Engagements</h2>
+      <p class="mt-0.5 text-xs text-muted-foreground">{{ projects|length }} project{{ projects|length|pluralize }}</p>
+    </div>
   </div>
-  {% else %}
+  <c-card flush>
+    {% url 'project_list' as projects_url %}
+    {% include "includes/project_bulk_bar.html" with form_id="projects-bulk" %}
+    <div class="ui-table-wrap">
+      <table class="ui-table">
+        <thead>
+          <tr>
+            <th class="w-10"><input type="checkbox" class="ui-checkbox" data-bulk-all="projects-bulk" aria-label="Select all projects"></th>
+            <th>Project</th>
+            <th>Kind</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th class="w-12"><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for p in projects %}
+          <tr>
+            <td><input type="checkbox" class="ui-checkbox" name="project_ids" value="{{ p.pk }}" form="projects-bulk" data-bulk-row aria-label="Select {{ p.title }}"></td>
+            <td class="w-full max-w-0">
+              <a class="ui-link block truncate font-medium" href="{% url 'project_detail' p.pk %}">{{ p.title }}</a>
+              {% if p.summary %}<p class="mt-0.5 truncate text-xs text-muted-foreground">{{ p.summary }}</p>{% endif %}
+            </td>
+            <td><c-badge>{{ p.get_kind_display }}</c-badge></td>
+            <td><c-status value="{{ p.status }}" label="{{ p.get_status_display }}" /></td>
+            <td class="whitespace-nowrap text-muted-foreground" title="{{ p.created_at|date:'c' }}">{{ p.created_at|timesince }} ago</td>
+            <td class="text-right">
+              <c-menu label="Actions for {{ p.title }}">
+                <a class="ui-menu-item" href="{% url 'project_detail' p.pk %}">{% icon "external-link" %} Open</a>
+                <div class="ui-menu-sep"></div>
+                {% project_actions project=p mode="menu" next=projects_url %}
+              </c-menu>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </c-card>
+</section>
+{% else %}
+<c-card flush>
   <c-empty icon="folder-kanban" title="No projects yet">
     Start an engagement to plan objectives and dispatch agents.
     <c-slot name="action"><c-button href="{% url 'project_create' %}" size="sm">{% icon "plus" %} New project</c-button></c-slot>
   </c-empty>
-  {% endif %}
 </c-card>
+{% endif %}
 {% endblock %}

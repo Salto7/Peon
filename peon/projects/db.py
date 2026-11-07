@@ -31,6 +31,7 @@ PLATFORM_ONLY_MODEL_NAMES = frozenset(
         "LlmCallLog",
         "CatalogProposal",
         "CatalogMarketplaceSource",
+        "SkillGapEvent",
     }
 )
 
@@ -50,6 +51,12 @@ PROJECT_MODEL_NAMES = frozenset(
         "ProjectSchedule",
         "StreamMessage",
         "Finding",
+        "Evidence",
+        "FindingEvidence",
+        "FindingRetest",
+        "Observation",
+        "Intent",
+        "MemoryEntry",
         "AssetGraph",
         "JobCheckpoint",
         "ProjectMcpConfig",
@@ -63,6 +70,21 @@ def normalize_project_id(project_id: object) -> str:
         return str(uuid.UUID(str(project_id)))
     except (ValueError, AttributeError, TypeError) as exc:
         raise ValueError(f"invalid project id {project_id!r}") from exc
+
+
+def require_project_db(project_id: object) -> tuple[str, str]:
+    """Return ``(pid, alias)`` for a known project, or raise ``ValueError``.
+
+    No other helper owns this CRUD preamble. Reads ``Project`` (platform DB)
+    """
+    pid = str(project_id or "").strip()
+    if not pid:
+        raise ValueError("project is required")
+    from peon.projects.models import Project
+
+    if not Project.objects.filter(pk=pid).exists():
+        raise ValueError(f"unknown project {pid!r}")
+    return pid, ensure_project_database(pid)
 
 
 def alias_for(project_id: object) -> str:
@@ -377,15 +399,11 @@ class ProjectRelation:
 
     def get_or_create(self, defaults=None, **kwargs):
         kwargs.setdefault(self.field, self.project)
-        return self.model.objects.using(self.alias).get_or_create(
-            defaults=defaults, **kwargs
-        )
+        return self.model.objects.using(self.alias).get_or_create(defaults=defaults, **kwargs)
 
     def update_or_create(self, defaults=None, **kwargs):
         kwargs.setdefault(self.field, self.project)
-        return self.model.objects.using(self.alias).update_or_create(
-            defaults=defaults, **kwargs
-        )
+        return self.model.objects.using(self.alias).update_or_create(defaults=defaults, **kwargs)
 
     def count(self) -> int:
         return self._base().count()
@@ -441,15 +459,11 @@ def refresh_project_kpis(project_id: object) -> None:
 
     pid = normalize_project_id(project_id)
     alias = ensure_project_database(pid)
-    running = Job.objects.using(alias).filter(
-        project_id=pid, status=JobStatus.RUNNING
-    ).count()
-    failed = Job.objects.using(alias).filter(
-        project_id=pid, status=JobStatus.FAILED
-    ).count()
-    open_prompts = OperatorPrompt.objects.using(alias).filter(
-        project_id=pid, resolved_at__isnull=True
-    ).count()
+    running = Job.objects.using(alias).filter(project_id=pid, status=JobStatus.RUNNING).count()
+    failed = Job.objects.using(alias).filter(project_id=pid, status=JobStatus.FAILED).count()
+    open_prompts = (
+        OperatorPrompt.objects.using(alias).filter(project_id=pid, resolved_at__isnull=True).count()
+    )
     last_error = (
         Job.objects.using(alias)
         .filter(project_id=pid, status=JobStatus.FAILED)

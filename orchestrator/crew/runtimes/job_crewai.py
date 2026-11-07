@@ -12,7 +12,7 @@ from orchestrator.crew.roles.model import build_crew_agent
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.crew.runtimes.project_crewai import run_project_crew_from_scope
 from orchestrator.utils import llm_usage
-from orchestrator.utils.stream_events import envelope
+from orchestrator.utils.stream_events import EVENT_ROLE_DONE, EVENT_ROLE_START, envelope
 
 
 def resolve_role_id(scope) -> str:
@@ -125,7 +125,7 @@ class CrewAIAgentExecutor(AgentExecutorBase):
             "status",
             f"crewai role={role.id} skills={','.join(skill_ids) or '-'} starting",
             metadata=envelope(
-                "crewai_role_start",
+                EVENT_ROLE_START,
                 {"role_id": role.id, "skill_ids": list(skill_ids)},
             ),
         )
@@ -145,6 +145,6 @@ class CrewAIAgentExecutor(AgentExecutorBase):
         scope.bridge.emit(
             "status",
             f"crewai role={role.id} finished",
-            metadata=envelope("crewai_role_done", {"role_id": role.id}),
+            metadata=envelope(EVENT_ROLE_DONE, {"role_id": role.id}),
         )
         return AgentRunResult(ok=True, output=output, iterations=1)

@@ -4,54 +4,29 @@ from __future__ import annotations
 
 from typing import Any
 
-from peon.projects.asset_graph import AssetGraphEngine
-from peon.projects.asset_model import RELATIONS, classify
+from peon.projects.asset_graph import AssetGraphEngine, finding_subject_row
+from peon.projects.asset_model import is_bare_port_value
 from peon.projects.models import Finding, Project, RulesOfEngagement
-from peon.projects.target_discovery import SubjectCanonicalizer
-from peon.projects.target_shapes import canonical_asset_key, coerce_targets, detect_shape
-
-
-def _is_unconnectable(typ: str, value: str) -> bool:
-    """True for a value that can never stand alone as this relation's target.
-
-    Same check ``target_discovery._normalize_subjects`` uses going forward
-    (a bare port number classified as a ``port`` relation target, per
-    ``asset_model.RELATIONS``) — reused here to clear out nodes/candidates a
-    producer stored before that pairing existed, rather than a second rule.
-    """
-    return value.isdigit() and classify(typ, value).slug in RELATIONS["port"].targets
+from peon.projects.target_discovery import subjects_from_finding
+from peon.projects.targets import canonical_asset_key, coerce_targets, sanitize_label
 
 
 def _provenance_paths(project: Project) -> set[str]:
-    paths: set[str] = set()
-    for path in project.findings.values_list("evidence_path", flat=True):
-        cleaned = str(path or "").strip().lower()
-        if cleaned:
-            paths.add(cleaned)
-    return paths
+    return {
+        cleaned
+        for path in project.findings.values_list("evidence_path", flat=True)
+        if (cleaned := str(path or "").strip().lower())
+    }
 
 
 def _subject_values(project: Project, *, persist: bool) -> set[str]:
     values: set[str] = set()
     for finding in project.findings.all().iterator():
-        subjects = SubjectCanonicalizer.from_finding(
-            {
-                "host": finding.host,
-                "port": finding.port,
-                "protocol": finding.protocol,
-                "asset_type": finding.asset_type,
-                "metadata": finding.metadata
-                if isinstance(finding.metadata, dict)
-                else {},
-                "subjects": finding.subjects,
-            }
-        )
+        subjects = subjects_from_finding(finding_subject_row(finding))
         if persist and subjects != list(finding.subjects or []):
             from peon.projects.db import qs_using
 
-            qs_using(Finding, project.id).filter(pk=finding.pk).update(
-                subjects=subjects
-            )
+            qs_using(Finding, project.id).filter(pk=finding.pk).update(subjects=subjects)
         for row in subjects:
             val = str(row.get("value") or "").strip().lower()
             if val:
@@ -60,10 +35,14 @@ def _subject_values(project: Project, *, persist: bool) -> set[str]:
 
 
 def _graph_health(payload: dict[str, Any]) -> dict[str, int]:
-    """Return generic post-rebuild invariants for operational verification."""
     nodes = list(payload.get("nodes") or [])
     edges = list(payload.get("edges") or [])
-    node_ids = {str(node.get("id") or "") for node in nodes}
+    node_ids = {str(n.get("id") or "") for n in nodes}
+    port_targets = {
+        str(e.get("target") or "")
+        for e in edges
+        if sanitize_label(str(e.get("rel") or "")) == "port"
+    }
     identities: set[str] = set()
     duplicate_identities = 0
     orphan_services = 0
@@ -73,7 +52,8 @@ def _graph_health(payload: dict[str, Any]) -> dict[str, int]:
         if identity in identities:
             duplicate_identities += 1
         identities.add(identity)
-        if detect_shape(value) == "service" and not node.get("parent_id"):
+        nid = str(node.get("id") or "")
+        if sanitize_label(str(node.get("type") or "")) == "service" and nid not in port_targets:
             orphan_services += 1
     dangling_edges = sum(
         1
@@ -101,8 +81,8 @@ def repair_project_graph(project: Project, *, persist: bool = True) -> dict[str,
         for raw in coerce_targets(roe.candidates):
             value = str(raw.get("value") or "").strip()
             key = value.lower()
-            stale_provenance = key in provenance and key not in subjects
-            if stale_provenance or _is_unconnectable(str(raw.get("type") or ""), value):
+            stale = key in provenance and key not in subjects
+            if stale or is_bare_port_value(str(raw.get("type") or ""), value):
                 removed_candidates.append(value)
                 continue
             kept.append(raw)
@@ -118,10 +98,8 @@ def repair_project_graph(project: Project, *, persist: bool = True) -> dict[str,
         value = str(asset.get("value") or "").strip()
         key = value.lower()
         typ = str(asset.get("type") or "").strip().lower()
-        stale_provenance = (
-            typ in {"file", "path"} and key in provenance and key not in subjects
-        )
-        if stale_provenance or _is_unconnectable(typ, value):
+        stale = typ in {"file", "path"} and key in provenance and key not in subjects
+        if stale or is_bare_port_value(typ, value):
             drop_ids.add(str(asset.get("id") or ""))
             removed_assets.append(value)
             continue
@@ -137,8 +115,7 @@ def repair_project_graph(project: Project, *, persist: bool = True) -> dict[str,
         if persist:
             graph.save()
 
-    engine = AssetGraphEngine(project)
-    payload = engine.engagement(
+    payload = AssetGraphEngine(project).engagement(
         findings=list(project.findings.all()),
         persist=persist,
         rebuild=True,

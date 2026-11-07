@@ -31,8 +31,8 @@
   </div>
 
   <div class="catalog-pending">
-    {% island "proposal-badge" element_id="roles-nav-pending" listUrl=proposals_list_url kind="role,role_draft" %}
-    {% island "proposal-badge" element_id="skills-nav-pending" listUrl=proposals_list_url kind="skill,skill_overlap" %}
+    {% island "proposal-badge" element_id="roles-nav-pending" listUrl=proposals_list_url kind="role" %}
+    {% island "proposal-badge" element_id="skills-nav-pending" listUrl=proposals_list_url kind="skill,skill_overlap,skill_binding" %}
     {% island "proposal-badge" element_id="mcp-nav-pending" listUrl=proposals_list_url kind="mcp_binding" %}
   </div>
 
@@ -90,7 +90,6 @@
       <c-empty icon="bot" title="No roles yet">Create one with Add item, or in Lab → Roles.</c-empty>
       {% endif %}
       {% island "pending-proposals" element_id="roles-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="role" %}
-      {% island "pending-proposals" element_id="roles-draft-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="role_draft" %}
     </section>
 
     {# ── Skills ── #}
@@ -136,6 +135,7 @@
       <c-empty icon="sparkles" title="No skills installed">Use Add item to install a skill.</c-empty>
       {% endif %}
       {% island "pending-proposals" element_id="skills-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="skill" %}
+      {% island "pending-proposals" element_id="skills-binding-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="skill_binding" %}
       {% island "pending-proposals" element_id="skills-overlap-pending" listUrl=proposals_list_url decideUrl=proposal_decide_url kind="skill_overlap" %}
       <div class="catalog-relations">
         <h3 class="catalog-relations-title">Skill relations</h3>
@@ -247,6 +247,18 @@
     </section>
   </div>
 </div>
+
+{# ── Capability gaps (Core 5.3 / UI-8) — always visible, not part of the tab-switched catalog-shell above. ── #}
+<section id="skill-gaps" aria-labelledby="skill-gaps-heading" class="catalog-pane mt-10">
+  <div class="catalog-pane-head">
+    <div>
+      <h2 id="skill-gaps-heading" class="catalog-pane-title">Capability gaps</h2>
+      <p class="catalog-pane-desc">Binaries and MCP servers agents reached for but had no binding to. Fix a gap by binding the role to it above.</p>
+    </div>
+  </div>
+  {% url 'catalog_api_skill_gaps' as skill_gaps_list_url %}
+  {% island "skill-gap-dashboard" element_id="skill-gap-dashboard" listUrl=skill_gaps_list_url %}
+</section>
 
 {% url 'catalog_api_skills_install' as skill_install_url %}
 {% url 'catalog_api_skills_upload' as skill_upload_url %}

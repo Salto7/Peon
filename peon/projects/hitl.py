@@ -19,6 +19,9 @@ from peon.projects.models import (
 
 logger = logging.getLogger(__name__)
 
+# Structured option label for phase-advance HITL (must match prompt.options).
+PHASE_ADVANCE_OPTION = "Advance phase"
+
 
 def create_operator_prompt(
     project: Project,
@@ -67,7 +70,29 @@ def create_operator_prompt(
     return prompt
 
 
-def prompt_row(
+def create_operator_prompt_once(
+    project: Project,
+    question: str,
+    *,
+    job: Job,
+    kind: str,
+    options: list[str] | None = None,
+) -> OperatorPrompt | None:
+    """Create a prompt unless this job already has an open one of the same kind."""
+    from peon.projects.db import ensure_project_database
+
+    alias = ensure_project_database(job.project_id)
+    has_open = (
+        OperatorPrompt.objects.using(alias)
+        .filter(job=job, kind=kind, resolved_at__isnull=True)
+        .exists()
+    )
+    if has_open:
+        return None
+    return create_operator_prompt(project, question, job=job, kind=kind, options=options)
+
+
+def _prompt_row(
     prompt: OperatorPrompt,
     *,
     include_project: bool = False,
@@ -89,7 +114,7 @@ def prompt_row(
     return row
 
 
-def blocked_objective_row(
+def _blocked_objective_row(
     obj: Objective,
     *,
     include_project: bool = False,
@@ -118,29 +143,10 @@ def _blocked_prompt_still_open(prompt: OperatorPrompt) -> bool:
     if prompt.kind != OperatorPromptKind.BLOCKED_OBJECTIVE:
         return True
     job = prompt.job
-    if job is not None and job.objective_id:
-        obj = job.objective
-        return bool(obj and obj.status == ObjectiveStatus.BLOCKED)
-    # Question format: "OBJ-{seq} …" — match by seq on this project.
-    text = (prompt.question or "").strip()
-    if text.upper().startswith("OBJ-"):
-        try:
-            seq = int(text.split(":", 1)[0].split("-", 1)[1].split(None, 1)[0])
-        except (TypeError, ValueError, IndexError):
-            return True
-        from peon.projects.db import project_alias_or_default
-
-        alias = project_alias_or_default(prompt.project_id)
-        return (
-            Objective.objects.using(alias)
-            .filter(
-                project_id=prompt.project_id,
-                seq=seq,
-                status=ObjectiveStatus.BLOCKED,
-            )
-            .exists()
-        )
-    return True
+    if job is None or not job.objective_id:
+        return True
+    obj = job.objective
+    return bool(obj and obj.status == ObjectiveStatus.BLOCKED)
 
 
 def pending_operator_prompts(project: Project) -> list[dict[str, Any]]:
@@ -148,6 +154,7 @@ def pending_operator_prompts(project: Project) -> list[dict[str, Any]]:
     from peon.projects.db import ensure_project_database, using_project
 
     out: list[dict[str, Any]] = []
+    covered_objectives: set[str] = set()
     alias = ensure_project_database(project.pk)
     with using_project(project.pk):
         for p in (
@@ -158,7 +165,14 @@ def pending_operator_prompts(project: Project) -> list[dict[str, Any]]:
         ):
             if not _blocked_prompt_still_open(p):
                 continue
-            out.append(prompt_row(p))
+            out.append(_prompt_row(p))
+            if (
+                p.kind == OperatorPromptKind.BLOCKED_OBJECTIVE
+                and p.job_id
+                and p.job is not None
+                and p.job.objective_id
+            ):
+                covered_objectives.add(str(p.job.objective_id))
             if len(out) >= 20:
                 break
         for obj in (
@@ -166,7 +180,9 @@ def pending_operator_prompts(project: Project) -> list[dict[str, Any]]:
             .filter(project_id=project.pk, status=ObjectiveStatus.BLOCKED)
             .order_by("seq")[:20]
         ):
-            out.append(blocked_objective_row(obj))
+            if str(obj.id) in covered_objectives:
+                continue
+            out.append(_blocked_objective_row(obj))
     return out
 
 
@@ -175,9 +191,9 @@ def pending_inputs_global(
 ) -> list[dict[str, Any]]:
     """Cross-project open HITL prompts + blocked objectives for the global popup."""
     from peon.projects.db import iter_project_aliases
-    from peon.projects.models import Project
 
     items: list[dict[str, Any]] = []
+    covered_objectives: set[str] = set()
     for pid, alias in iter_project_aliases():
         project = Project.objects.filter(pk=pid).first()
         if project is None:
@@ -193,26 +209,36 @@ def pending_inputs_global(
             # Attach platform registry project for display helpers
             prompt.project = project
             href = reverse("project_detail", kwargs={"pk": pid}) + "#war-chat"
-            items.append(prompt_row(prompt, include_project=True, href=href))
+            items.append(_prompt_row(prompt, include_project=True, href=href))
+            if (
+                prompt.kind == OperatorPromptKind.BLOCKED_OBJECTIVE
+                and prompt.job is not None
+                and prompt.job.objective_id
+            ):
+                covered_objectives.add(str(prompt.job.objective_id))
             if len(items) >= prompt_limit:
                 break
         if len(items) >= prompt_limit:
             break
     if len(items) < prompt_limit + blocked_limit:
+        blocked_n = 0
         for pid, alias in iter_project_aliases():
             for obj in (
                 Objective.objects.using(alias)
                 .filter(status=ObjectiveStatus.BLOCKED)
                 .order_by("updated_at")[:blocked_limit]
             ):
+                if str(obj.id) in covered_objectives:
+                    continue
                 href = reverse("project_detail", kwargs={"pk": pid}) + "#results"
                 items.append(
-                    blocked_objective_row(obj, include_project=True, href=href)
+                    _blocked_objective_row(obj, include_project=True, href=href)
                 )
-                if len([i for i in items if i.get("kind") == "blocked_objective"]) >= (
-                    blocked_limit
-                ):
+                blocked_n += 1
+                if blocked_n >= blocked_limit:
                     break
+            if blocked_n >= blocked_limit:
+                break
     items.sort(key=lambda r: r.get("created_at") or "")
     return items
 
@@ -253,8 +279,30 @@ def failure_exhausted_prompt(job: Job, error: str, *, fails: int, max_r: int) ->
     )
 
 
-def resolve_operator_prompt(prompt: OperatorPrompt, reply: str) -> dict[str, Any]:
-    """Apply operator approve/edit/deny text and steer the waiting job(s)."""
+def _advance_objective_phase(job: Job | None) -> None:
+    """Advance ``job.objective`` one kill-chain phase (no-op at the end)."""
+    if job is None or job.objective_id is None or job.objective is None:
+        return
+    from peon.projects.platform_catalog import KILL_CHAIN_PHASE_ORDER
+
+    obj = job.objective
+    try:
+        idx = KILL_CHAIN_PHASE_ORDER.index(obj.phase)
+    except ValueError:
+        return
+    if idx + 1 >= len(KILL_CHAIN_PHASE_ORDER):
+        return
+    obj.phase = KILL_CHAIN_PHASE_ORDER[idx + 1]
+    obj.save(update_fields=["phase", "updated_at"])
+
+
+def resolve_operator_prompt(
+    prompt: OperatorPrompt,
+    reply: str,
+    *,
+    decision: str = "edit",
+) -> dict[str, Any]:
+    """Apply operator approve/edit/deny and steer the waiting job(s)."""
     from peon.projects.lifecycle import enqueue_job_directive, queue_job
     from peon.projects.models import TERMINAL_JOB_STATUSES, JobDirectiveKind
     from peon.projects.streaming import (
@@ -264,16 +312,31 @@ def resolve_operator_prompt(prompt: OperatorPrompt, reply: str) -> dict[str, Any
         with_stream_reply,
     )
 
-    text = (reply or "").strip()
-    if not text:
-        raise ValueError("Reply is required")
+    decision_norm = (decision or "edit").strip().lower()
+    raw = (reply or "").strip()
+    if decision_norm == "deny":
+        text = raw or "DENIED by operator"
+    elif decision_norm == "approve":
+        text = raw or "APPROVED by operator"
+    else:
+        text = raw
+        if not text:
+            raise ValueError("Reply is required")
     prompt.reply = text
     prompt.resolved_at = dj_tz.now()
     prompt.save(update_fields=["reply", "resolved_at"])
 
-    # A typed answer is durable knowledge (scope, credentials policy, "yes the
-    # staging subnet is in scope"). Bare approve/deny stubs are not.
-    if not text.upper().startswith(("APPROVED BY OPERATOR", "DENIED BY OPERATOR")):
+    if (
+        prompt.kind == OperatorPromptKind.PHASE_ADVANCE_REQUEST
+        and text == PHASE_ADVANCE_OPTION
+    ):
+        _advance_objective_phase(prompt.job)
+
+    # Typed answers are durable knowledge. Bare approve/deny stubs are not.
+    store_feedback = decision_norm == "edit" or (
+        decision_norm == "approve" and bool(raw)
+    )
+    if store_feedback:
         try:
             from peon.projects import memory_store
 

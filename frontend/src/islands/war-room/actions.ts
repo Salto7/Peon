@@ -22,10 +22,13 @@ export function useProjectControl(pk: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (action: "pause" | "resume" | "run_next" | "delete") =>
-      api<FlashReply>(projectUrls(pk).control, { form: form({ action }) }).then((r) => ({ r, action })),
+      api<FlashReply>(projectUrls(pk).control, { form: form({ action }) }).then((r) => ({
+        r,
+        action,
+      })),
     onSuccess: ({ r, action }) => {
       if (action === "delete") {
-        window.location.href = "/projects/";
+        window.location.href = "/";
         return;
       }
       announce(r, "Done");

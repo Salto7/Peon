@@ -26,7 +26,11 @@ function bindShell() {
     } else if (target.closest("[data-theme-toggle]")) {
       setTheme(getTheme() === "dark" ? "light" : "dark");
     } else if (target.closest("[data-theme-set]")) {
-      setTheme(target.closest<HTMLElement>("[data-theme-set]")!.dataset.themeSet === "light" ? "light" : "dark");
+      setTheme(
+        target.closest<HTMLElement>("[data-theme-set]")!.dataset.themeSet === "light"
+          ? "light"
+          : "dark",
+      );
     }
   });
   document.addEventListener("keydown", (e) => {
@@ -48,12 +52,21 @@ mountIslands({
   "marketplace-panel": () => import("@/islands/catalog/MarketplacePanel"),
   "proposal-badge": () => import("@/islands/catalog/ProposalBadge"),
   "pending-proposals": () => import("@/islands/catalog/PendingProposals"),
+  "skill-gap-dashboard": () => import("@/islands/catalog/SkillGapDashboard"),
   "skill-relations": () => import("@/islands/catalog/SkillRelations"),
   "catalog-add": () => import("@/islands/catalog/CatalogAdd"),
   "workflow-designer": () => import("@/islands/lab/WorkflowDesigner"),
   "workflow-picker": () => import("@/islands/projects/WorkflowPicker"),
+  // Called by peon/templates/projects/create.html via {% island "create-scope-creds" %}.
+  // No other registry entry mounts CreateScopeCreds. Props: kinds[{value,label}].
+  // incremental"; "scope … list of items".
+  "create-scope-creds": () => import("@/islands/projects/CreateScopeCreds"),
+  // detail.html keystore pane — same CredentialsPanel as create.
+  "keystore-editor": () => import("@/islands/projects/KeystoreEditor"),
+  "roe-editor": () => import("@/islands/projects/RoeEditor"),
   "project-header": () => import("@/islands/war-room/ProjectHeader"),
   "results-board": () => import("@/islands/war-room/ResultsBoard"),
   "attack-surface": () => import("@/islands/war-room/AttackSurface"),
   "memory-panel": () => import("@/islands/war-room/MemoryPanel"),
+  "memory-transparency-panel": () => import("@/islands/war-room/MemoryTransparencyPanel"),
 });

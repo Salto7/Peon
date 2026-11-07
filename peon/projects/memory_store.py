@@ -36,7 +36,6 @@ INDEX_PLATFORM_LIMIT = 8
 MANAGER_FULL_CHARS = 3_500
 
 _WORD = re.compile(r"[a-z0-9_]{2,}")
-_SLUG = re.compile(r"[^a-z0-9]+")
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _URL = re.compile(r"https?://\S+", re.I)
@@ -66,7 +65,9 @@ def _scope_qs(project: Project | None):
 
 
 def slugify(name: str) -> str:
-    return _SLUG.sub("-", (name or "").strip().lower()).strip("-")[:64]
+    from orchestrator.utils.strings import slugify as _shared_slugify
+
+    return _shared_slugify(name, max_len=64)
 
 
 def _tokens(text: str) -> list[str]:
@@ -84,7 +85,7 @@ def target_specific_reason(text: str, project: Project | None = None) -> str:
         return "contains a URL"
     roe = getattr(project, "roe", None) if project is not None else None
     if roe is not None:
-        from peon.projects.target_shapes import coerce_targets
+        from peon.projects.targets import coerce_targets
 
         low = blob.lower()
         for attr in ("seed", "in_scope"):
@@ -115,7 +116,9 @@ def save(
         raise ValueError("name is required")
     if kind not in KINDS:
         raise ValueError(f"kind must be one of: {', '.join(KINDS)}")
-    desc = " ".join((description or "").split())[:MAX_DESCRIPTION]
+    from orchestrator.utils.strings import collapse_ws
+
+    desc = collapse_ws(description)[:MAX_DESCRIPTION]
     if not desc:
         raise ValueError("description (one-line hook) is required")
     text = (body or "").strip()[:MAX_BODY]
@@ -172,16 +175,35 @@ def forget(project: Project | None, name: str) -> bool:
     slug = slugify(name)
     alias = _alias(project)
     qs = MemoryEntry.objects.using(alias).filter(name=slug)
-    qs = qs.filter(project_id=project.pk) if project is not None else qs.filter(project__isnull=True)
+    qs = (
+        qs.filter(project_id=project.pk) if project is not None else qs.filter(project__isnull=True)
+    )
     n = qs.update(status=MemoryEntry.Status.ARCHIVED, updated_at=dj_tz.now())
     if n:
         _mirror_tombstone(project, slug)
     return bool(n)
 
 
+def clear_platform_notes(*, hard: bool = True) -> dict[str, Any]:
+    """Wipe platform-scoped Django ``MemoryEntry`` rows (Lab Dream clear).
+
+    to delete or clear both, the cognee and the notes in django".
+    """
+    alias = _alias(None)
+    qs = MemoryEntry.objects.using(alias).filter(project__isnull=True)
+    cleared = qs.count()
+    if hard:
+        qs.delete()
+    else:
+        qs.update(status=MemoryEntry.Status.ARCHIVED, updated_at=dj_tz.now())
+    return {"ok": True, "cleared": cleared, "hard": hard}
+
+
 def record_feedback(project: Project, text: str, *, source: str = "chat") -> MemoryEntry | None:
     """Capture operator guidance as durable feedback (deduplicated)."""
-    body = " ".join((text or "").split())
+    from orchestrator.utils.strings import collapse_ws
+
+    body = collapse_ws(text)
     if len(body) < 12 or body.endswith("?"):
         return None
     digest = hashlib.sha1(body.lower().encode()).hexdigest()[:8]
@@ -236,7 +258,9 @@ def record_project_digest(project: Project, status: str) -> MemoryEntry | None:
 
     obj_lines = "\n".join(f"- [{s}] {t}" for t, s in objectives) or "_none_"
     finding_lines = (
-        "\n".join(f"- [{sev}] {t}" + (f" ({kind})" if kind else "") for t, sev, kind in findings[:50])
+        "\n".join(
+            f"- [{sev}] {t}" + (f" ({kind})" if kind else "") for t, sev, kind in findings[:50]
+        )
         or "_none_"
     )
 
@@ -275,15 +299,14 @@ def _dataset(project: Project | None) -> str:
 
 
 def _mirror(entry: MemoryEntry, project: Project | None) -> None:
-    if project is None:
-        # The platform dataset is rebuilt as a whole by ``sync_platform_dataset``
-        # (idempotent; no stale versions of an edited note linger).
-        return
+    # Platform notes go to the ``peon`` dataset too (was a no-op → Cognee stale).
     try:
         from orchestrator.crew.cognee_backend import CogneeBackend
-        from orchestrator.crew.memory import memory_enabled
+        from orchestrator.crew.memory import memory_enabled, peon_memory_enabled
 
         if not memory_enabled():
+            return
+        if project is None and not peon_memory_enabled():
             return
         CogneeBackend.shared().remember(
             {
@@ -301,6 +324,7 @@ def _mirror(entry: MemoryEntry, project: Project | None) -> None:
             session_id="memory",
             self_improvement=False,
             run_in_background=True,
+            document_name=entry.name if project is None else "",
         )
     except Exception:  # noqa: BLE001 — Cognee is an accelerator, never a gate
         logger.debug("memory mirror failed", exc_info=True)
@@ -324,9 +348,7 @@ def sync_platform_dataset() -> dict[str, Any]:
     removed = backend.clear_dataset("peon")
     sent = 0
     for e in entries:
-        text = (
-            f"# {e.name} ({e.kind})\n{e.description}\n\n{(e.body or '').strip()}"
-        ).strip()
+        text = (f"# {e.name} ({e.kind})\n{e.description}\n\n{(e.body or '').strip()}").strip()
         result = backend.remember(
             text,
             dataset_name="peon",
@@ -340,20 +362,26 @@ def sync_platform_dataset() -> dict[str, Any]:
 
 
 def _mirror_tombstone(project: Project | None, slug: str) -> None:
-    if project is None:
-        return  # platform dataset is rebuilt from the table; retired notes just drop out
     try:
         from orchestrator.crew.cognee_backend import CogneeBackend
-        from orchestrator.crew.memory import memory_enabled
+        from orchestrator.crew.memory import memory_enabled, peon_memory_enabled
 
-        if memory_enabled():
-            CogneeBackend.shared().remember(
-                {"kind": "memory", "name": slug, "status": "archived",
-                 "summary": f"Memory {slug!r} was retired; disregard earlier notes under this name."},
-                dataset_name=_dataset(project),
-                session_id="memory",
-                run_in_background=True,
-            )
+        if not memory_enabled():
+            return
+        if project is None and not peon_memory_enabled():
+            return
+        CogneeBackend.shared().remember(
+            {
+                "kind": "memory",
+                "name": slug,
+                "status": "archived",
+                "summary": f"Memory {slug!r} was retired; disregard earlier notes under this name.",
+            },
+            dataset_name=_dataset(project),
+            session_id="memory",
+            run_in_background=True,
+            document_name=slug if project is None else "",
+        )
     except Exception:  # noqa: BLE001
         logger.debug("memory tombstone failed", exc_info=True)
 
@@ -361,10 +389,18 @@ def _mirror_tombstone(project: Project | None, slug: str) -> None:
 # ── read path ────────────────────────────────────────────────────────────
 
 
-def _entries(project: Project | None) -> list[MemoryEntry]:
+def _entries(
+    project: Project | None, *, role_id: str = ""
+) -> list[MemoryEntry]:
+    """Engagement notes + only affinity-matched platform lessons.
+
+    filtering so recall matches the agent index.
+    """
     out = list(_scope_qs(project))
     if project is not None:
-        out += list(_scope_qs(None))
+        out += relevant_platform_lessons(
+            project, role_id=role_id, limit=max(INDEX_PLATFORM_LIMIT * 4, 24)
+        )
     return out
 
 
@@ -395,7 +431,7 @@ def search(
     mark: bool = True,
 ) -> list[tuple[MemoryEntry, float]]:
     """Rank this engagement's and the platform's memories for ``query`` (BM25)."""
-    entries = _entries(project)
+    entries = _entries(project, role_id=role_id)
     if not entries:
         return []
     docs = [
@@ -406,16 +442,20 @@ def search(
     scores = [0.0] * len(entries)
     if q and any(docs):
         scores = list(BM25Okapi([d or ["_"] for d in docs]).get_scores(q))
+    role_norm = (role_id or "").strip().lower()
     ranked: list[tuple[MemoryEntry, float]] = []
     for e, s in zip(entries, scores, strict=True):
         boost = 1.0
-        if role_id and e.role_id == role_id:
+        if role_norm and (e.role_id or "").strip().lower() == role_norm:
             boost += 0.25
         if e.kind == "feedback":
             boost += 0.2  # operator guidance outranks incidental notes
         ranked.append((e, float(s) * boost))
     ranked.sort(key=lambda r: (r[1], r[0].updated_at), reverse=True)
-    top = [r for r in ranked if r[1] > 0][:limit] or ranked[: min(limit, 3)]
+    # No score-0 fallback when the query had tokens — that leaked unrelated notes.
+    top = [r for r in ranked if r[1] > 0][:limit]
+    if not top and not q:
+        top = ranked[: min(limit, 3)]
     if mark:
         _mark_recalled([e for e, _ in top])
     return top
@@ -433,7 +473,9 @@ def recall_text(project: Project | None, query: str, *, role_id: str = "") -> st
     hits = search(project, query, role_id=role_id, limit=5)
     parts: list[str] = []
     if hits:
-        parts.append("Stored memories (most relevant first):\n" + "\n".join(_fmt_entry(e) for e, _ in hits))
+        parts.append(
+            "Stored memories (most relevant first):\n" + "\n".join(_fmt_entry(e) for e, _ in hits)
+        )
     graph = ""
     try:
         from orchestrator.crew.memory import MemoryService, memory_enabled
@@ -454,40 +496,285 @@ def recall_text(project: Project | None, query: str, *, role_id: str = "") -> st
     return "\n\n".join(parts)
 
 
-def index_block(project: Project, *, role_id: str = "", manager: bool = False) -> str:
-    """The memory prelude every agent starts with."""
+def _entry_citation(project: Project, entry: MemoryEntry) -> dict[str, Any]:
+    """Findings/Evidence backing one project-scoped entry's ``source_job``, if any.
+
+    Core 6.1's grounding gate (``peon.projects.gist._has_grounding``) runs at
+    *write* time for dream-curated lessons and never sets ``source_job`` for
+    platform-scoped ones (project-agnostic by construction) — so this only
+    has something to find for project-scoped entries with a job, and reports
+    "uncited" rather than guessing otherwise.
+    """
+    job_id = str(entry.source_job_id or "")
+    if not job_id:
+        return {"cited": False, "evidence": []}
+    from peon.projects.db import ensure_project_database
+    from peon.projects.models import Evidence, Finding
+
+    alias = ensure_project_database(project.pk)
+    cites = [f"Finding: {f.title}" for f in Finding.objects.using(alias).filter(job_id=job_id)[:5]]
+    cites += [
+        f"Evidence: {e.kind} ({e.path})"
+        for e in Evidence.objects.using(alias).filter(job_id=job_id)[:5]
+    ]
+    return {"cited": bool(cites), "evidence": cites[:5]}
+
+
+def _add_token(tokens: set[str], raw: str) -> None:
+    from orchestrator.utils.strings import expand_id_tokens
+
+    tokens |= expand_id_tokens(raw)
+
+
+def _project_lesson_query(project: Project, *, role_id: str = "") -> str:
+    """BM25 query among affinity-matched platform lessons only."""
+    parts = [
+        str(project.title or "").strip(),
+        str(project.summary or "").strip(),
+        str(role_id or "").strip(),
+    ]
+    parts.extend(sorted(_project_affinity_tokens(project))[:40])
+    return " ".join(p for p in parts if p) or "engagement lessons methods"
+
+
+def _project_affinity_tokens(project: Project) -> set[str]:
+    """Role / skill / tool / MCP tokens this engagement planned or ran.
+
+    Expands objective/job roles+skills with catalog-bound skills, skill
+    to tools/skills/roles should be attached to the project.
+    """
+    tokens: set[str] = set()
+    role_ids: set[str] = set()
+    skill_ids: set[str] = set()
+    try:
+        from peon.projects.db import ensure_project_database
+        from peon.projects.models import Objective, ProjectMcpConfig
+
+        alias = ensure_project_database(project.pk)
+        for rid in (
+            Objective.objects.using(alias)
+            .exclude(role_id="")
+            .values_list("role_id", flat=True)
+            .distinct()
+        ):
+            t = str(rid or "").strip().lower()
+            if t:
+                role_ids.add(t)
+        for skills in (
+            Objective.objects.using(alias)
+            .exclude(skill_ids=[])
+            .values_list("skill_ids", flat=True)[:40]
+        ):
+            for sid in list(skills or [])[:12]:
+                s = str(sid or "").strip().lower()
+                if s:
+                    skill_ids.add(s)
+        for roles in (
+            Job.objects.using(alias)
+            .exclude(role_ids=[])
+            .values_list("role_ids", flat=True)[:40]
+        ):
+            for rid in list(roles or [])[:8]:
+                t = str(rid or "").strip().lower()
+                if t:
+                    role_ids.add(t)
+        for skills in (
+            Job.objects.using(alias)
+            .exclude(skill_ids=[])
+            .values_list("skill_ids", flat=True)[:40]
+        ):
+            for sid in list(skills or [])[:12]:
+                s = str(sid or "").strip().lower()
+                if s:
+                    skill_ids.add(s)
+        for mid in (
+            ProjectMcpConfig.objects.using(alias)
+            .filter(project_id=project.pk)
+            .values_list("mcp_id", flat=True)
+        ):
+            _add_token(tokens, str(mid or ""))
+    except Exception:  # noqa: BLE001
+        pass
+
+    for rid in role_ids:
+        _add_token(tokens, rid)
+    for sid in skill_ids:
+        _add_token(tokens, sid)
+
+    # Expand via catalog: skills bound to these roles + their tools/binaries.
+    try:
+        from peon.projects.platform_catalog import OWNER_MCP, OWNER_SKILL, PlatformCatalog
+
+        catalog = PlatformCatalog.shared()
+        for rid in role_ids:
+            for b in catalog.list_bindings(role_id=rid):
+                oid = str(b.owner_id or "").strip()
+                if not oid:
+                    continue
+                _add_token(tokens, oid)
+                if b.owner_kind == OWNER_SKILL:
+                    skill_ids.add(oid)
+                elif b.owner_kind == OWNER_MCP:
+                    _add_token(tokens, oid)
+                if isinstance(b.tools, dict):
+                    for name in list(b.tools.get("values") or [])[:24]:
+                        _add_token(tokens, str(name or ""))
+        for sid in list(skill_ids)[:40]:
+            rec = catalog.get_skill(sid)
+            if rec is None:
+                continue
+            manifest = rec.manifest if isinstance(rec.manifest, dict) else {}
+            for key in ("tools", "allowed_tools", "allow_binaries", "suggested_tools"):
+                raw = manifest.get(key)
+                if isinstance(raw, (list, tuple)):
+                    for name in list(raw)[:24]:
+                        _add_token(tokens, str(name or ""))
+                elif isinstance(raw, str) and raw.strip():
+                    for name in raw.replace(",", " ").split():
+                        _add_token(tokens, name)
+    except Exception:  # noqa: BLE001
+        pass
+
+    for tag in list(project.focus_tags or [])[:12]:
+        _add_token(tokens, str(tag or ""))
+    return tokens
+
+
+def _entry_matches_affinity(entry: MemoryEntry, affinity: set[str]) -> bool:
+    """True when the note is about a role/skill/tool this project actually uses."""
+    if not affinity:
+        return False
+    rid = (entry.role_id or "").strip().lower()
+    if rid and rid in affinity:
+        return True
+    blob = (
+        f"{entry.name} {entry.description} {entry.body} {entry.role_id} {entry.kind}"
+        .lower()
+        .replace("-", " ")
+        .replace("_", " ")
+        .replace("/", " ")
+    )
+    # Prefer longer tokens so "nmap" beats noise like "or"/"on" after splits.
+    for tok in sorted((t for t in affinity if len(t) >= 3), key=len, reverse=True):
+        if tok in blob or tok.replace(" ", "") in blob.replace(" ", ""):
+            return True
+    return False
+
+
+def relevant_platform_lessons(
+    project: Project | None,
+    *,
+    role_id: str = "",
+    limit: int = INDEX_PLATFORM_LIMIT,
+) -> list[MemoryEntry]:
+    """Platform lessons attached to a project — roles/skills/tools only.
+
+    Gate: must overlap this project's affinity tokens. No BM25 dump of the
+    relevant to tools/skills/roles should be attached.
+    """
+    if project is None:
+        rows = list(_scope_qs(None))
+        rows.sort(
+            key=lambda e: (
+                e.created_by != "playbook",
+                -e.recall_count,
+                -e.updated_at.timestamp(),
+            )
+        )
+        return rows[:limit]
+    affinity = _project_affinity_tokens(project)
+    if role_id:
+        _add_token(affinity, role_id)
+    if not affinity:
+        # No roles/skills/tools yet → attach nothing (avoid the full archive).
+        return []
+    role_norm = (role_id or "").strip().lower()
+    candidates = [
+        e
+        for e in _scope_qs(None)
+        if _entry_matches_affinity(e, affinity)
+        and not (
+            role_norm
+            and (e.role_id or "").strip()
+            and (e.role_id or "").strip().lower() != role_norm
+        )
+    ]
+    if not candidates:
+        return []
+    query = _project_lesson_query(project, role_id=role_id)
+    q = _tokens(query)
+    docs = [
+        _tokens(f"{e.name.replace('-', ' ')} {e.description} {e.body} {e.kind} {e.role_id}")
+        for e in candidates
+    ]
+    scores = [1.0] * len(candidates)
+    if q and any(docs):
+        scores = list(BM25Okapi([d or ["_"] for d in docs]).get_scores(q))
+    ranked = sorted(
+        zip(candidates, scores, strict=True),
+        key=lambda r: (r[1], r[0].recall_count, r[0].updated_at.timestamp()),
+        reverse=True,
+    )
+    return [e for e, _ in ranked[:limit]]
+
+
+def index_block_detail(
+    project: Project, *, role_id: str = "", manager: bool = False
+) -> dict[str, Any]:
+    """Memory prelude text every agent starts with, plus the exact entries.
+
+    UI-9: a job's own injected-memory ``StreamMessage`` is built from this
+    (not re-derived later from a live query), so what an operator sees stays
+    true to what the agent actually read, even after entries are edited.
+    Platform lessons are relevance-ranked (see ``relevant_platform_lessons``).
+    """
     mine = sorted(
         _scope_qs(project),
         key=lambda e: (e.kind != "feedback", -e.recall_count, -e.updated_at.timestamp()),
     )
-    plat = [
-        e
-        for e in _scope_qs(None)
-        if not role_id or not e.role_id or e.role_id == role_id
-    ]
-    # Consolidated playbooks outrank raw per-run gists in the index.
-    plat.sort(
-        key=lambda e: (
-            not e.name.startswith("playbook-"),
-            e.role_id != role_id,
-            -e.recall_count,
-            -e.updated_at.timestamp(),
-        )
-    )
+    plat = relevant_platform_lessons(project, role_id=role_id, limit=INDEX_PLATFORM_LIMIT)
     lines = [
         "## Memory",
         "Notes carried over from earlier work (point-in-time — verify before "
         "relying on them). `recall_memory` fetches detail, `save_memory` records "
         "something durable you learned, `forget_memory` retires a stale note.",
     ]
+    entries: list[dict[str, Any]] = []
     if mine:
         lines.append("### This engagement")
-        lines += [f"- [{e.kind}] {e.name} — {e.description}" for e in mine[:INDEX_PROJECT_LIMIT]]
+        shown = mine[:INDEX_PROJECT_LIMIT]
+        lines += [f"- [{e.kind}] {e.name} — {e.description}" for e in shown]
+        entries += [
+            {
+                "id": str(e.id),
+                "scope": "project",
+                "kind": e.kind,
+                "name": e.name,
+                "description": e.description,
+                **_entry_citation(project, e),
+            }
+            for e in shown
+        ]
         if len(mine) > INDEX_PROJECT_LIMIT:
             lines.append(f"- … {len(mine) - INDEX_PROJECT_LIMIT} more (use recall_memory)")
     if plat:
         lines.append("### Platform lessons")
-        lines += [f"- [{e.kind}] {e.name} — {e.description}" for e in plat[:INDEX_PLATFORM_LIMIT]]
+        shown = plat[:INDEX_PLATFORM_LIMIT]
+        lines += [f"- [{e.kind}] {e.name} — {e.description}" for e in shown]
+        # Platform-scoped entries never carry a source_job (see _entry_citation) —
+        # always "uncited" by construction, not a lookup miss.
+        entries += [
+            {
+                "id": str(e.id),
+                "scope": "platform",
+                "kind": e.kind,
+                "name": e.name,
+                "description": e.description,
+                "cited": False,
+                "evidence": [],
+            }
+            for e in shown
+        ]
     if manager:
         full = [e for e in mine if e.kind in {"feedback", "decision"}]
         if full:
@@ -500,25 +787,23 @@ def index_block(project: Project, *, role_id: str = "", manager: bool = False) -
                 lines.append(chunk[:budget])
                 budget -= len(chunk)
     if manager:
-        recap = _bootstrap_recall(project)
+        from orchestrator.crew.memory import read_project_bootstrap
+
+        recap = read_project_bootstrap(str(project.pk))
         if recap:
             lines.append("### Recalled from earlier engagements (Cognee, unverified)")
             lines.append(recap)
+            entries.append(
+                {
+                    "id": "",
+                    "scope": "cognee",
+                    "kind": "recall",
+                    "name": "Recalled from earlier engagements",
+                    "description": recap[:240],
+                    "cited": False,
+                    "evidence": [],
+                }
+            )
     if not mine and not plat and not (manager and "### Recalled" in "\n".join(lines)):
         lines.append("(no memories yet — save durable discoveries as you work)")
-    return "\n".join(lines)
-
-
-def _bootstrap_recall(project: Project, limit: int = 1_800) -> str:
-    """Graph recall written when the project was created (``memory_bootstrap.md``)."""
-    try:
-        from orchestrator.crew.memory import bootstrap_path
-
-        path = bootstrap_path(str(project.pk))
-        if path is None or not path.is_file():
-            return ""
-        text = path.read_text(encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        return ""
-    text = text.split("\n", 2)[-1].strip() if text.startswith("# Memory bootstrap") else text.strip()
-    return text[:limit]
+    return {"text": "\n".join(lines), "entries": entries}

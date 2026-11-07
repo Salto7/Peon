@@ -9,9 +9,19 @@ from agent_runtime.util import forward_env_items
 
 
 class OpenShellSession(SandboxSession):
-    def __init__(self, info: SessionInfo, *, cli: OpenShellCli | None = None) -> None:
+    def __init__(
+        self,
+        info: SessionInfo,
+        *,
+        cli: OpenShellCli | None = None,
+        base_env: dict[str, str] | None = None,
+    ) -> None:
+        # "SANDBOX_HTTP_PROXY ignored on OpenShell".
         super().__init__(info)
         self._cli = cli or OpenShellCli.shared()
+        self._base_env = {
+            str(k): str(v) for k, v in (base_env or {}).items() if k and v is not None
+        }
 
     def exec(
         self,
@@ -37,6 +47,8 @@ class OpenShellSession(SandboxSession):
                 "PYTHONPATH=/skills/helpers",
             ]
         )
+        for key, val in self._base_env.items():
+            env_prefix.append(f"{key}={val}")
         for key, val in (env or {}).items():
             if key and val is not None:
                 env_prefix.append(f"{key}={val}")

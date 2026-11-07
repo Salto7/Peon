@@ -15,7 +15,6 @@ from orchestrator.agent.delegation import (
     wait_for_work_body,
 )
 from orchestrator.agent.job import get_job
-from orchestrator.capabilities.engagement import EngagementTools
 from orchestrator.crew.tools.catalog import crew_tool
 from orchestrator.skills.runtime.bodies import (
     load_skill_body,
@@ -54,6 +53,139 @@ def provision_cli(binary: str, package: str = "") -> str:
 )
 def bash(command: str) -> str:
     return SandboxTools().bash(command)
+
+
+def _lats_tree_path():
+    from peon.projects.workspaces import project_workspace_dir
+
+    job = get_job()
+    root = project_workspace_dir(job.project_id) / ".peon" / "lats"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{job.job_id}.json"
+
+
+def _lats_finding_count() -> int:
+    from peon.projects.db import ensure_project_database, using_project
+    from peon.projects.models import Finding
+
+    job = get_job()
+    if not job.project_id:
+        return 0
+    alias = ensure_project_database(job.project_id)
+    with using_project(job.project_id):
+        return Finding.objects.using(alias).filter(job_id=job.job_id).count()
+
+
+@crew_tool(
+    "explore_branches",
+    "LATS: propose 2-5 candidate shell-command probes for the SAME decision "
+    "point (different params/payloads/techniques toward the same lead) when "
+    "unsure which is most likely to pay off. Runs each, scores it, and tells "
+    "you which branch to deepen next — systematic exploration instead of "
+    "trying one thing, backtracking, trying another by feel. Builds on this "
+    "job's own tree across repeated calls (budget: 24 rollouts / 60 nodes). "
+    "candidates_json: JSON array of {command, rationale} (plain sandbox shell "
+    "commands — same as bash). Omit to just see the current frontier/report.",
+)
+def explore_branches(candidates_json: str = "") -> str:
+    from orchestrator.exploit.lats import (
+        MAX_DEPTH,
+        LatsTree,
+        backprop,
+        probe_value,
+        select_frontier,
+    )
+
+    path = _lats_tree_path()
+    if path.is_file():
+        try:
+            tree = LatsTree.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError, KeyError, ValueError):
+            tree = LatsTree.new(get_job().brief)
+    else:
+        tree = LatsTree.new(get_job().brief)
+
+    candidates: list[dict[str, str]] = []
+    if candidates_json.strip():
+        try:
+            raw = json.loads(candidates_json)
+        except json.JSONDecodeError as exc:
+            return f"Error: candidates_json is not valid JSON: {exc}"
+        if not isinstance(raw, list):
+            return "Error: candidates_json must be a JSON array."
+        for item in raw[:5]:
+            if not isinstance(item, dict) or not str(item.get("command") or "").strip():
+                continue
+            candidates.append(
+                {
+                    "command": str(item["command"]).strip(),
+                    "rationale": str(item.get("rationale") or "").strip(),
+                }
+            )
+        if not candidates:
+            return "Error: no usable {command, rationale} entries in candidates_json."
+
+    lines: list[str] = []
+    if candidates:
+        if tree.budget_hit():
+            return (
+                f"LATS budget exhausted ({tree.rollouts} rollouts, {len(tree.nodes)} nodes) "
+                "for this job — fall back to normal reasoning rather than growing this tree further."
+            )
+        frontier_id = select_frontier(tree)
+        frontier = tree.nodes[frontier_id]
+        if frontier.depth >= MAX_DEPTH:
+            lines.append(
+                f"Frontier node is at max depth ({MAX_DEPTH}); candidates attached to it "
+                "but will not expand further after this."
+            )
+        tools = SandboxTools()
+        from agent_runtime.api import Session
+        from orchestrator.sandbox.tool_output import render_tool_output
+
+        for cand in candidates:
+            node = tree.add_child(frontier_id, command=cand["command"], rationale=cand["rationale"])
+            before = _lats_finding_count()
+            cmd, result = tools.bash_result(node.command)
+            after = _lats_finding_count()
+            if cmd is None:
+                output = result.stderr or "Error: command refused"
+                exit_code = result.code
+            else:
+                output = render_tool_output(Session.current(), result, label="bash")
+                exit_code = result.code
+            node.output = output
+            node.exit_code = exit_code
+            node.status = "evaluated"
+            value = probe_value(
+                exit_code=exit_code, output=output, found_new_finding=after > before
+            )
+            node.value = value
+            backprop(tree, node.id, value)
+            tree.rollouts += 1
+            lines.append(
+                f"- [{value:.2f}] {node.command!r} ({node.rationale or 'no rationale'})\n"
+                f"  {output.strip()[:300]!r}"
+            )
+
+    next_id = select_frontier(tree)
+    next_node = tree.nodes[next_id]
+    path.write_text(json.dumps(tree.to_dict()), encoding="utf-8")
+
+    report = "\n".join(lines) if lines else "(no new probes run this call)"
+    if next_node.status == "evaluated" and not next_node.children:
+        recommend = (
+            f"Best branch to deepen next: {next_node.command!r} (value={next_node.value:.2f}) "
+            f"at depth {next_node.depth} — propose 2-5 follow-up probes that build on it."
+        )
+    elif next_node.id == tree.root_id and not tree.nodes[tree.root_id].children:
+        recommend = "Tree is empty — propose 2-5 initial probes for this decision point."
+    else:
+        recommend = "Nothing further to expand under the current frontier; tree may be exhausted."
+    return (
+        f"{report}\n\n"
+        f"Tree: {len(tree.nodes)} nodes, {tree.rollouts} rollouts. {recommend}"
+    )
 
 
 @crew_tool(
@@ -132,7 +264,7 @@ def record_finding(
         if not isinstance(parsed, list):
             return "Error: subjects_json must be a JSON list."
         fields["subjects"] = parsed
-    return EngagementTools.record_finding(**fields)
+    return get_job().bridge.record_finding(**fields)
 
 
 @crew_tool(
@@ -142,7 +274,7 @@ def record_finding(
     "evidence_path is provenance only. Use when one artifact yields many rows.",
 )
 def record_findings(findings_json: str) -> str:
-    return EngagementTools.record_findings(findings_json or "[]")
+    return get_job().bridge.record_findings(findings_json or "[]")
 
 
 @crew_tool(
@@ -153,7 +285,7 @@ def record_findings(findings_json: str) -> str:
     "Check it before repeating work that may already have been tried.",
 )
 def recall_memory(query: str) -> str:
-    return EngagementTools.recall_memory(query)
+    return get_job().bridge.recall_memory(query)
 
 
 @crew_tool(
@@ -175,7 +307,7 @@ def save_memory(
     body: str = "",
     scope: str = "project",
 ) -> str:
-    return EngagementTools.save_memory(name, kind, description, body, scope or "project")
+    return get_job().bridge.save_memory(name, kind, description, body, scope or "project")
 
 
 @crew_tool(
@@ -183,7 +315,7 @@ def save_memory(
     "Retire a memory that turned out wrong or stale (by name; scope project|platform).",
 )
 def forget_memory(name: str, scope: str = "project") -> str:
-    return EngagementTools.forget_memory(name, scope or "project")
+    return get_job().bridge.forget_memory(name, scope or "project")
 
 
 @crew_tool(
@@ -191,7 +323,7 @@ def forget_memory(name: str, scope: str = "project") -> str:
     "List credential names/kinds in this project's key store (never values).",
 )
 def list_credentials() -> str:
-    return EngagementTools.list_credentials()
+    return get_job().bridge.list_credentials()
 
 
 @crew_tool(
@@ -200,7 +332,7 @@ def list_credentials() -> str:
     "(part: secret | username | domain | full).",
 )
 def get_credential(name: str, part: str = "secret") -> str:
-    return EngagementTools.get_credential(name, part or "secret")
+    return get_job().bridge.get_credential(name, part or "secret")
 
 
 @crew_tool(
@@ -209,7 +341,7 @@ def get_credential(name: str, part: str = "secret") -> str:
     "idle agents wait for). Use before send_message to address the right agent.",
 )
 def list_team() -> str:
-    return EngagementTools.list_team()
+    return get_job().bridge.list_team()
 
 
 @crew_tool(
@@ -228,7 +360,7 @@ def list_team() -> str:
     "messaging and finish your turn instead of retrying.",
 )
 def send_message(to: str, content: str, kind: str = "inform", reply_to: str = "") -> str:
-    return EngagementTools.send_message(
+    return get_job().bridge.send_message(
         to, content, kind=kind or "inform", reply_to=reply_to or ""
     )
 
@@ -239,7 +371,7 @@ def send_message(to: str, content: str, kind: str = "inform", reply_to: str = ""
     "between steps of long work and after waking.",
 )
 def check_inbox() -> str:
-    return EngagementTools.check_inbox()
+    return get_job().bridge.check_inbox()
 
 
 @crew_tool(
@@ -250,7 +382,7 @@ def check_inbox() -> str:
     "go_idle if you have nothing else to do while you wait.",
 )
 def message_status(limit: int = 10) -> str:
-    return EngagementTools.message_status(limit=int(limit or 10))
+    return get_job().bridge.message_status(limit=int(limit or 10))
 
 
 @crew_tool(
@@ -261,7 +393,7 @@ def message_status(limit: int = 10) -> str:
     "what you are waiting for; you resume from your context when woken.",
 )
 def go_idle(reason: str = "") -> str:
-    return EngagementTools.go_idle(reason or "")
+    return get_job().bridge.go_idle(reason or "")
 
 
 @crew_tool(
@@ -279,7 +411,7 @@ def go_idle(reason: str = "") -> str:
     "relationships; use record_finding for security findings.",
 )
 def record_assets(assets_json: str = "[]", relations_json: str = "[]") -> str:
-    return EngagementTools.record_assets(assets_json or "[]", relations_json or "[]")
+    return get_job().bridge.record_assets(assets_json or "[]", relations_json or "[]")
 
 
 @crew_tool(
@@ -287,7 +419,41 @@ def record_assets(assets_json: str = "[]", relations_json: str = "[]") -> str:
     "List recorded findings for this project (optional kind filter).",
 )
 def list_findings(kind: str = "") -> str:
-    return EngagementTools.list_findings(kind=kind)
+    return get_job().bridge.list_findings(kind=kind)
+
+
+@crew_tool(
+    "search_evidence",
+    "Search Evidence across this project — including what other jobs captured, "
+    "not just your own. Filter by kind (command_output, screenshot, traffic, …), "
+    "a Finding's host, or a Finding seq (FIND-n). Use before re-capturing "
+    "something another agent may already have evidence for.",
+)
+def search_evidence(kind: str = "", host: str = "", finding_seq: int = 0) -> str:
+    return get_job().bridge.search_evidence(
+        kind=kind, host=host, finding_seq=int(finding_seq or 0)
+    )
+
+
+@crew_tool(
+    "record_observation",
+    "Note something about an asset-graph node (host/service/url — the same "
+    "value you'd pass to record_assets) that isn't confirmed enough for "
+    "record_finding yet, e.g. \"looks like a staging environment\". "
+    "asset_key is the asset's value (or type:value).",
+)
+def record_observation(asset_key: str, text: str) -> str:
+    return get_job().bridge.record_observation(asset_key, text)
+
+
+@crew_tool(
+    "record_intent",
+    "Plan something about an asset-graph node: what you intend to do with "
+    "it next, or why you're skipping it. status: planned (default) | "
+    "in_progress | done | skipped.",
+)
+def record_intent(asset_key: str, text: str, status: str = "planned") -> str:
+    return get_job().bridge.record_intent(asset_key, text, status=status or "planned")
 
 
 @crew_tool(
@@ -332,7 +498,7 @@ def write_report_note(section: str, body: str) -> str:
     "List persisted project objectives (seq, status, title, role).",
 )
 def list_objectives() -> str:
-    return EngagementTools.list_objectives()
+    return get_job().bridge.list_objectives()
 
 
 @crew_tool(
@@ -341,7 +507,7 @@ def list_objectives() -> str:
     "Use for scheduler progress — never record this as a finding.",
 )
 def update_objective_status(seq: int, status: str, note: str = "") -> str:
-    return EngagementTools.update_objective_status(int(seq), status, note)
+    return get_job().bridge.update_objective_status(int(seq), status, note)
 
 
 # --- multi-agent / collaboration (auto-injected for engagement roles) ---------
@@ -437,7 +603,7 @@ def ask_operator(
     options: str = "",
     blocks_job: bool = True,
 ) -> str:
-    return EngagementTools.ask_operator(
+    return get_job().bridge.ask_operator(
         question,
         options=options or "",
         blocks_job=bool(blocks_job),

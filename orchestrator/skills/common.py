@@ -228,21 +228,6 @@ def extract_file_refs(text: str) -> list[str]:
     return refs
 
 
-def list_resource_files(skill_dir: Path) -> list[str]:
-    out: list[str] = []
-    for root_name in RESOURCE_ROOTS:
-        root = skill_dir / root_name
-        if not root.is_dir():
-            continue
-        for path in sorted(root.rglob("*")):
-            if not path.is_file() or path.name.startswith(".") or "__pycache__" in path.parts:
-                continue
-            if path.suffix in {".pyc", ".pyo"}:
-                continue
-            out.append(path.relative_to(skill_dir).as_posix())
-    return out
-
-
 def resolve_resource(skill_dir: Path, relative_path: str) -> Path | None:
     if not relative_path or relative_path.startswith("/"):
         return None

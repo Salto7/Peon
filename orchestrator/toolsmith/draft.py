@@ -24,7 +24,6 @@ _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9._+-]{1,31}")
 # Same install taxonomy as tools-suggestor / CatalogProvisioner.
 CATALOG_INSTALL_TYPES = ("apt", "github_release", "git_clone", "pip", "custom")
 
-# Re-export for authoring callers.
 __all__ = [
     "CATALOG_INSTALL_TYPES",
     "CatalogResolution",

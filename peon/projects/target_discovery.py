@@ -1,4 +1,9 @@
-"""Asset discovery from findings and LLM suggestions."""
+"""Asset discovery from findings and LLM suggestions.
+
+Producer types are an open vocabulary: any slug on ``subjects`` / RoE /
+``accept_asset`` is stored and shown. Subjects come from typed ``subjects``
+(or metadata aliases) plus structured ``host``/``port`` — nothing else.
+"""
 
 from __future__ import annotations
 
@@ -6,21 +11,20 @@ from typing import Any
 
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.utils.llm import chat_json, llm_configured
-from peon.projects.asset_model import RELATIONS, classify
-from peon.projects.target_shapes import (
+from peon.projects.asset_model import RELATIONS, classify, is_bare_port_value
+from peon.projects.targets import (
     accept_asset,
     canonical_asset_key,
     coerce_target,
     coerce_targets,
-    detect_shape,
     format_service,
-    parse_service,
+    merge_typed_rows,
+    resolve_service,
     sanitize_label,
-    url_host,
 )
 
 
-def _active_probe_role_ids() -> frozenset[str]:
+def active_probe_role_ids() -> frozenset[str]:
     """Technical roles that probe targets (RoE owned by the engagement)."""
     try:
         return frozenset(
@@ -32,32 +36,11 @@ def _active_probe_role_ids() -> frozenset[str]:
 
 _LLM_ASSET_SYSTEM = """You extract engagement subjects for Peon (authorized analysis).
 Return JSON only: {"assets":[{"type":"<slug>","value":"<string>"}]}
-type is a free-form lowercase slug from the operator's wording (examples: ip, fqdn,
-url, netblock, file, malware, sample, source, repo, package, hash, email,
-asset, person). Prefer type \"asset\" for a bare organization or brand name.
-Only include subjects clearly named. No speculation.
-If none, return {"assets":[]}."""
-
-
-def _expand_related_assets(asset: dict[str, str]) -> list[dict[str, str]]:
-    """Lightweight fan-out: URL → host; service → host (graph tips, not taxonomy)."""
-    typ = asset.get("type") or ""
-    value = asset.get("value") or ""
-    out = [asset]
-    shape = detect_shape(value)
-    if typ == "url" or shape == "url":
-        host = url_host(value)
-        if host:
-            related = accept_asset(host, "host")
-            if related:
-                out.append(related)
-    elif typ == "service" or shape == "service":
-        endpoint = parse_service(value)
-        if endpoint:
-            related = accept_asset(endpoint.host) or accept_asset(endpoint.host, "host")
-            if related:
-                out.append(related)
-    return out
+\"type\" is any free-form lowercase slug that fits the subject (not a fixed
+vocabulary) — e.g. person, path, function, vuln, ip, url, file, hash, … Prefer
+type \"asset\" for a bare organization or brand name. Only include subjects
+clearly named. No speculation. If none, return {"assets":[]}.
+"""
 
 
 def _item_type_value(item: Any) -> tuple[str, str]:
@@ -72,10 +55,8 @@ def _item_type_value(item: Any) -> tuple[str, str]:
 def _sibling_host(raw: list) -> str:
     """First value in ``raw`` that is a valid ``port`` relation source.
 
-    ``asset_model.RELATIONS["port"]`` is the one place that already declares
-    which classes a port lives on (``ip``/``fqdn`` today) and what it targets
-    (``service``) — reused here rather than re-declared, so this stays
-    correct for whatever that spec covers, with no vocabulary of its own.
+    ``asset_model.RELATIONS["port"]`` declares which classes a port lives on
+    and what it targets — reused here rather than re-declared.
     """
     sources = RELATIONS["port"].sources
     for item in raw:
@@ -90,24 +71,18 @@ def _normalize_subjects(raw: Any) -> list[dict[str, str]]:
     if not isinstance(raw, list):
         return []
     host = _sibling_host(raw)
-    port_targets = RELATIONS["port"].targets
     out: list[dict[str, str]] = []
+
     for item in raw:
         if isinstance(item, str):
-            coerced = accept_asset(item.strip()) or coerce_target(
-                {"type": "other", "value": item.strip()}
-            )
+            coerced = accept_asset(item.strip())
         elif isinstance(item, dict):
             hint, value = _item_type_value(item)
-            if value.isdigit() and classify(hint, value).slug in port_targets:
-                # A bare port number is never a meaningful standalone asset —
-                # pair it with this subjects list's own host (the ``port``
-                # relation's source class), or drop it rather than store an
-                # identity that can never connect to one.
-                service = format_service(host, int(value), "") if host else None
+            if hint == "service" or is_bare_port_value(hint, value):
+                service = resolve_service(value, host=host)
                 if not service:
                     continue
-                item = {**item, "value": service}
+                item = {**item, "type": "service", "value": service}
             coerced = coerce_target(item)
         else:
             continue
@@ -118,49 +93,28 @@ def _normalize_subjects(raw: Any) -> list[dict[str, str]]:
             if isinstance(item, dict)
             else ""
         )
-        row = {
-            "type": sanitize_label(str(coerced.get("type") or ""), default="other")
-            or "other",
-            "value": str(coerced["value"]).strip()[:1024],
-            "relation": sanitize_label(rel_raw, default="affected", max_len=32)
-            or "affected",
-        }
-        if row["value"]:
-            out.append(row)
-
-    by_key: dict[str, dict[str, str]] = {}
-    order: list[str] = []
-    for row in out:
-        for asset in _expand_related_assets(row):
-            relation = (
-                row["relation"]
-                if asset["value"] == row["value"]
-                else "parent"
-            )
-            canonical = {
-                "type": str(asset.get("type") or "other"),
-                "value": str(asset.get("value") or ""),
-                "relation": relation,
+        out.append(
+            {
+                "type": sanitize_label(str(coerced.get("type") or ""), default="other")
+                or "other",
+                "value": str(coerced["value"]).strip()[:1024],
+                "relation": sanitize_label(rel_raw, default="affected", max_len=32)
+                or "affected",
             }
-            key = canonical_asset_key(canonical["type"], canonical["value"])
-            if key not in by_key:
-                order.append(key)
-                by_key[key] = canonical
-            elif by_key[key].get("relation") == "parent" and relation != "parent":
-                by_key[key] = canonical
-    return [by_key[key] for key in order]
+        )
+
+    def _merge_relation(prev: dict[str, str], row: dict[str, str]) -> None:
+        if prev.get("relation") == "parent" and row.get("relation") != "parent":
+            prev["relation"] = row["relation"]
+
+    return merge_typed_rows(out, on_dup=_merge_relation)
 
 
-def _subjects_from_finding_fields(row: dict[str, Any] | None) -> list[dict[str, str]]:
-    """Build engagement subjects from structured finding fields.
+def subjects_from_finding(row: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Subjects = typed ``subjects`` (+ metadata aliases) and/or ``host``/``port``.
 
-    Provenance fields (``evidence``, ``evidence_path``) are never subjects.
-    Explicit ``subjects`` / ``metadata.subjects`` / ``metadata.assets`` win
-    over every other field below — but never over this finding's own
-    structured ``host``/``port``: a producer naming other subjects
-    explicitly still gets its host:port pair connected, instead of silently
-    losing it the moment any explicit subject is given.
-    Legacy ``host`` / ``host+port`` remain valid subject producers.
+    Provenance (``evidence``, ``evidence_path``) is never a subject. Open type
+    vocabulary — producer slugs are kept as-is.
     """
     if not isinstance(row, dict):
         return []
@@ -186,9 +140,7 @@ def _subjects_from_finding_fields(row: dict[str, Any] | None) -> list[dict[str, 
     explicit = row.get("subjects")
     if not explicit and isinstance(row.get("metadata"), dict):
         meta = row["metadata"]
-        explicit = meta.get("subjects") or meta.get("assets") or meta.get(
-            "discovered_assets"
-        )
+        explicit = meta.get("subjects") or meta.get("assets")
     if explicit:
         merged = _normalize_subjects(explicit)
         known = {canonical_asset_key(r["type"], r["value"]) for r in merged}
@@ -199,109 +151,62 @@ def _subjects_from_finding_fields(row: dict[str, Any] | None) -> list[dict[str, 
         )
         return merged
 
-    found: list[dict[str, str]] = list(host_port_rows)
+    return host_port_rows
 
-    def _push(typ: str, value: str) -> None:
-        accepted = accept_asset(value, typ)
-        if not accepted:
-            return
-        for asset in _expand_related_assets(accepted):
-            found.append(
-                {
-                    "type": str(asset.get("type") or typ or "other"),
-                    "value": str(asset.get("value") or ""),
-                    "relation": "affected",
-                }
-            )
 
-    # Explicit engagement URLs / digests / packages only — never evidence_path.
-    for key, default_typ in (
-        ("url", "url"),
-        ("uri", "url"),
-        ("repo", "repo"),
-        ("hash", "hash"),
-        ("sample", "sample"),
-        ("malware", "malware"),
-        ("package", "package"),
-    ):
-        raw = row.get(key)
-        if raw:
-            _push(default_typ, str(raw))
+_SCOPE_CLASSIFIER_SYSTEM = """You help a human operator triage newly discovered assets during an authorized security engagement.
+Given the engagement's authorization context and a list of newly discovered candidate targets (not yet authorized to probe), label each one:
+- "target": clearly part of the engagement's own organization/infrastructure
+- "third_party": clearly unrelated third-party infrastructure (CDN, cloud host, SaaS, analytics, unrelated vendor)
+- "uncertain": not clearly either from the context given
+Return JSON only: {"classifications": [{"value": "<exact target value>", "label": "target"|"third_party"|"uncertain", "reason": "<one short clause>"}]}
+Advisory only — this never authorizes or blocks probing, it only helps a human reviewing the candidate list. Be conservative: prefer "uncertain" over a confident wrong guess."""
 
-    meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-    for key in ("urls", "uris", "hashes", "samples", "targets", "candidates"):
-        raw = meta.get(key)
-        if isinstance(raw, str):
-            default = (
-                "hash"
-                if key == "hashes"
-                else "url"
-                if key in {"urls", "uris"}
-                else asset_type or "other"
-            )
-            _push(default, raw)
+
+def classify_scope_candidates(
+    context: str, values: list[str]
+) -> dict[str, tuple[str, str]]:
+    """Soft (advisory-only) target-vs-third-party label per candidate value.
+
+    Core 1.5: advisory only on RoE candidates — never authorizes or blocks.
+    Failures yield no labels, never an exception.
+    """
+    wanted = [v.strip() for v in values if v and v.strip()]
+    if not wanted:
+        return {}
+    try:
+        if not llm_configured():
+            return {}
+        from orchestrator.utils import llm_usage
+
+        human = (
+            f"Authorization context:\n{(context or '(none given)').strip()[:2000]}\n\n"
+            "Newly discovered candidates:\n" + "\n".join(f"- {v}" for v in wanted)
+        )
+        with llm_usage.purpose("scope_candidate_classifier"):
+            data = chat_json(_SCOPE_CLASSIFIER_SYSTEM, human)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    raw = data.get("classifications")
+    if not isinstance(raw, list):
+        return {}
+    valid = {"target", "third_party", "uncertain"}
+    out: dict[str, tuple[str, str]] = {}
+    for item in raw:
+        if not isinstance(item, dict):
             continue
-        if not isinstance(raw, list):
+        value = str(item.get("value") or "").strip()
+        label = str(item.get("label") or "").strip().lower()
+        if not value or label not in valid:
             continue
-        for item in raw:
-            if isinstance(item, str):
-                default = (
-                    "hash"
-                    if key == "hashes"
-                    else "url"
-                    if key in {"urls", "uris"}
-                    else asset_type or "other"
-                )
-                _push(default, item)
-                continue
-            coerced = coerce_target(item)
-            if coerced:
-                _push(str(coerced.get("type") or ""), str(coerced.get("value") or ""))
-
-    for key, default_typ in (
-        ("hash", "hash"),
-        ("sha256", "hash"),
-        ("md5", "hash"),
-        ("sample", "sample"),
-        ("malware", "malware"),
-        ("repo", "repo"),
-        ("url", "url"),
-        ("uri", "url"),
-        ("subject", asset_type or "other"),
-    ):
-        raw = meta.get(key)
-        if raw:
-            _push(default_typ if default_typ != "other" else asset_type or "other", str(raw))
-
-    return _normalize_subjects(found)
+        reason = str(item.get("reason") or "").strip()[:160]
+        out[value.lower()] = (label, reason)
+    return out
 
 
-class SubjectCanonicalizer:
-    """Single ingress contract for persisted findings, RoE, and graph assets."""
-
-    @staticmethod
-    def expand(asset: dict[str, str]) -> list[dict[str, str]]:
-        return _expand_related_assets(asset)
-
-    @staticmethod
-    def normalize(raw: Any) -> list[dict[str, str]]:
-        return _normalize_subjects(raw)
-
-    @staticmethod
-    def from_finding(row: dict[str, Any] | None) -> list[dict[str, str]]:
-        """Canonical subjects only; provenance fields are never considered."""
-        return _subjects_from_finding_fields(row)
-
-    @staticmethod
-    def active_probe_role_ids() -> frozenset[str]:
-        return _active_probe_role_ids()
-
-    @staticmethod
-    def suggest_assets(text: str) -> list[dict[str, str]]:
-        return _llm_suggest_assets(text)
-
-
-def _llm_suggest_assets(text: str) -> list[dict[str, str]]:
+def suggest_assets(text: str) -> list[dict[str, str]]:
     """LLM as a discovery producer — returns typed assets; peon trusts the types."""
     try:
         if not llm_configured():
@@ -325,3 +230,4 @@ def _llm_suggest_assets(text: str) -> list[dict[str, str]]:
         if coerced and coerced.get("value"):
             found.append(coerced)
     return coerce_targets(found)
+

@@ -31,28 +31,16 @@ from peon.projects.catalog_edit import (
     save_skill_source,
     save_tool_source,
 )
-from peon.projects.http_helpers import json_errors, parse_json_body
+from peon.projects.http_helpers import (
+    json_errors,
+    parse_json_body,
+    wants_json as request_wants_json,
+)
 from peon.projects.models import SkillRelationKind
 from peon.projects.platform_catalog import PlatformCatalog
 
 __all__ = [
-    "CatalogCardsBase",
-    "RoleCards",
-    "SkillCards",
-    "ToolCards",
     "catalog_page",
-    "api_roles",
-    "api_roles_reload",
-    "api_skills",
-    "api_skills_reload",
-    "api_skill_detail",
-    "api_tools_reload",
-    "api_role_detail",
-    "api_tools",
-    "api_tool_detail",
-    "api_resolve",
-    "api_skill_source",
-    "api_tool_source",
     "urlpatterns",
 ]
 
@@ -84,13 +72,25 @@ def _resolve_args(request: HttpRequest) -> tuple[str, str, bool, list[str], list
 # Source choices for the install-form island (first entry is the default).
 INSTALL_SOURCES = {
     "skill": [
-        {"value": "git", "label": "Git repository", "placeholder": "owner/repo or https://github.com/org/repo.git"},
+        {
+            "value": "git",
+            "label": "Git repository",
+            "placeholder": "owner/repo or https://github.com/org/repo.git",
+        },
         {"value": "npx", "label": "openskills", "placeholder": "owner/repo"},
         {"value": "disk", "label": "Local folder"},
     ],
     "mcp": [
-        {"value": "npx", "label": "npx package", "placeholder": "@modelcontextprotocol/server-github"},
-        {"value": "git", "label": "Git repository", "placeholder": "owner/repo or https://github.com/org/repo.git"},
+        {
+            "value": "npx",
+            "label": "npx package",
+            "placeholder": "@modelcontextprotocol/server-github",
+        },
+        {
+            "value": "git",
+            "label": "Git repository",
+            "placeholder": "owner/repo or https://github.com/org/repo.git",
+        },
         {"value": "disk", "label": "Local folder"},
     ],
 }
@@ -381,13 +381,16 @@ def api_role_write(request: HttpRequest, name: str) -> JsonResponse:
                 "aliases": list(role.aliases),
                 "protected": role.is_protected,
                 "pending": role.pending,
-                "goal": role.goal,
                 "backstory": role.backstory,
                 "bindings": bindings,
             }
         )
     if request.method == "DELETE":
-        catalog.delete_role(name)
+        # HTTP DELETE /catalog/api/roles/<name>/ — CatalogEditor remove mutation.
+        try:
+            catalog.delete_role(name)
+        except ValueError as exc:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
         return JsonResponse({"ok": True, "id": name})
     body = parse_json_body(request, strict=False) or {}
     saved = catalog.upsert_role(
@@ -399,7 +402,7 @@ def api_role_write(request: HttpRequest, name: str) -> JsonResponse:
         # role — never leave it flagged pending after someone saved it.
         pending=False,
         previous_id="" if name in {"", "__new__"} else name,
-        goal=str(body.get("goal") or ""),
+        goal="",
         backstory=str(body.get("backstory") or ""),
     )
     return JsonResponse({"ok": True, "id": saved.id, "kind": saved.kind})
@@ -421,7 +424,7 @@ def api_role_create(request: HttpRequest) -> JsonResponse:
         role_id=str(body.get("role_id") or ""),
         kind=str(body.get("kind") or "technical"),
         aliases=body.get("aliases") or [],
-        goal=str(body.get("goal") or ""),
+        goal="",
         backstory=str(body.get("backstory") or ""),
     )
     return JsonResponse({"ok": True, "id": saved.id})
@@ -451,10 +454,10 @@ def api_mcp_detail(request: HttpRequest, mcp_id: str) -> JsonResponse:
                         "name": "",
                         "description": "",
                         "transport": "stdio",
-                    "command": "",
-                    "args": [],
-                    "cwd": "",
-                    "env_schema": [],
+                        "command": "",
+                        "args": [],
+                        "cwd": "",
+                        "env_schema": [],
                     },
                     "bindings": [],
                     "files": {},
@@ -498,16 +501,12 @@ def api_mcp_detail(request: HttpRequest, mcp_id: str) -> JsonResponse:
         enabled=body.get("enabled") if "enabled" in body else None,
         rename_from="" if mcp_id in {"", "__new__"} else mcp_id,
     )
-    return JsonResponse(
-        {"ok": True, "id": saved[-1].mcp_id, "ids": [rec.mcp_id for rec in saved]}
-    )
+    return JsonResponse({"ok": True, "id": saved[-1].mcp_id, "ids": [rec.mcp_id for rec in saved]})
 
 
 def _install_request(request: HttpRequest) -> tuple[str, str, str]:
     body = parse_json_body(request, strict=False) or {}
-    kind = str(
-        body.get("kind") or request.POST.get("kind") or ""
-    ).strip().lower()
+    kind = str(body.get("kind") or request.POST.get("kind") or "").strip().lower()
     value = str(
         body.get("source")
         or body.get("value")
@@ -515,28 +514,17 @@ def _install_request(request: HttpRequest) -> tuple[str, str, str]:
         or request.POST.get("value")
         or ""
     ).strip()
-    revision = str(
-        body.get("revision") or request.POST.get("revision") or ""
-    ).strip()
+    revision = str(body.get("revision") or request.POST.get("revision") or "").strip()
     return kind, value, revision
 
 
 def _on_conflict(request: HttpRequest, *, default: str = "ask") -> str:
     body = parse_json_body(request, strict=False) or {}
-    raw = str(
-        body.get("on_conflict") or request.POST.get("on_conflict") or ""
-    ).strip().lower()
+    raw = str(body.get("on_conflict") or request.POST.get("on_conflict") or "").strip().lower()
     return raw if raw in {"ask", "skip", "overwrite"} else default
 
 
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
-
-
-def _wants_json(request: HttpRequest) -> bool:
-    return (
-        "application/json" in (request.headers.get("Accept") or "")
-        or (request.content_type or "").startswith("application/json")
-    )
 
 
 def _upload_pairs(request: HttpRequest) -> list[tuple[str, bytes]]:
@@ -549,15 +537,12 @@ def _upload_pairs(request: HttpRequest) -> list[tuple[str, bytes]]:
         raise ValueError("Upload is larger than 20 MB")
     if len(paths) != len(uploads):
         raise ValueError("each uploaded file needs a relative path")
-    return [
-        (rel, upload.read())
-        for rel, upload in zip(paths, uploads, strict=True)
-    ]
+    return [(rel, upload.read()) for rel, upload in zip(paths, uploads, strict=True)]
 
 
 def _install_response(request: HttpRequest, run, *, label: str, anchor: str) -> HttpResponse:
     """Run an installer; answer JSON for XHR, else flash a message and redirect."""
-    wants_json = _wants_json(request)
+    wants_json = request_wants_json(request)
     try:
         ids = run()
     except (RuntimeError, ValueError, OSError) as exc:
@@ -585,7 +570,7 @@ def _ingest_skills(outcome: dict[str, list]) -> dict[str, list]:
 def _skill_install_response(request: HttpRequest, run, *, anchor: str) -> HttpResponse:
     """Run a skill installer; answer JSON with the full outcome (including
     any conflicts an operator must resolve), else flash a summary."""
-    wants_json = _wants_json(request)
+    wants_json = request_wants_json(request)
     try:
         outcome = run()
     except (RuntimeError, ValueError, OSError) as exc:
@@ -619,7 +604,9 @@ def api_skills_install(request: HttpRequest) -> HttpResponse:
     from orchestrator.skills.install import install_skill_source
 
     kind, value, revision = _install_request(request)
-    on_conflict = _on_conflict(request, default="ask" if _wants_json(request) else "skip")
+    on_conflict = _on_conflict(
+        request, default="ask" if request_wants_json(request) else "skip"
+    )
     return _skill_install_response(
         request,
         lambda: _ingest_skills(
@@ -634,7 +621,9 @@ def api_skills_upload(request: HttpRequest) -> HttpResponse:
     """Install a skill pack from a browser folder picker upload or a single .zip."""
     from orchestrator.skills.install.dragdrop import install_relative_files, install_zip
 
-    on_conflict = _on_conflict(request, default="ask" if _wants_json(request) else "skip")
+    on_conflict = _on_conflict(
+        request, default="ask" if request_wants_json(request) else "skip"
+    )
 
     def run() -> dict[str, list]:
         uploads = request.FILES.getlist("file")
@@ -684,7 +673,11 @@ def api_mcp_upload(request: HttpRequest) -> HttpResponse:
 def api_marketplace_sources(request: HttpRequest) -> JsonResponse:
     if request.method == "GET":
         return JsonResponse({"ok": True, "sources": marketplace_ops.list_sources()})
-    body = parse_json_body(request, strict=False) or {} if _wants_json(request) else {}
+    body = (
+        parse_json_body(request, strict=False) or {}
+        if request_wants_json(request)
+        else {}
+    )
     archive_bytes = None
     if request.FILES.get("file"):
         upload = request.FILES["file"]
@@ -741,7 +734,9 @@ def api_marketplace_import(request: HttpRequest, source_id: str) -> JsonResponse
                 instructions=str(body.get("instructions") or ""),
             )
         else:
-            return JsonResponse({"ok": False, "error": "kind must be skill, mcp_pointer, or agent"}, status=400)
+            return JsonResponse(
+                {"ok": False, "error": "kind must be skill, mcp_pointer, or agent"}, status=400
+            )
     except ValueError as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=400)
     except Exception as exc:  # noqa: BLE001
@@ -790,9 +785,40 @@ def api_proposal_decide(request: HttpRequest) -> JsonResponse:
     proposal_id = str(body.get("id") or "").strip()
     decision = str(body.get("decision") or "").strip().lower()
     if not proposal_id or decision not in {"approve", "reject"}:
-        return JsonResponse({"ok": False, "error": "id and decision (approve|reject) required"}, status=400)
+        return JsonResponse(
+            {"ok": False, "error": "id and decision (approve|reject) required"},
+            status=400,
+        )
     result = apply_proposal(proposal_id, decision=decision)
     return JsonResponse(result, status=200 if result.get("ok") else 400)
+
+
+@require_GET
+def api_skill_gaps(request: HttpRequest) -> JsonResponse:
+    """Capability backlog (Core 5.3): roles that asked for a binary/MCP they have no binding for.
+
+    Platform-wide, not project-scoped — ``SkillGapEvent`` lives on the
+    "default" DB alias (see ``orchestrator.utils.skill_gap.record_skill_gap``).
+    """
+    from peon.projects.models import SkillGapEvent
+
+    rows = list(SkillGapEvent.objects.using("default").order_by("-count", "-last_seen_at")[:200])
+    return JsonResponse(
+        {
+            "ok": True,
+            "gaps": [
+                {
+                    "role_id": r.role_id,
+                    "gap_kind": r.gap_kind,
+                    "name": r.name,
+                    "count": r.count,
+                    "first_seen_at": r.first_seen_at.isoformat() if r.first_seen_at else "",
+                    "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else "",
+                }
+                for r in rows
+            ],
+        }
+    )
 
 
 @require_GET
@@ -870,6 +896,7 @@ urlpatterns = [
     ),
     path("api/proposals/", api_proposals, name="catalog_api_proposals"),
     path("api/proposals/decide/", api_proposal_decide, name="catalog_api_proposal_decide"),
+    path("api/skill-gaps/", api_skill_gaps, name="catalog_api_skill_gaps"),
     path("api/skill-relations/", api_skill_relations, name="catalog_api_skill_relations"),
     path(
         "api/skill-relations/write/",

@@ -1,7 +1,6 @@
-"""Engagement role identity DTOs + defaults.
+"""Engagement role identity DTOs + frozen platform catalog defaults.
 
-Rows live in the platform DB (``EngagementRole``). This module defines the
-in-memory shape, seed defaults, and validation helpers.
+Closed allowlist: affinity binds skills/MCP only to these role ids.
 """
 
 from __future__ import annotations
@@ -15,78 +14,186 @@ from orchestrator.skills.common import SKILL_NAME_RE
 ROLE_KINDS = frozenset({"engagement-pm", "analyzer", "technical"})
 BOOKEND_KINDS = frozenset({"engagement-pm", "analyzer"})
 
+FROZEN_ROLE_IDS = frozenset(
+    {
+        "project-manager",
+        "reporter",
+        "recon",
+        "appsec",
+        "malware",
+        "red-team",
+        "dfir",
+    }
+)
+
+ROLE_ID_REMAP: dict[str, str] = {
+    "recon-specialist": "recon",
+    "osint-expert": "recon",
+    "network-scanner": "recon",
+    "passive-osint-expert": "recon",
+    "osint": "recon",
+    "web-crawler-expert": "appsec",
+    "sql-injection-expert": "appsec",
+    "pentester": "appsec",
+    "web-app-tester": "appsec",
+    "app-pentester": "appsec",
+    "malware-research-expert": "malware",
+    "malware-researcher": "malware",
+    "red-teamer": "red-team",
+    "red-team-expert": "red-team",
+    "internal-ops-expert": "red-team",
+    "perimeter-exploit-expert": "red-team",
+    "forensics": "dfir",
+    "forensics-specialist": "dfir",
+    "dfir-expert": "dfir",
+}
+
 
 @dataclass(frozen=True)
 class RoleDef:
-    """One engagement role: identity and lane kind."""
+    """One engagement role: identity and lane kind (backstory only — no goal)."""
 
     id: str
     kind: str  # engagement-pm | analyzer | technical
     aliases: tuple[str, ...] = ()
     protected: bool = False
     pending: bool = False
-    goal: str = ""
+    goal: str = ""  # unused; kept for DB/API compat — always empty on seeds
     backstory: str = ""
 
     @property
     def is_protected(self) -> bool:
-        return bool(self.protected) or self.kind in BOOKEND_KINDS
+        # Frozen catalog: every allowlisted role is non-deletable.
+        return (
+            bool(self.protected)
+            or self.kind in BOOKEND_KINDS
+            or self.id in FROZEN_ROLE_IDS
+        )
 
 
-# Inserted once when the role table is empty. Later edits live on the row.
 DEFAULT_ROLES: tuple[RoleDef, ...] = (
     RoleDef(
         "project-manager",
         "engagement-pm",
         protected=True,
-        goal=(
-            "Review RoE and the objective sequence, dispatch specialists, "
-            "recover from failures, replan when evidence changes, and hand "
-            "off to the analyzer. Do not probe targets or record findings."
-        ),
         backstory=(
-            "You are the engagement lead. You govern technical experts, "
-            "track objectives, and replan or ask the operator when blocked. "
-            "Experts own discoveries; you do not probe targets."
+            "You are the engagement lead. You govern objectives, RoE, sequencing, "
+            "and recovery: dispatch specialists, track dependencies, replan when "
+            "evidence changes, and escalate to the operator when blocked. You do "
+            "not probe targets, exploit systems, or record technical findings "
+            "yourself—experts own discovery. You keep the team inside scope, make "
+            "handoffs explicit, and move the engagement to reporting when the "
+            "technical work is done."
         ),
     ),
     RoleDef(
         "reporter",
         "analyzer",
         protected=True,
-        goal=(
-            "From prior agents' workspace artifacts, batch-record structured "
-            "findings then write findings/report.md. No probing."
+        backstory=(
+            "You turn the engagement’s workspace evidence into structured findings "
+            "and the final report. You synthesize what specialists already produced; "
+            "you do not probe, exploit, or invent discoveries. When evidence is thin "
+            "or contradictory, you say so and point at artifacts—never pad. You own "
+            "the reporting bookend after technical work completes."
+        ),
+    ),
+    RoleDef(
+        "recon",
+        "technical",
+        protected=True,
+        aliases=(
+            "recon-specialist",
+            "osint-expert",
+            "network-scanner",
+            "passive-osint-expert",
+            "osint",
         ),
         backstory=(
-            "You are the reporting specialist. Turn workspace evidence into "
-            "Finding rows and a standalone report. Never invent discoveries."
+            "You map the engagement’s attack surface before anyone tries to break "
+            "in. You combine open-source intelligence with passive and active "
+            "discovery—people, orgs, domains, hosts, services, and exposures—always "
+            "inside RoE and only on in-scope subjects. You produce structured "
+            "surface knowledge others can act on; you do not exploit for access, "
+            "write the final report, or drift into app-vuln hunting, malware RE, "
+            "or post-foothold ops. When something needs a different craft, you hand "
+            "off with artifacts and clear targets."
         ),
     ),
     RoleDef(
-        "recon-specialist",
+        "appsec",
         "technical",
-        aliases=("network-scanner",),
-        goal="Map and enumerate in-scope hosts, services, and exposures.",
-        backstory="You lead authorized reconnaissance and stay inside the rules of engagement.",
+        protected=True,
+        aliases=(
+            "web-crawler-expert",
+            "sql-injection-expert",
+            "pentester",
+            "web-app-tester",
+            "app-pentester",
+        ),
+        backstory=(
+            "You are the application security specialist. You find and prove "
+            "vulnerabilities in web apps, APIs, mobile, and thick clients—"
+            "injection, auth/session flaws, business logic, and related classes—"
+            "using appsec tradecraft (proxies, targeted probes, evidence-backed "
+            "PoCs). You stay inside RoE and in-scope applications. You do not own "
+            "org-wide OSINT/network mapping, malware reverse engineering, stealthy "
+            "red-team objectives, or forensic casework; you consume recon outputs "
+            "and leave durable evidence for reporting."
+        ),
     ),
     RoleDef(
-        "osint-expert",
+        "malware",
         "technical",
-        goal="Collect public information about in-scope organizations, people, and assets.",
-        backstory="You lead authorized open-source intelligence and stay inside the rules of engagement.",
+        protected=True,
+        aliases=("malware-research-expert", "malware-researcher"),
+        backstory=(
+            "You analyze malicious or suspicious code and related artifacts: "
+            "behavior, capabilities, families, C2 patterns, and defensive/offensive "
+            "implications. You work from samples and evidence under RoE—static/"
+            "dynamic analysis as authorized—not live enterprise exploitation or "
+            "broad recon. You do not run app vulnerability campaigns or full "
+            "red-team intrusion paths; when analysis informs another lane, you "
+            "publish findings they can use without redoing your work."
+        ),
     ),
     RoleDef(
-        "web-crawler-expert",
+        "red-team",
         "technical",
-        goal="Crawl and map in-scope web applications.",
-        backstory="You lead authorized web discovery and stay inside the rules of engagement.",
+        protected=True,
+        aliases=(
+            "red-teamer",
+            "red-team-expert",
+            "internal-ops-expert",
+            "perimeter-exploit-expert",
+        ),
+        backstory=(
+            "You pursue engagement objectives with adversary tradecraft wherever "
+            "the work is not appsec vuln-hunting and not malware research: external/"
+            "internal intrusion paths, identity and infrastructure abuse, lateral "
+            "movement, privilege escalation, persistence, and evasion—bounded by "
+            "RoE and scope. You assume or create footholds as authorized and "
+            "optimize for objectives and operational realism, not checklist "
+            "coverage alone. You do not replace recon’s surface map, the "
+            "pentester’s app PoCs, malware RE deep-dives, or DFIR case ownership; "
+            "you consume their outputs and stay in your lane."
+        ),
     ),
     RoleDef(
-        "sql-injection-expert",
+        "dfir",
         "technical",
-        goal="Test in-scope inputs for SQL injection and record proven cases.",
-        backstory="You lead authorized injection testing and stay inside the rules of engagement.",
+        protected=True,
+        aliases=("forensics", "forensics-specialist", "dfir-expert"),
+        backstory=(
+            "You investigate artifacts mid-engagement: logs, timelines, disk/"
+            "memory images, host evidence, and related forensic material. Your "
+            "job is reconstruct what happened and extract trustworthy evidence—"
+            "not to expand intrusion or evade detection. You operate under the "
+            "same RoE/scope as the project; you are not a standalone IR product "
+            "lane. You do not run offensive break-ins or app exploit campaigns; "
+            "when others need investigative clarity, you deliver analysis they "
+            "can cite."
+        ),
     ),
 )
 
@@ -127,9 +234,7 @@ def role_def_from_mapping(row: dict[str, Any]) -> RoleDef:
     if not rid:
         raise ValueError("role id is required (kebab-case)")
     if not kind:
-        raise ValueError(
-            f"role {rid!r}: kind must be engagement-pm|analyzer|technical"
-        )
+        raise ValueError(f"role {rid!r}: kind must be engagement-pm|analyzer|technical")
     aliases = normalize_aliases(row.get("aliases"))
     aliases = tuple(a for a in aliases if a != rid)
     return RoleDef(
@@ -138,23 +243,23 @@ def role_def_from_mapping(row: dict[str, Any]) -> RoleDef:
         aliases=aliases,
         protected=bool(row.get("protected")),
         pending=bool(row.get("pending")),
-        goal=str(row.get("goal") or "").strip(),
+        goal="",
         backstory=str(row.get("backstory") or "").strip(),
     )
 
 
 def seed_role_text(role_id: str, kind: str) -> tuple[str, str]:
-    """Editable copy used when a role is first created."""
+    """Return ``(goal, backstory)`` for first create — goal always empty."""
     rid = normalize_role_id(role_id)
     for role in DEFAULT_ROLES:
         if role.id == rid:
-            return role.goal, role.backstory
+            return "", role.backstory
     for role in DEFAULT_ROLES:
         if role.kind == kind and kind in BOOKEND_KINDS:
-            return role.goal, role.backstory
+            return "", role.backstory
     return (
-        f"Lead authorized work for `{rid or 'this role'}` using the skills bound to it.",
-        "You are a technical expert. Stay inside the rules of engagement.",
+        "",
+        "You are a technical specialist. Stay inside the rules of engagement.",
     )
 
 
@@ -174,7 +279,7 @@ def catalog_role_ids() -> list[str]:
 
 def role_alias_map(roles: Iterable[RoleDef] | None = None) -> dict[str, str]:
     rows = tuple(roles) if roles is not None else load_role_catalog()
-    out: dict[str, str] = {}
+    out: dict[str, str] = dict(ROLE_ID_REMAP)
     for row in rows:
         out[row.id] = row.id
         for alias in row.aliases:

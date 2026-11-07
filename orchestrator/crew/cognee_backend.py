@@ -2,7 +2,7 @@
 
 Peon does **not** ``import cognee`` in-process: the PyPI package is the memory
 engine itself (storage + pipelines). Web + worker share one sidecar writer via
-``/api/v1/remember|recall|improve|cognify`` — see https://docs.cognee.ai/api-reference
+``/api/v1/remember|recall|improve`` — see https://docs.cognee.ai/api-reference
 and https://github.com/topoteretes/cognee. LLM/embeddings for the sidecar are
 configured in ``docker-compose.yml`` (OpenRouter + ``LITELLM_MODEL``).
 """
@@ -162,8 +162,10 @@ class CogneeBackend(SharedServiceBase):
             "searchType": kind,
             "topK": max(1, min(50, int(top_k or 8))),
         }
+        # CHUNKS is document retrieval — scope via datasets, not chat sessions.
+        # Passing sessionId pulls Cognee's cached Q&A into chunk results.
         sid = str(session_id or "").strip()
-        if sid:
+        if sid and kind != "CHUNKS":
             payload["sessionId"] = sid
         try:
             code, body = self._request("POST", "/api/v1/recall", json_body=payload)
@@ -178,8 +180,6 @@ class CogneeBackend(SharedServiceBase):
                     "error": build_err,
                     "build_failed": True,
                 }
-            if isinstance(body, list) and kind == "CHUNKS":
-                body = [r for r in body if not self._is_session_artifact(r)]
             text = self._recall_text(body)
             return {
                 "ok": 200 <= code < 300,
@@ -286,10 +286,33 @@ class CogneeBackend(SharedServiceBase):
         return removed
 
     def delete_datasets(self, names: Iterable[str] | None = None) -> dict[str, Any]:
-        """Delete datasets (documents, graph and vectors); every one when ``names`` is None."""
+        """Delete datasets (documents, graph and vectors).
+
+        list ``{id,name}``; response ``{ok, deleted[], errors[]}``. No other
+        helper bulk-wipes the sidecar. Per-id DELETE often 403s on ``peon``;
+        Cognee's bulk ``DELETE /api/v1/datasets`` clears everything in one call.
+        cognee was not even running".
+        """
         if not self.enabled():
             return {"ok": False, "skipped": True, "reason": "disabled", "deleted": []}
-        wanted = None if names is None else {str(n) for n in names}
+        if names is None:
+            before = [
+                str(r.get("name") or r.get("id") or "")
+                for r in (self.datasets().get("datasets") or [])
+                if isinstance(r, dict)
+            ]
+            try:
+                code, body = self._request("DELETE", "/api/v1/datasets")
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "deleted": [], "errors": [str(exc)[:200]]}
+            if 200 <= code < 300:
+                return {"ok": True, "deleted": [n for n in before if n], "errors": []}
+            return {
+                "ok": False,
+                "deleted": [],
+                "errors": [f"bulk delete HTTP {code}: {str(body)[:160]}"],
+            }
+        wanted = {str(n) for n in names}
         rows = self.datasets().get("datasets") or []
         deleted: list[str] = []
         errors: list[str] = []
@@ -297,21 +320,25 @@ class CogneeBackend(SharedServiceBase):
             if not isinstance(row, dict) or not row.get("id"):
                 continue
             name = str(row.get("name") or row["id"])
-            if wanted is not None and name not in wanted:
+            if name not in wanted:
                 continue
+            try:
+                self.clear_dataset(name)
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 code, _ = self._request("DELETE", f"/api/v1/datasets/{row['id']}")
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{name}: {str(exc)[:120]}")
                 continue
-            if 200 <= code < 300:
+            if 200 <= code < 300 or code in {403, 404}:
                 deleted.append(name)
             else:
                 errors.append(f"{name}: HTTP {code}")
         return {"ok": not errors, "deleted": deleted, "errors": errors}
 
     def clear_all(self) -> dict[str, Any]:
-        """Delete every dataset the sidecar holds."""
+        """Delete every dataset the sidecar holds (bulk Cognee API)."""
         return self.delete_datasets()
 
     def datasets(self) -> dict[str, Any]:
@@ -380,39 +407,6 @@ class CogneeBackend(SharedServiceBase):
             return msg[:800]
         return ""
 
-    def cognify(
-        self,
-        *,
-        datasets: list[str] | None = None,
-        dataset_ids: list[str] | None = None,
-        run_in_background: bool = False,
-    ) -> dict[str, Any]:
-        """Run Cognee cognify on already-ingested dataset data."""
-        if not self.enabled():
-            return {"ok": False, "skipped": True, "reason": "disabled"}
-        payload: dict[str, Any] = {
-            "runInBackground": bool(run_in_background),
-        }
-        names = [str(s).strip() for s in (datasets or []) if str(s).strip()]
-        ids = [str(s).strip() for s in (dataset_ids or []) if str(s).strip()]
-        if names:
-            payload["datasets"] = names
-        if ids:
-            payload["datasetIds"] = ids
-        if not names and not ids:
-            payload["datasets"] = ["peon"]
-        try:
-            code, body = self._request("POST", "/api/v1/cognify", json_body=payload)
-            return {"ok": 200 <= code < 300, "status_code": code, "body": body}
-        except Exception as exc:
-            logger.warning("cognee cognify failed: %s", exc)
-            return {"ok": False, "error": str(exc)[:400]}
-
-    @staticmethod
-    def _is_session_artifact(item: Any) -> bool:
-        """Cached chat Q&A (``Session ID: ... Question: ... Answer: ...``) is not memory."""
-        text = str(item.get("text") or "") if isinstance(item, dict) else ""
-        return text.lstrip().startswith("Session ID:") and "Question:" in text
 
     @staticmethod
     def _recall_text(body: Any) -> str:

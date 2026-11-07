@@ -65,11 +65,16 @@ def _indications(record: Any) -> list[str]:
         tags.append(cat)
     if cat in {"error", "gap"} or "fail" in event:
         tags.append("failure")
-    if cat in {"action", "method"} or "prompt" in event or event in {
-        "run_cli",
-        "steer",
-        "operator",
-    }:
+    if (
+        cat in {"action", "method"}
+        or "prompt" in event
+        or event
+        in {
+            "run_cli",
+            "steer",
+            "operator",
+        }
+    ):
         tags.append("prompt")
     if cat == "outcome":
         tags.append("outcome")
@@ -134,19 +139,24 @@ def recall_for_new_project(
     *,
     title: str = "",
     summary: str = "",
-    scope_hints: list[str] | None = None,
-    top_k: int = 8,
+    top_k: int = 5,
 ) -> str:
-    """Recall peon-wide lessons to bootstrap a newly created project."""
+    """Recall peon-wide lessons to bootstrap a newly created project.
+
+    ``memory_bootstrap.md``). Prefer ranked local ``MemoryEntry`` hits over
+    are displayed in a project? … only relevant ones".
+    """
     if not peon_memory_enabled():
         return ""
     # Lessons are retrieved by the *shape of the task* (title/summary). Target
     # identifiers are deliberately not part of the query: they only pull in
     # target-specific text, and gists are target-agnostic by construction.
-    del scope_hints
-    query = " ".join(
-        b for b in (str(title or "").strip(), str(summary or "").strip()) if b
-    ) or "engagement lessons methods failures replans"
+    from orchestrator.utils.governance import frame_recalled_lesson
+
+    query = (
+        " ".join(b for b in (str(title or "").strip(), str(summary or "").strip()) if b)
+        or "engagement lessons methods failures replans"
+    )
     parts: list[str] = []
     try:
         from peon.projects import memory_store
@@ -157,20 +167,22 @@ def recall_for_new_project(
             if s > 0 and e.kind == "lesson"
         ]
         parts += [
-            f"- {e.name} — {e.description}\n  {(e.body or '').strip()}" for e, _ in hits
+            frame_recalled_lesson(f"- {e.name} — {e.description}\n  {(e.body or '').strip()[:400]}")
+            for e, _ in hits
         ]
     except Exception as exc:  # noqa: BLE001
         logger.debug("local lesson search failed: %s", exc)
-    result = CogneeBackend.shared().recall(query, datasets=["peon"], top_k=top_k)
-    if result.get("ok") and not result.get("build_failed"):
-        text = str(result.get("text") or "").strip()
-        if text:
-            parts.append(text)
-    else:
-        logger.warning(
-            "peon memory bootstrap recall skipped: %s",
-            (result.get("error") or "unavailable")[:300],
-        )
+    if not parts:
+        result = CogneeBackend.shared().recall(query, datasets=["peon"], top_k=min(top_k, 3))
+        if result.get("ok") and not result.get("build_failed"):
+            text = str(result.get("text") or "").strip()
+            if text:
+                parts.append(frame_recalled_lesson(text[:1200]))
+        else:
+            logger.warning(
+                "peon memory bootstrap recall skipped: %s",
+                (result.get("error") or "unavailable")[:300],
+            )
     return "\n".join(parts).strip()
 
 
@@ -180,9 +192,7 @@ def bootstrap_path(project_id: str) -> Path | None:
     try:
         from orchestrator.utils.paths import safe_workspace_key
 
-        root = Path(
-            getattr(settings, "PROJECT_WORKSPACES_DIR", "") or "workspaces"
-        ).resolve()
+        root = Path(getattr(settings, "PROJECT_WORKSPACES_DIR", "") or "workspaces").resolve()
         return root / safe_workspace_key(str(project_id)) / "memory_bootstrap.md"
     except Exception:
         return None
@@ -195,14 +205,24 @@ def write_project_bootstrap(project_id: str, text: str) -> Path | None:
         return None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "# Memory bootstrap (Cognee peon recall)\n\n" + body + "\n",
-            encoding="utf-8",
-        )
+        path.write_text(body + "\n", encoding="utf-8")
         return path
     except OSError as exc:
         logger.debug("memory bootstrap write failed: %s", exc)
         return None
+
+
+def read_project_bootstrap(project_id: str, limit: int = 1_800) -> str:
+    """Project bootstrap recall text, or "" if missing/unreadable."""
+    path = bootstrap_path(project_id)
+    if path is None or not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.debug("memory bootstrap read failed: %s", exc)
+        return ""
+    return text.strip()[:limit]
 
 
 def _project_of(dataset: str, titles: dict[str, str]) -> str:
@@ -241,54 +261,86 @@ def build_lab_catalog() -> dict[str, Any]:
     # dataset replaces the "peon" default.
     sessions: dict[str, dict[str, str]] = {}
 
-    def add_session(sid: str, *, dataset: str, project_id: str = "", job_title: str = "",
-                    status: str = "", source: str) -> None:
+    def add_session(
+        sid: str,
+        *,
+        dataset: str,
+        project_id: str = "",
+        job_title: str = "",
+        status: str = "",
+        source: str,
+    ) -> None:
         sid, dataset = sid.strip(), dataset.strip()
         if not sid:
             return
         project_id = project_id or _project_of(dataset, titles)
         dataset = dataset or (project_dataset(project_id) if project_id else "")
-        row = sessions.setdefault(sid, {"dataset": "", "project_id": "", "job_title": "",
-                                        "status": "", "source": source})
+        row = sessions.setdefault(
+            sid, {"dataset": "", "project_id": "", "job_title": "", "status": "", "source": source}
+        )
         if dataset and row["dataset"] in ("", "peon"):
             row["dataset"] = dataset
-        for key, value in (("project_id", project_id), ("job_title", job_title.strip()),
-                           ("status", status.strip())):
+        for key, value in (
+            ("project_id", project_id),
+            ("job_title", job_title.strip()),
+            ("status", status.strip()),
+        ):
             row[key] = row[key] or value
 
     for raw in cognee_sess.get("sessions") or []:
         if isinstance(raw, dict):
             add_session(
                 str(raw.get("session_id") or raw.get("id") or raw.get("name") or ""),
-                dataset=str(raw.get("dataset") or raw.get("dataset_name")
-                            or raw.get("datasetName") or ""),
+                dataset=str(
+                    raw.get("dataset") or raw.get("dataset_name") or raw.get("datasetName") or ""
+                ),
                 status=str(raw.get("status") or ""),
                 source="cognee",
             )
     for pid in titles:
         try:
             with using_project(pid):
-                jobs = list(Job.objects.order_by("-updated_at").only(
-                    "id", "title", "status", "project_id", "updated_at")[:80])
+                jobs = list(
+                    Job.objects.order_by("-updated_at").only(
+                        "id", "title", "status", "project_id", "updated_at"
+                    )[:80]
+                )
         except Exception as exc:
             logger.warning("lab catalog: jobs for project %s unavailable: %s", pid, exc)
             continue
         for job in jobs:
-            add_session(job_session_id(job), dataset=project_dataset(pid), project_id=pid,
-                        job_title=job.title or "", status=job.status or "", source="job")
+            add_session(
+                job_session_id(job),
+                dataset=project_dataset(pid),
+                project_id=pid,
+                job_title=job.title or "",
+                status=job.status or "",
+                source="job",
+            )
 
     def dataset_row(name: str, facts: dict[str, str]) -> dict[str, Any]:
         title = titles.get(facts["project_id"], "")
-        label = "peon — platform memory" if name == "peon" else (
-            f"{title} · {name}" if title else name)
-        return {"name": name, "project_id": facts["project_id"], "project_title": title,
-                "label": label, "source": facts["source"]}
+        label = (
+            "peon — platform memory" if name == "peon" else (f"{title} · {name}" if title else name)
+        )
+        return {
+            "name": name,
+            "project_id": facts["project_id"],
+            "project_title": title,
+            "label": label,
+            "source": facts["source"],
+        }
 
     def session_row(sid: str, facts: dict[str, str]) -> dict[str, Any]:
         title = titles.get(facts["project_id"], "")
         bits = (title, facts["job_title"] or sid, facts["status"])
-        return {"session_id": sid, **facts, "dataset": facts["dataset"] or "peon",
-                "project_title": title, "label": " · ".join(b for b in bits if b)}
+        return {
+            "session_id": sid,
+            **facts,
+            "dataset": facts["dataset"] or "peon",
+            "project_title": title,
+            "label": " · ".join(b for b in bits if b),
+        }
 
     return {
         "ok": bool(health.get("ok")),
@@ -314,6 +366,7 @@ class MemoryService(SharedServiceBase):
     remember_peon = staticmethod(remember_peon)
     recall_for_new_project = staticmethod(recall_for_new_project)
     write_project_bootstrap = staticmethod(write_project_bootstrap)
+    read_project_bootstrap = staticmethod(read_project_bootstrap)
 
     @classmethod
     def health(cls) -> dict[str, Any]:
@@ -374,51 +427,6 @@ class MemoryService(SharedServiceBase):
         )
 
     @classmethod
-    def datasets(cls) -> dict[str, Any]:
-        return CogneeBackend.shared().datasets()
-
-    @classmethod
-    def sessions(cls, **kwargs: Any) -> dict[str, Any]:
-        return CogneeBackend.shared().sessions(**kwargs)
-
-    @classmethod
     def lab_catalog(cls) -> dict[str, Any]:
         """Datasets + sessions for Lab Dream pickers (Cognee + Peon project names)."""
         return build_lab_catalog()
-
-    # --- Compatibility stubs (CrewAI memory removed) ---
-
-    @staticmethod
-    def remember_into(target: Any, content: str, meta: dict[str, Any] | None = None) -> bool:
-        """Legacy hook: map into peon/project Cognee remember."""
-        del target
-        meta = meta or {}
-        project_id = str(meta.get("project_id") or "")
-        text = (content or "").strip()
-        if not text:
-            return False
-        if project_id:
-            doc = {
-                "kind": str(meta.get("category") or "method"),
-                "summary": text[:8000],
-                "event": str(meta.get("event") or ""),
-                "role_id": str(meta.get("role_id") or ""),
-                "project_id": project_id,
-                "indications": [str(meta.get("category") or "method")],
-                "meta": {k: v for k, v in meta.items() if k not in {"category"}},
-            }
-            return bool(
-                CogneeBackend.shared()
-                .remember(
-                    doc,
-                    dataset_name=project_dataset(project_id),
-                    self_improvement=False,
-                )
-                .get("ok")
-            )
-        return remember_peon(
-            text,
-            category=str(meta.get("category") or "digest"),
-            event=str(meta.get("event") or ""),
-            project_id=str(meta.get("project_id") or ""),
-        )

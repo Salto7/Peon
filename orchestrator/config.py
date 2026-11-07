@@ -93,6 +93,14 @@ class RuntimeConfig(BaseSettings):
     litellm_api_base: str | None = Field(None, validation_alias=_env_names("LITELLM_API_BASE"))
     llm_temperature: float = 0.0
     llm_max_tokens: int | None = None
+    # Optional — a dead primary provider stalls every agent turn otherwise.
+    # Each entry: {"provider": "...", "model": "...", "api_key": "...", "api_base": "..."}
+    # (provider/model required, api_key/api_base optional — same shape as the
+    # primary's own fields). Tried in list order once the primary trips its
+    # cooldown; see LiteLLMProvider._get_router.
+    llm_fallback_providers: list[dict[str, str]] = Field(
+        default_factory=list, validation_alias=_env_names("LLM_FALLBACK_PROVIDERS")
+    )
     # Optional OpenAI-compatible proxy exposure (Compose profile llm-proxy).
     llm_proxy_enabled: bool = False
     llm_proxy_url: str = _DEFAULT_LLM_PROXY_URL

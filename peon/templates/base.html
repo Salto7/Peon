@@ -44,9 +44,13 @@
       </div>
 
       <nav aria-label="Primary" class="flex-1 space-y-1 overflow-y-auto px-3 py-1 sidebar-collapsed:md:px-2">
+        {% if project %}
         <c-nav-section>
-          <c-nav-item href="{% url 'home' %}" icon="house" label="Home" active="{% if nav == 'home' %}1{% endif %}" />
-          <c-nav-item href="{% url 'project_list' %}" icon="folder-kanban" label="Projects" active="{% if nav == 'projects' %}1{% endif %}" badge="data-hitl-badge" />
+          <c-nav-item href="{% url 'home' %}" icon="house" label="Home" badge="data-hitl-badge" />
+        </c-nav-section>
+        {% else %}
+        <c-nav-section>
+          <c-nav-item href="{% url 'home' %}" icon="house" label="Home" active="{% if nav == 'home' or nav == 'projects' %}1{% endif %}" badge="data-hitl-badge" />
           <c-nav-item href="{% url 'catalog' %}" icon="library" label="Catalog" active="{% if nav == 'catalog' %}1{% endif %}" />
         </c-nav-section>
         <c-nav-section label="Lab">
@@ -54,6 +58,7 @@
           <c-nav-item href="{% url 'lab_dream' %}" icon="brain" label="Dream" active="{% if lab_section == 'dream' %}1{% endif %}" />
           <c-nav-item href="{% url 'lab_workflows' %}" icon="workflow" label="Workflows" active="{% if lab_section == 'workflows' %}1{% endif %}" />
         </c-nav-section>
+        {% endif %}
         {% block sidebar_extra %}{% endblock %}
       </nav>
 

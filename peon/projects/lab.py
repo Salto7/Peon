@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
-from django.shortcuts import redirect, render
-from django.urls import include, path, reverse
+from django.shortcuts import render
+from django.urls import include, path
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from orchestrator.crew.dreaming import DreamingService
@@ -19,12 +19,6 @@ def lab_index(request: HttpRequest) -> HttpResponse:
         "lab/index.html",
         {"nav": "lab", "lab_section": ""},
     )
-
-
-@require_GET
-def lab_roles_page(request: HttpRequest) -> HttpResponse:
-    """Lab → Roles: roles are edited in the shared catalog; keep the old URL working."""
-    return redirect(reverse("catalog") + "#roles")
 
 
 @require_GET
@@ -133,17 +127,45 @@ def lab_dream_run(_request: HttpRequest) -> JsonResponse:
 
 @require_POST
 def lab_dream_clear(request: HttpRequest) -> JsonResponse:
-    """Delete everything in Cognee; optionally re-index platform memory."""
+    """Clear Cognee and/or Django platform MemoryEntry notes.
+
+    Body: ``{cognee?: bool, django_notes?: bool, reindex?: bool}``.
+    """
     body = parse_json_body(request, strict=False) or {}
-    reindex = bool(body.get("reindex", True))
-    result = DreamingService.shared().clear(reindex=reindex)
-    return JsonResponse(result, status=200 if result.get("ok") else 502)
+    clear_cognee = bool(body.get("cognee", True))
+    clear_notes = bool(body.get("django_notes", False))
+    # Reindex only makes sense when notes remain and Cognee was wiped.
+    reindex = bool(body.get("reindex", False)) and clear_cognee and not clear_notes
+    if not clear_cognee and not clear_notes:
+        return JsonResponse(
+            {"ok": False, "error": "pick Cognee and/or Django notes to clear"},
+            status=400,
+        )
+    # Cognee first so a Cognee failure does not leave Django notes deleted
+    out: dict = {"ok": True, "cognee": None, "django_notes": None}
+    if clear_cognee:
+        wiped = DreamingService.shared().clear(reindex=False)
+        out["cognee"] = wiped
+        out["ok"] = bool(wiped.get("ok"))
+        out["deleted"] = wiped.get("deleted")
+        out["errors"] = wiped.get("errors")
+        out["error"] = wiped.get("error")
+        if not wiped.get("ok"):
+            return JsonResponse(out, status=502)
+    if clear_notes:
+        from peon.projects import memory_store
+
+        out["django_notes"] = memory_store.clear_platform_notes(hard=True)
+    if clear_cognee and reindex:
+        # Reindex only after notes were intentionally kept.
+        out["reindex"] = DreamingService.shared().sync_platform_index()
+    status = 200 if out.get("ok") else 502
+    return JsonResponse(out, status=status)
 
 
 urlpatterns = [
     path("", lab_index, name="lab"),
     path("toolsmith/", include("peon.projects.toolsmith")),
-    path("roles/", lab_roles_page, name="lab_roles"),
     path("workflows/", include("peon.projects.workflow")),
     path("dream/", lab_dream_page, name="lab_dream"),
     path("dream/api/status/", lab_dream_status, name="lab_dream_status"),

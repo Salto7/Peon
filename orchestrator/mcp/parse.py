@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from orchestrator.skills.common import SKILL_NAME_RE
+from orchestrator.utils.strings import is_env_name
 
 _SECRET_KEYS = frozenset(
     {
@@ -25,7 +26,6 @@ _SECRET_KEYS = frozenset(
         "refresh_token",
     }
 )
-_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ENV_TYPES = frozenset({"string", "secret", "boolean", "number", "choice"})
 _ENV_FIELD_KEYS = frozenset({"name", "required", "type", "description", "default", "choices"})
 
@@ -33,6 +33,9 @@ _ENV_FIELD_KEYS = frozenset({"name", "required", "type", "description", "default
 def _looks_secret(name: str) -> bool:
     low = name.lower()
     return any(key in low for key in _SECRET_KEYS)
+
+
+REMOTE_TRANSPORTS = frozenset({"http", "streamable-http", "sse"})
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,10 @@ class McpSpec:
     install: dict[str, Any] | None
     env_schema: tuple[tuple[str, bool], ...]
     reference_hosts: tuple[str, ...] = ()
+    # Remote transports (http/streamable-http/sse) connect to this URL instead
+    # of spawning a subprocess; command/args/cwd/install are unused for them.
+    # env_schema's declared names become HTTP headers rather than env vars.
+    url: str = ""
     # Full per-field metadata (type/description/default/choices); env_schema
     # above stays a plain (name, required) tuple so every existing call site
     # that destructures it keeps working untouched.
@@ -102,18 +109,36 @@ def _one(raw: dict[str, Any]) -> McpSpec:
             f"(got {name!r})"
         )
     transport = str(raw.get("transport") or raw.get("type") or "stdio").strip().lower()
-    if transport in {"sse", "http", "streamable-http", "websocket"}:
+    if transport == "websocket":
         raise McpParseError(
-            f"transport {transport!r} is not supported; the sandbox runs stdio servers"
+            "transport 'websocket' is not supported (superseded by streamable-http "
+            "in the MCP spec); use http instead"
         )
-    if transport != "stdio":
-        raise McpParseError("only transport stdio is supported")
-    command, args = _command(raw)
+    if transport not in {"stdio", *REMOTE_TRANSPORTS}:
+        raise McpParseError(
+            f"transport must be one of stdio, http, streamable-http, sse (got {transport!r})"
+        )
     description = str(raw.get("description") or "").strip()
     if len(description) > 4000:
         raise McpParseError("description is too long")
-    install = _install(raw.get("install"))
     env_fields = _env_schema(raw.get("env_schema") or raw.get("env"))
+    if transport in REMOTE_TRANSPORTS:
+        url, host = _remote_url(raw.get("url"))
+        return McpSpec(
+            mcp_id=name,
+            description=description,
+            transport=transport,
+            command="",
+            args=(),
+            cwd="",
+            install=None,
+            env_schema=tuple((f["name"], bool(f["required"])) for f in env_fields),
+            env_schema_full=tuple(env_fields),
+            reference_hosts=_reference_hosts(raw.get("reference_hosts") or [host]),
+            url=url,
+        )
+    command, args = _command(raw)
+    install = _install(raw.get("install"))
     return McpSpec(
         mcp_id=name,
         description=description,
@@ -126,6 +151,35 @@ def _one(raw: dict[str, Any]) -> McpSpec:
         env_schema_full=tuple(env_fields),
         reference_hosts=_reference_hosts(raw.get("reference_hosts")),
     )
+
+
+def _remote_url(raw: Any) -> tuple[str, str]:
+    """Validate a remote MCP endpoint — https only, same spirit as reference_hosts.
+
+    This is reference infrastructure (a vendor's hosted MCP server), never an
+    engagement target, so it is held to the same bar as ``reference_hosts``:
+    a real host over TLS, not a bare IP/loopback a sandbox could be tricked
+    into treating as something else. Returns ``(url, host)`` — the bare
+    hostname (no userinfo/port) also doubles as the default reference host,
+    so callers never need to re-derive it from the URL themselves.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        raise McpParseError("url is required for http/streamable-http/sse transport")
+    if len(text) > 500:
+        raise McpParseError("url is too long")
+    match = re.match(r"^https://([^/\s]+)(/.*)?$", text)
+    if not match:
+        raise McpParseError("url must be an https:// URL")
+    host = match.group(1).split("@")[-1].split(":")[0].lower()
+    if not host:
+        raise McpParseError("url must point to a real remote host, not localhost/link-local")
+    from orchestrator.utils.governance import resolve_blocks_internal_network
+
+    denial = resolve_blocks_internal_network(host)
+    if denial:
+        raise McpParseError(f"url must point to a real remote host: {denial}")
+    return text, host
 
 
 def _command(raw: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
@@ -265,7 +319,7 @@ def _env_schema(raw: Any) -> list[dict[str, Any]]:
         if extra:
             raise McpParseError(f"env_schema entries only allow {', '.join(sorted(_ENV_FIELD_KEYS))}")
         name = str(entry.get("name") or "").strip()
-        if not _ENV_NAME.match(name):
+        if not is_env_name(name):
             raise McpParseError(f"invalid env name {name!r}")
         if name in seen:
             raise McpParseError(f"duplicate env name {name!r}")

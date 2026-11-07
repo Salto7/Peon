@@ -86,7 +86,7 @@ class OpenShellSandboxDriver(SandboxDriver):
             image=spec.image,
             workdir=spec.container_workdir or "/sandbox",
         )
-        session = OpenShellSession(info, cli=self._cli)
+        session = OpenShellSession(info, cli=self._cli, base_env=dict(spec.env or {}))
         try:
             session.load_base_commands()
         except Exception as exc:

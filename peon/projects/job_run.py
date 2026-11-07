@@ -30,7 +30,7 @@ from peon.projects.models import (
 from peon.projects.objectives import ObjectiveScheduler
 from peon.projects.roe_ops import provision_project_roe, roe_block_reason
 from peon.projects.sandbox import ProjectSandbox
-from peon.projects.target_shapes import coerce_targets
+from peon.projects.targets import coerce_targets
 from peon.projects.workspaces import resolve_job_workspace
 
 logger = logging.getLogger(__name__)
@@ -635,11 +635,15 @@ def run_job_via_agent(
 
             manager_id, _analyzer = RoleRegistry.shared().engagement_bookends()
             rid = (names[0] if names else "") or ""
-            block = memory_store.index_block(
+            detail = memory_store.index_block_detail(
                 job.project, role_id=rid, manager=bool(manager_id and rid == manager_id)
             )
+            block = detail["text"]
             if block:
                 steer_bits.insert(0, block)
+                # UI-9: record exactly what was injected (not re-derived later
+                # from a live query, which would drift as entries change).
+                emit(job, "memory", block, entries=detail["entries"])
     except Exception as exc:
         logger.warning("memory index injection failed: %s", exc, exc_info=True)
     try:

@@ -11,31 +11,23 @@ project scope), so planners and agents recall lessons instead of raw logs.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
-from django.db import transaction
-
+from orchestrator.utils.strings import collapse_ws, slugify as _slugify
 from peon.projects.models import Job, JobStatus, Project, StreamMessage, StreamMessageType
 
 logger = logging.getLogger(__name__)
 
 # Characters of transcript handed to the curator. This bounds the *LLM input*;
 # the middle of an over-long run is replaced by an explicit omission marker.
+
+def _slug(text: str) -> str:
+    return _slugify(text, max_len=40) or "task"
+
+
 TRANSCRIPT_BUDGET = 28_000
 _LINE_CAP = 260
 _MIN_TOOL_CALLS = 3
-
-# Lifecycle chatter that says nothing about how the work went.
-_NOISE = (
-    "Running roles:",
-    "sandbox docker:",
-    "verified CLIs:",
-    "Agent runtime",
-    "crewai role=",
-    "provisioned:",
-    "Woken:",
-)
 
 SYSTEM_PROMPT = (
     "You curate one agent's work log into a GIST that helps people plan "
@@ -56,7 +48,7 @@ SYSTEM_PROMPT = (
 
 
 def _one_line(text: str, cap: int = _LINE_CAP) -> str:
-    flat = " ".join((text or "").split())
+    flat = collapse_ws(text)
     return flat if len(flat) <= cap else flat[: cap - 1] + "…"
 
 
@@ -78,27 +70,36 @@ def render_transcript(job: Job, rows: list[Any], *, budget: int = TRANSCRIPT_BUD
         f"STATUS: {job.status}" + (f"  ERROR: {_one_line(job.error)}" if job.error else ""),
     ]
     if obj is not None:
-        lines.append(f"OBJECTIVE: {_one_line(obj.title)} — accept: {_one_line(obj.acceptance_criteria or '')}")
+        lines.append(
+            f"OBJECTIVE: {_one_line(obj.title)} — accept: {_one_line(obj.acceptance_criteria or '')}"
+        )
     if job.description:
         lines.append(f"BRIEF: {_one_line(job.description, 600)}")
     lines.append("--- LOG ---")
     body: list[str] = []
+    from orchestrator.utils.stream_events import event_of
+
     for row in rows:
         kind = str(row.message_type or "")
         text = str(row.content or "")
+        meta = row.metadata if isinstance(row.metadata, dict) else {}
         if kind == StreamMessageType.TOOL:
             body.append(f"$ {_one_line(text)}")
         elif kind in {StreamMessageType.STDOUT, "stdout"}:
             body.append(f"  out: {_one_line(text)}")
         elif kind in {StreamMessageType.STDERR, "stderr"}:
-            meta = row.metadata if isinstance(row.metadata, dict) else {}
             tag = "err" if meta.get("exit_code") != 0 else "note"
             body.append(f"  {tag}: {_one_line(text)}")
         elif kind == StreamMessageType.ERROR:
             body.append(f"ERROR: {_one_line(text, 400)}")
         elif kind == StreamMessageType.RESULT:
             body.append(f"RESULT: {_one_line(text, 1500)}")
-        elif text and not text.startswith(_NOISE):
+        elif kind in {StreamMessageType.STATUS, StreamMessageType.LOG, "status", "log"}:
+            # Lifecycle STATUS/LOG without a typed event is noise; keep structured
+            # orchestration (spawn, A2A, need_input, …).
+            if text and event_of(meta):
+                body.append(f"- {_one_line(text, 200)}")
+        elif text:
             body.append(f"- {_one_line(text, 200)}")
     deduped: list[str] = []
     for line in body:
@@ -113,16 +114,18 @@ def render_transcript(job: Job, rows: list[Any], *, budget: int = TRANSCRIPT_BUD
     return "\n".join(lines) + "\n" + text
 
 
-_ORCHESTRATION = ("Delegation:", "Operator input needed")
-_AGENT_MESSAGE = re.compile(r"\[(request|handoff|inform)\]")
+# Stream events that count as real work for gist worthiness (not lifecycle chatter).
+_ORCH_EVENTS = frozenset({"a2a_message", "need_input", "spawn_work"})
 
 
 def _substantive(row: Any) -> bool:
-    """A tool call, or an orchestration step (spawn, handoff, operator ask)."""
+    """A tool call, or a typed orchestration event (spawn, A2A, operator ask)."""
     if row.message_type == StreamMessageType.TOOL:
         return True
-    text = str(row.content or "")
-    return text.startswith(_ORCHESTRATION) or bool(_AGENT_MESSAGE.search(text[:120]))
+    from orchestrator.utils.stream_events import event_of
+
+    meta = row.metadata if isinstance(row.metadata, dict) else {}
+    return event_of(meta) in _ORCH_EVENTS
 
 
 def worth_curating(job: Job, rows: list[Any]) -> bool:
@@ -135,25 +138,22 @@ def worth_curating(job: Job, rows: list[Any]) -> bool:
     return work >= _MIN_TOOL_CALLS or job.status == JobStatus.FAILED or bool(job.error)
 
 
-def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")[:40] or "task"
-
-
 def _as_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [" ".join(str(v).split()) for v in value if str(v).strip()]
-    return []
+    """Collapse whitespace on each list entry; ignore non-lists."""
+    if not isinstance(value, list):
+        return []
+    return [collapse_ws(str(v)) for v in value if str(v).strip()]
 
 
 def render_gist(data: dict[str, Any]) -> tuple[str, str]:
     """``(description, body)`` for a memory entry from the curator's JSON."""
     outcome = str(data.get("outcome") or "partial").lower()
-    kind = " ".join(str(data.get("task_kind") or "task").split())
+    kind = collapse_ws(str(data.get("task_kind") or "task"))
     advice = _as_list(data.get("plan_advice"))
     desc = f"{kind}: {outcome}" + (f" — {advice[0]}" if advice else "")
     parts = [f"**Task:** {kind} (outcome: {outcome})", ""]
     if data.get("approach"):
-        parts += [f"**Approach:** {' '.join(str(data['approach']).split())}", ""]
+        parts += [f"**Approach:** {collapse_ws(str(data['approach']))}", ""]
     for label, key in (
         ("Worked", "worked"),
         ("Failed / went wrong", "failed"),
@@ -185,8 +185,33 @@ def curate_gist(job: Job, transcript: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _has_grounding(project: Project, job: Job) -> bool:
+    """Did this job actually observe/capture something, or is its gist just
+    an LLM's opinion of its own transcript?
+
+    Core 6.1: an evidence-gated lesson recall needs the *write* side gated
+    too — a job that never recorded a ``Finding`` or captured ``Evidence``
+    has nothing concrete behind whatever "lesson" its transcript implies.
+    """
+    from peon.projects.db import project_alias_or_default
+    from peon.projects.models import Evidence, Finding
+
+    alias = project_alias_or_default(project.pk)
+    return (
+        Finding.objects.using(alias).filter(job=job).exists()
+        or Evidence.objects.using(alias).filter(job=job).exists()
+    )
+
+
 def store_gist(project: Project, job: Job, data: dict[str, Any]) -> str:
-    """Persist as a platform lesson; fall back to project scope if identifiers leak."""
+    """Persist as a platform lesson; fall back to project scope if identifiers leak.
+
+    ``""`` when the job has no Finding/Evidence to ground the gist in — see
+    ``_has_grounding``. Never silently stores an ungrounded "lesson".
+    """
+    if not _has_grounding(project, job):
+        logger.info("gist for job %s skipped: no Finding/Evidence to ground it", job.pk)
+        return ""
     from peon.projects import memory_store
 
     desc, body = render_gist(data)
@@ -194,15 +219,26 @@ def store_gist(project: Project, job: Job, data: dict[str, Any]) -> str:
     role = (job.role_ids or [""])[0]
     try:
         memory_store.save(
-            None, name=name, kind="lesson", description=desc, body=body,
-            role_id=role, created_by="dream",
+            None,
+            name=name,
+            kind="lesson",
+            description=desc,
+            body=body,
+            role_id=role,
+            created_by="gist",
         )
         return "platform"
     except ValueError as exc:
         logger.info("gist %s kept project-scoped: %s", name, exc)
     memory_store.save(
-        project, name=name, kind="lesson", description=desc, body=body,
-        role_id=role, job=job, created_by="dream",
+        project,
+        name=name,
+        kind="lesson",
+        description=desc,
+        body=body,
+        role_id=role,
+        job=job,
+        created_by="gist",
     )
     return "project"
 
@@ -245,7 +281,10 @@ def process_job(project: Project, alias: str, job: Job) -> dict[str, Any]:
     data = curate_gist(job, transcript)
     if data is None:
         return {**out, "gist": False, "retry": True}
-    out["scope"] = store_gist(project, job, data)
+    scope = store_gist(project, job, data)
+    if not scope:
+        return {**out, "gist": False, "skipped": "ungrounded"}
+    out["scope"] = scope
     out["gist"] = True
     return out
 
@@ -275,7 +314,7 @@ SYNTH_SYSTEM = (
 def _platform_gists() -> list[Any]:
     from peon.projects import memory_store
 
-    entries = [e for e in memory_store._scope_qs(None) if e.name.startswith("gist-")]
+    entries = [e for e in memory_store._scope_qs(None) if e.created_by == "gist"]
     entries.sort(key=lambda e: e.updated_at, reverse=True)
     return entries
 
@@ -308,7 +347,7 @@ def synthesize_playbooks() -> dict[str, Any]:
     for pb in (data.get("playbooks") or [])[:8] if isinstance(data, dict) else []:
         if not isinstance(pb, dict):
             continue
-        kind = " ".join(str(pb.get("task_kind") or "").split())
+        kind = collapse_ws(str(pb.get("task_kind") or ""))
         if not kind:
             continue
         body_parts = [f"**When to use:** {' '.join(str(pb.get('when_to_use') or '').split())}", ""]
@@ -330,12 +369,14 @@ def synthesize_playbooks() -> dict[str, Any]:
                 kind="lesson",
                 description=f"{kind}: {' '.join(str(pb.get('when_to_use') or '').split())}"[:240],
                 body="\n".join(body_parts).strip(),
-                created_by="dream",
+                created_by="playbook",
             )
             saved.append(f"playbook-{_slug(kind)}")
         except ValueError as exc:
             logger.info("playbook %r skipped: %s", kind, exc)
-    improvements = _as_improvements(data.get("platform_improvements") if isinstance(data, dict) else None)
+    improvements = _as_improvements(
+        data.get("platform_improvements") if isinstance(data, dict) else None
+    )
     if improvements:
         try:
             memory_store.save(
@@ -359,8 +400,8 @@ def _as_improvements(value: Any) -> str:
     for item in value:
         if not isinstance(item, dict) or not str(item.get("issue") or "").strip():
             continue
-        issue = " ".join(str(item["issue"]).split())
-        fix = " ".join(str(item.get("suggested_fix") or "").split())
+        issue = collapse_ws(str(item["issue"]))
+        fix = collapse_ws(str(item.get("suggested_fix") or ""))
         seen = int(item.get("seen_in") or 0)
         lines.append(f"- **{issue}** (seen in {seen} run(s))" + (f"\n  Fix: {fix}" if fix else ""))
     return "\n".join(lines)
@@ -399,7 +440,7 @@ PROPOSE_SYSTEM = (
     "you are editing that existing one, not creating a new one. "
     "A SKILL.md starts with YAML frontmatter (--- / name / description / --- ) "
     "followed by markdown instructions. "
-    "Return JSON only: {\"proposals\":[{"
+    'Return JSON only: {"proposals":[{'
     '"kind":"role"|"skill","action":"create"|"update",'
     '"target_id":"existing role_id/skill_id, or \\"\\" for create",'
     '"title":"short label for a reviewer","rationale":"1-3 sentences: which '
@@ -419,14 +460,12 @@ def _catalog_snapshot() -> str:
     catalog = PlatformCatalog.shared()
     lines = ["ROLES:"]
     for role in catalog.list_roles():
-        goal = " ".join((role.goal or "").split())[:160]
-        lines.append(
-            f"- {role.id} (kind={role.kind}, protected={role.is_protected}): {goal}"
-        )
+        goal = collapse_ws(role.goal)[:160]
+        lines.append(f"- {role.id} (kind={role.kind}, protected={role.is_protected}): {goal}")
     lines.append("")
     lines.append("SKILLS:")
     for skill in catalog.list_skills():
-        desc = " ".join((skill.description or "").split())[:160]
+        desc = collapse_ws(skill.description)[:160]
         lines.append(f"- {skill.skill_id}: {desc}")
     return "\n".join(lines)
 
@@ -437,7 +476,7 @@ def _recent_lessons() -> str:
     entries = [
         e
         for e in memory_store._scope_qs(None)
-        if e.name.startswith("playbook-") or e.name == "platform-improvements"
+        if e.created_by in {"playbook", "dream"}
     ]
     entries.sort(key=lambda e: e.updated_at, reverse=True)
     chunks: list[str] = []
@@ -516,9 +555,9 @@ def propose_catalog_changes() -> dict[str, Any]:
             kind=kind,
             action=action,
             target_id=target_id,
-            title=" ".join(str(item.get("title") or "").split())[:200]
+            title=collapse_ws(str(item.get("title") or ""))[:200]
             or f"{action} {kind} {target_id or '(new)'}",
-            rationale=" ".join(str(item.get("rationale") or "").split()),
+            rationale=collapse_ws(str(item.get("rationale") or "")),
             payload=payload,
         )
         created.append(str(row.pk))
@@ -555,7 +594,7 @@ def apply_proposal(proposal_id: str, *, decision: str) -> dict[str, Any]:
                 kind=str(role.get("kind") or ""),
                 aliases=role.get("aliases") or [],
                 previous_id=row.target_id,
-                goal=str(role.get("goal") or ""),
+                goal="",
                 backstory=str(role.get("backstory") or ""),
             )
         elif row.kind == "skill":
@@ -564,43 +603,7 @@ def apply_proposal(proposal_id: str, *, decision: str) -> dict[str, Any]:
                 skill_id=row.target_id,
             )
         elif row.kind == "role_draft":
-            payload = row.payload or {}
-            role = payload.get("role") or {}
-            owner_kind = str(payload.get("owner_kind") or "mcp")
-            owner_id = str(payload.get("owner_id") or row.target_id or "")
-            skill_id = str(payload.get("skill_id") or owner_id)
-            skill_md = str(payload.get("skill_md") or "")
-            if not (owner_id and role.get("role_id")):
-                raise ValueError("role_draft proposal is incomplete")
-            if owner_kind == "mcp" and not skill_md:
-                raise ValueError("role_draft(mcp) proposal is missing skill_md")
-            with transaction.atomic():
-                saved_role = catalog.upsert_role(
-                    role_id=str(role.get("role_id")),
-                    kind=str(role.get("kind") or "technical"),
-                    aliases=role.get("aliases") or [],
-                    goal=str(role.get("goal") or ""),
-                    backstory=str(role.get("backstory") or ""),
-                    pending=bool(payload.get("mark_pending")),
-                )
-                if owner_kind == "mcp":
-                    catalog.upsert_skill(skill_md=skill_md, skill_id=skill_id, bindings=[])
-                    catalog.replace_bindings(
-                        owner_kind="skill",
-                        owner_id=skill_id,
-                        bindings=[{"role_id": saved_role.id, "score": 1.0, "lead": True}],
-                    )
-                    catalog.replace_bindings(
-                        owner_kind="mcp",
-                        owner_id=owner_id,
-                        bindings=[{"role_id": saved_role.id, "score": 1.0, "lead": True}],
-                    )
-                else:
-                    catalog.replace_bindings(
-                        owner_kind="skill",
-                        owner_id=owner_id,
-                        bindings=[{"role_id": saved_role.id, "score": 1.0, "lead": True}],
-                    )
+            raise ValueError("role invent disabled; reject this proposal and bind to a frozen role")
         elif row.kind == "skill_overlap":
             payload = row.payload or {}
             skill_id = str(payload.get("skill_id") or row.target_id or "")
@@ -613,11 +616,11 @@ def apply_proposal(proposal_id: str, *, decision: str) -> dict[str, Any]:
                 kind="overlaps",
                 note=row.rationale,
             )
-        elif row.kind == "mcp_binding":
+        elif row.kind in {"mcp_binding", "skill_binding"}:
             payload = row.payload or {}
             owner_id = str(payload.get("owner_id") or row.target_id or "")
             if not owner_id:
-                raise ValueError("mcp_binding proposal has no owner_id")
+                raise ValueError("binding proposal has no owner_id")
             candidates = payload.get("candidates") or []
             catalog.replace_bindings(
                 owner_kind=str(payload.get("owner_kind") or "mcp"),

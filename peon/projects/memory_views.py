@@ -28,14 +28,25 @@ def _row(e: MemoryEntry) -> dict:
 @require_GET
 @with_project_context
 def project_memory_json(request: HttpRequest, pk) -> JsonResponse:
+    """List engagement notes + platform lessons relevant to this project.
+
+    Platform lessons must overlap this project's roles/skills/tools (affinity
+    gate) — not the full archive. ``?all=1`` returns the archive.
+    """
     project = get_object_or_404(Project, pk=pk)
     key = lambda e: (e.kind, e.name)  # noqa: E731
+    want_all = (request.GET.get("all") or "").strip() in {"1", "true", "yes"}
+    if want_all:
+        platform = sorted(memory_store._scope_qs(None), key=key)
+    else:
+        platform = memory_store.relevant_platform_lessons(project, limit=16)
     return JsonResponse(
         {
             "ok": True,
             "kinds": list(memory_store.KINDS),
             "project": [_row(e) for e in sorted(memory_store._scope_qs(project), key=key)],
-            "platform": [_row(e) for e in sorted(memory_store._scope_qs(None), key=key)],
+            "platform": [_row(e) for e in platform],
+            "platform_filtered": not want_all,
         }
     )
 

@@ -37,16 +37,16 @@ Rules:
   also uses. A recon/OSINT tool that happens to include a port-scan module
   is not a network scanner just because they share that one technique;
   score that kind of incidental overlap low (well under 0.5), not high
+- the role catalog is a closed freeze list — never invent a new role_id
 - if none of the provided roles' specialties genuinely match the item's
-  primary purpose, return bindings: [] (or only low scores) — a bad forced
-  match is worse than no match, since the platform will draft a dedicated
-  new role for an item nothing existing really fits
+  primary purpose, return bindings: [] — a human will assign a frozen role;
+  the platform will NOT invent a new role
 - include every role that reasonably fits; omit or score low the ones that
   only touch the item incidentally
 - at most one binding may have lead=true (default lead for that role)
 - engagement-pm / analyzer roles only bind items clearly for that lane
 - Toolsmith/authoring-only packs may return bindings: []
-- MCP servers usually bind to technical expert roles that would call their tools
+- MCP servers usually bind to technical roles that would call their tools
 - No prose outside JSON
 """
 
@@ -162,7 +162,7 @@ def _role_briefs() -> list[dict[str, str]]:
     return briefs
 
 
-def score_roles(catalog: Iterable[Any], *, name: str) -> tuple[AffinityBinding, ...]:
+def _score_roles(catalog: Iterable[Any], *, name: str) -> tuple[AffinityBinding, ...]:
     """Strict lexical role match: every role-id/alias token must appear in
     the skill's own *name*.
 
@@ -175,7 +175,7 @@ def score_roles(catalog: Iterable[Any], *, name: str) -> tuple[AffinityBinding, 
     that kind of false positive, silently mis-assigning skills to unrelated
     roles instead of asking the LLM classifier (or drafting a new role when
     nothing really fits). Anything short of a full name match falls through
-    to :func:`classify_text_affinity`, which has the actual context needed
+    to :func:`_classify_text_affinity`, which has the actual context needed
     to discriminate.
     """
     name_words = set(_WORD_RE.findall(name.lower()))
@@ -192,7 +192,7 @@ def score_roles(catalog: Iterable[Any], *, name: str) -> tuple[AffinityBinding, 
     return tuple(bindings)
 
 
-def keyword_role_bindings(*, name: str) -> SkillAffinity:
+def _keyword_role_bindings(*, name: str) -> SkillAffinity:
     """Fast lexical role match from the skill's own name (no LLM)."""
     try:
         from orchestrator.crew.roles.catalog import load_role_catalog
@@ -200,11 +200,11 @@ def keyword_role_bindings(*, name: str) -> SkillAffinity:
         catalog = tuple(load_role_catalog())
     except Exception:
         return SkillAffinity()
-    bindings = score_roles(catalog, name=str(name or ""))
+    bindings = _score_roles(catalog, name=str(name or ""))
     return SkillAffinity(bindings=bindings, source="dynamic-keyword")
 
 
-def classify_text_affinity(
+def _classify_text_affinity(
     *,
     owner_id: str,
     owner_kind: str,
@@ -265,25 +265,37 @@ def infer_catalog_bindings(
     but real enough to put in front of a human instead of discarding
     (callers may stage these for review rather than just logging them).
     """
-    keyed = keyword_role_bindings(name=owner_id)
+    keyed = _keyword_role_bindings(name=owner_id)
     affinity = keyed
     if not affinity.bindings:
         tag_text = " ".join(str(t) for t in tags)
-        affinity = classify_text_affinity(
+        affinity = _classify_text_affinity(
             owner_id=owner_id,
             owner_kind=owner_kind,
             description=f"{description} {tag_text}".strip(),
             body=body or description,
         )
+    from orchestrator.crew.roles.catalog import FROZEN_ROLE_IDS, resolve_role_id
+
+    def _frozen_row(b: AffinityBinding, *, lead: bool) -> dict[str, Any] | None:
+        rid = resolve_role_id(b.role_id)
+        if rid not in FROZEN_ROLE_IDS:
+            return None
+        return {"role_id": rid, "score": b.score, "lead": lead}
+
     applied = [
-        {"role_id": b.role_id, "score": b.score, "lead": bool(b.lead)}
+        row
         for b in affinity.bindings
         if float(b.score) >= AFFINITY_THRESHOLD
+        for row in (_frozen_row(b, lead=bool(b.lead)),)
+        if row is not None
     ]
     candidates = [
-        {"role_id": b.role_id, "score": b.score, "lead": False}
+        row
         for b in affinity.bindings
         if float(b.score) < AFFINITY_THRESHOLD
+        for row in (_frozen_row(b, lead=False),)
+        if row is not None
     ]
     # The LLM classifier is told "engagement-pm / analyzer roles only bind
     # items clearly for that lane" but does not always follow it — a security

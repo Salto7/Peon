@@ -93,13 +93,6 @@ def parse_graph(raw: Any) -> Graph:
     return g
 
 
-def edge_kind(g: Graph, source: str, target: str) -> str:
-    for e in g.edges:
-        if e["source"] == source and e["target"] == target:
-            return e["kind"]
-    return "sequence"
-
-
 def find_cycle(g: Graph) -> list[str] | None:
     color = {n: 0 for n in g.nodes}  # 0 new, 1 on stack, 2 done
     path: list[str] = []

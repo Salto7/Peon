@@ -10,6 +10,9 @@
   }
 
   function csrfToken() {
+    if (window.PeonUI && typeof window.PeonUI.csrfToken === "function") {
+      return window.PeonUI.csrfToken() || "";
+    }
     const inp = document.querySelector("#dream-action-form input[name=csrfmiddlewaretoken]");
     if (inp && inp.value) return inp.value;
     return (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || "";
@@ -219,31 +222,66 @@
   });
 
   $("dream-clear")?.addEventListener("click", () => {
+    const cognee = !!$("dream-clear-cognee")?.checked;
+    const django_notes = !!$("dream-clear-django")?.checked;
     const reindex = !!$("dream-clear-reindex")?.checked;
+    if (!cognee && !django_notes) {
+      if (window.PeonUI && window.PeonUI.toast) {
+        window.PeonUI.toast("Pick Cognee and/or Django notes to clear", "error");
+      }
+      return;
+    }
+    const parts = [];
+    if (cognee) parts.push("every Cognee dataset");
+    if (django_notes) parts.push("all Django platform MemoryEntry notes");
+    let message = parts.join(" and ") + " will be deleted.";
+    if (django_notes) {
+      message += " Per-project engagement notes stay in each project DB.";
+    }
+    if (cognee && reindex && !django_notes) {
+      message += " Remaining Django platform notes are re-indexed into Cognee afterwards.";
+    }
     window.dispatchEvent(
       new CustomEvent("peon:confirm", {
         detail: {
-          title: "Clear Cognee?",
-          message:
-            "Every Cognee dataset (project transcripts, indexed memory) will be deleted. " +
-            "Peon's own memory notes, gists and playbooks are kept" +
-            (reindex ? " and the platform ones are re-indexed now." : "; re-index later via a dream cycle."),
-          confirmLabel: "Clear Cognee",
+          title: "Clear memory?",
+          message,
+          confirmLabel: "Clear selected",
           destructive: true,
           onConfirm: () => {
-            showOut("Clearing Cognee…");
-            postJson(urls.clear, { reindex })
+            showOut("Clearing…");
+            // Caller: dream-clear → POST /lab/dream/api/clear/.
+            // User: "delete or clear both, the cognee and the notes in django".
+            postJson(urls.clear, { cognee, django_notes, reindex })
               .then((data) => {
                 showOut(JSON.stringify(data, null, 2));
                 if (window.PeonUI && window.PeonUI.toast) {
+                  const err =
+                    data.error ||
+                    (Array.isArray(data.errors) ? data.errors.join("; ") : "") ||
+                    data.reason ||
+                    "Clear had errors";
+                  const notes = data.django_notes?.cleared;
+                  const deleted = (data.deleted || data.cognee?.deleted || []).length;
+                  const okMsg = [
+                    cognee ? `Cognee (${deleted} dataset(s))` : "",
+                    django_notes ? `Django notes (${notes ?? 0})` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
                   window.PeonUI.toast(
-                    data.ok ? "Cognee cleared" : "Cognee clear had errors",
+                    data.ok ? `Cleared: ${okMsg}` : String(err).slice(0, 200),
                     data.ok ? "ok" : "error"
                   );
                 }
                 return Promise.all([refreshStatus(), refreshCatalog()]);
               })
-              .catch(console.error);
+              .catch((err) => {
+                showOut(String(err));
+                if (window.PeonUI && window.PeonUI.toast) {
+                  window.PeonUI.toast(String(err).slice(0, 200), "error");
+                }
+              });
           },
         },
       })

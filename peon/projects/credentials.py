@@ -36,20 +36,16 @@ class CredentialSecret:
         return self.secret
 
 
-def _alias(project_id: str):
-    from peon.projects.db import ensure_project_database
-
-    return ensure_project_database(project_id)
-
-
 def list_credentials(project_id: object) -> list[dict[str, Any]]:
-    """Masked rows for UI/agent listing — never the decrypted secret."""
+    """Masked rows for UI/agent listing — never the decrypted secret.
+    """
+    from peon.projects.db import ensure_project_database
     from peon.projects.models import ProjectCredential
 
     pid = str(project_id or "").strip()
     if not pid:
         return []
-    alias = _alias(pid)
+    alias = ensure_project_database(pid)
     rows = ProjectCredential.objects.using(alias).filter(project_id=pid).order_by("name")
     return [
         {
@@ -78,18 +74,17 @@ def set_credential(
     source: str = "provided",
 ) -> dict[str, Any]:
     """Create or update one credential. A blank ``secret`` keeps the stored value."""
-    from peon.projects.models import CredentialKind, Project, ProjectCredential
+    from peon.projects.db import require_project_db
+    from peon.projects.models import CredentialKind, ProjectCredential
 
-    pid = str(project_id or "").strip()
     key = (name or "").strip()
-    if not pid or not key:
+    if not key:
         raise ValueError("project and name are required")
-    if not Project.objects.filter(pk=pid).exists():
-        raise ValueError("unknown project")
+    pid, alias = require_project_db(project_id)
     kind_norm = (kind or "password").strip().lower()
     if kind_norm not in CredentialKind.values:
         kind_norm = CredentialKind.OTHER
-    alias = _alias(pid)
+
     row, created = ProjectCredential.objects.using(alias).get_or_create(
         project_id=pid, name=key, defaults={"kind": kind_norm}
     )
@@ -105,13 +100,14 @@ def set_credential(
 
 
 def delete_credential(project_id: object, name: str) -> bool:
+    from peon.projects.db import ensure_project_database
     from peon.projects.models import ProjectCredential
 
     pid = str(project_id or "").strip()
     key = (name or "").strip()
     if not pid or not key:
         return False
-    alias = _alias(pid)
+    alias = ensure_project_database(pid)
     deleted, _ = ProjectCredential.objects.using(alias).filter(
         project_id=pid, name=key
     ).delete()
@@ -120,13 +116,14 @@ def delete_credential(project_id: object, name: str) -> bool:
 
 def get_credential_secret(project_id: object, name: str) -> CredentialSecret | None:
     """Decrypted credential for in-sandbox agent/MCP use. ``None`` if unknown."""
+    from peon.projects.db import ensure_project_database
     from peon.projects.models import ProjectCredential
 
     pid = str(project_id or "").strip()
     key = (name or "").strip()
     if not pid or not key:
         return None
-    alias = _alias(pid)
+    alias = ensure_project_database(pid)
     row = (
         ProjectCredential.objects.using(alias)
         .filter(project_id=pid, name=key)

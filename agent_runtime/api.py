@@ -291,19 +291,11 @@ class BaseCommandCache(SharedBase):
 _current: ContextVar[SandboxSession | None] = ContextVar("agent_runtime_session", default=None)
 
 
-class Session:
+class Session(SharedBase):
     """Context-local bound runtime. Tool threads inherit the context var."""
 
     def __init__(self) -> None:
         self._tls = threading.local()
-
-    _shared: Session | None = None
-
-    @classmethod
-    def shared(cls) -> Session:
-        if cls._shared is None:
-            cls._shared = cls()
-        return cls._shared
 
     @classmethod
     def current(cls) -> SandboxSession:

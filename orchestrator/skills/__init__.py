@@ -10,7 +10,6 @@ from orchestrator.skills.manifest import (
     SkillParseError,
     tokenize_allowed_tools,
 )
-from orchestrator.skills.model import SkillSpec, parse_skill_md
 from orchestrator.skills.registry import SkillRegistry
 
 __all__ = [
@@ -18,8 +17,6 @@ __all__ = [
     "SkillManifest",
     "SkillParseError",
     "SkillRegistry",
-    "SkillSpec",
-    "parse_skill_md",
     "role_skills_prompt_block",
     "tokenize_allowed_tools",
     "upsert_role_skills",

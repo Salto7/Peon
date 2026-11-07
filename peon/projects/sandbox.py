@@ -256,6 +256,24 @@ class ProjectSandbox(SharedServiceBase):
         extra_mounts = [(str(helper_pack), "/skills/helpers")] if helper_pack.is_dir() else []
         sock = str(getattr(settings, "STREAM_SOCKET_PATH", "") or "")
         volume = str(getattr(settings, "SANDBOX_SOCKETS_VOLUME", "") or "").strip()
+        env: dict[str, str] = {}
+        try:
+            from peon.projects.runtime_settings import PeonSettings
+
+            proxy = str(PeonSettings.get_str("SANDBOX_HTTP_PROXY", "") or "").strip()
+            no_proxy = str(PeonSettings.get_str("SANDBOX_NO_PROXY", "") or "").strip()
+            if proxy:
+                env["HTTP_PROXY"] = proxy
+                env["HTTPS_PROXY"] = proxy
+                env["ALL_PROXY"] = proxy
+                env["http_proxy"] = proxy
+                env["https_proxy"] = proxy
+                env["all_proxy"] = proxy
+            if no_proxy:
+                env["NO_PROXY"] = no_proxy
+                env["no_proxy"] = no_proxy
+        except Exception:
+            pass
         spec = SandboxSpec(
             project_id=project_id,
             name=runtime.resource_name(project_id, prefix=self.prefix(), shared=False),
@@ -270,6 +288,7 @@ class ProjectSandbox(SharedServiceBase):
                 "/sandbox" if runtime.id == SandboxRuntime.OPENSHELL else "/workspace"
             ),
             labels={"peon.role": "project-sandbox", "peon.project_id": project_id},
+            env=env,
             state_dir=str(runtime_state_dir()),
         )
         return runtime, spec

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import ipaddress
 import json
 import os
 import socket
@@ -32,9 +33,60 @@ import uuid
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastmcp import Client
-from fastmcp.client.transports import StdioTransport
+from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
+
+# Kept local (not imported from orchestrator.mcp.parse) — this file is baked
+# into the sandbox image standalone, outside the main codebase's import path.
+_REMOTE_TRANSPORTS = frozenset({"http", "streamable-http", "sse"})
+
+# Carrier-grade NAT (RFC 6598) — not covered by ipaddress.IPv4Address.is_private
+# on CPython as of 3.12, unlike the RFC1918 ranges it does cover.
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _is_internal_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+        or (ip.version == 4 and ip in _CGNAT)
+    )
+
+
+def _resolve_blocks_internal_network(hostname: str) -> str:
+    """Mirrors orchestrator.utils.governance.resolve_blocks_internal_network —
+    kept local for the same reason _REMOTE_TRANSPORTS is: this file is baked
+    into the sandbox image standalone. Re-checked here (not just at catalog
+    install) because this is the process that actually connects, which can
+    happen long after install and in a different container — the install-time
+    check alone leaves a DNS-rebinding window open.
+    """
+    host = (hostname or "").strip().rstrip(".")
+    if not host:
+        return "empty hostname"
+    try:
+        ipaddress.ip_address(host)
+        addrs = [host]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except OSError as exc:
+            return f"{host!r} could not be resolved ({exc}); refusing to connect"
+        addrs = sorted({info[4][0] for info in infos})
+    for addr in addrs:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return f"{host!r} resolved to an unparseable address {addr!r}"
+        if _is_internal_address(ip):
+            return f"{host!r} resolves to {addr!r}, an internal/reserved address"
+    return ""
 
 # Fixed sandbox paths (not env-driven — avoids host-controlled path injection).
 SOCK = "/tmp/peon-mcp/supervisor.sock"
@@ -82,6 +134,9 @@ def _fingerprint(spec: dict) -> str:
             "args": spec.get("args") or [],
             "cwd": spec.get("cwd") or "",
             "env": spec.get("env") or {},
+            "transport": spec.get("transport") or "stdio",
+            "url": spec.get("url") or "",
+            "headers": spec.get("headers") or {},
             "revision": spec.get("revision") or "",
         },
         sort_keys=True,
@@ -251,27 +306,47 @@ class Server:
 
     async def _own(self) -> None:
         spec = self.spec
-        cwd = str(spec.get("cwd") or "/workspace")
-        Path(cwd).mkdir(parents=True, exist_ok=True)
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        transport = StdioTransport(
-            command=str(spec.get("command") or ""),
-            args=[str(a) for a in (spec.get("args") or [])],
-            env=_child_env(spec),
-            cwd=cwd,
-            # This Server owns exactly one connection for its whole life; the
-            # transport must tear the child down on disconnect, not keep it
-            # warm for a future caller (there is no future caller — Hub is
-            # the only thing holding this transport).
-            keep_alive=False,
-            log_file=LOG_DIR / f"{_safe_token(self.mcp_id)}.log",
-        )
-        # First start may include ``uv run`` syncing deps or ``npx`` downloading
-        # the package, so allow much longer than a call before the handshake
-        # (init_timeout bounds the initialize negotiation, same as the old
-        # wait_for(session.initialize(), ...) did).
-        client = Client(transport, init_timeout=STARTUP_SECONDS)
         try:
+            kind = str(spec.get("transport") or "stdio").strip().lower()
+            if kind in _REMOTE_TRANSPORTS:
+                url = str(spec.get("url") or "")
+                # Re-checked here, not just at catalog-install time: this
+                # process is the one that actually connects, in a different
+                # container, possibly long after install — a DNS record an
+                # attacker controls (the common case for a third-party
+                # hosted MCP server) can resolve to a public IP at install
+                # time and an internal one now. Blocking resolution is fine
+                # here; this runs once per server start, not per call.
+                parsed = urlsplit(url)
+                denial = await asyncio.get_running_loop().run_in_executor(
+                    None, _resolve_blocks_internal_network, parsed.hostname or ""
+                )
+                if denial:
+                    raise ValueError(f"refusing to connect to {self.mcp_id!r}: {denial}")
+                headers = {str(k): str(v) for k, v in (spec.get("headers") or {}).items()}
+                transport_cls = SSETransport if kind == "sse" else StreamableHttpTransport
+                transport = transport_cls(url=url, headers=headers or None)
+            else:
+                cwd = str(spec.get("cwd") or "/workspace")
+                Path(cwd).mkdir(parents=True, exist_ok=True)
+                LOG_DIR.mkdir(parents=True, exist_ok=True)
+                transport = StdioTransport(
+                    command=str(spec.get("command") or ""),
+                    args=[str(a) for a in (spec.get("args") or [])],
+                    env=_child_env(spec),
+                    cwd=cwd,
+                    # This Server owns exactly one connection for its whole life; the
+                    # transport must tear the child down on disconnect, not keep it
+                    # warm for a future caller (there is no future caller — Hub is
+                    # the only thing holding this transport).
+                    keep_alive=False,
+                    log_file=LOG_DIR / f"{_safe_token(self.mcp_id)}.log",
+                )
+            # First start may include ``uv run`` syncing deps or ``npx`` downloading
+            # the package, so allow much longer than a call before the handshake
+            # (init_timeout bounds the initialize negotiation, same as the old
+            # wait_for(session.initialize(), ...) did).
+            client = Client(transport, init_timeout=STARTUP_SECONDS)
             async with AsyncExitStack() as stack:
                 await stack.enter_async_context(client)
                 self.client = client

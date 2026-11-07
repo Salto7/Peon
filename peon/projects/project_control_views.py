@@ -78,7 +78,7 @@ from peon.projects.streaming import (
     project_message_dicts,
     stream_meta,
 )
-from peon.projects.target_shapes import (
+from peon.projects.targets import (
     format_targets,
     parse_target_lines,
 )
@@ -96,22 +96,25 @@ def project_finding_triage(request: HttpRequest, pk, finding_id) -> HttpResponse
     severity = (request.POST.get("severity") or "").strip().lower()
     wants_json = request_wants_json(request)
     store = FindingStore()
+    gate_reason = ""
     if severity and not (status or action):
         # Operator re-rates the finding (status unchanged).
         updated = store.set_severity(finding, severity)
         what = f"severity {severity}"
     else:
-        updated = store.triage(finding, action, status=status)
+        raw_target = (status or action or "").strip().lower()
+        gate_reason = FindingStore.confirm_gate_reason(finding) if raw_target == "confirmed" else ""
+        updated = None if gate_reason else store.triage(finding, action, status=status)
         if updated is not None and severity:
             updated = store.set_severity(updated, severity) or updated
-        what = f"status {status or action or '(empty)'}"
+        what = gate_reason or f"status {status or action or '(empty)'}"
     if updated is None:
         if wants_json:
             return JsonResponse(
-                {"ok": False, "error": f"Invalid {what}"},
+                {"ok": False, "error": f"Invalid {what}" if not gate_reason else what},
                 status=400,
             )
-        messages.error(request, f"Unknown triage action: {what}")
+        messages.error(request, what if gate_reason else f"Unknown triage action: {what}")
     else:
         if wants_json:
             counts = FindingStore.board_counts(project)
@@ -257,7 +260,12 @@ def project_input_delete(request: HttpRequest, pk) -> HttpResponse:
 @require_http_methods(["POST"])
 @with_project_context
 def project_mcp(request: HttpRequest, pk) -> HttpResponse:
-    """Save per-project MCP env values (catalog holds names only)."""
+    """Save per-project MCP env values (catalog holds names only).
+
+    Redirects to ``#mcp`` (detail.html data-war-pane=mcp). Wired from
+    page"; "if the project is not using any mcps, mcp configuration should not
+    be visible".
+    """
     project = get_object_or_404(Project, pk=pk)
     wants_json = request_wants_json(request)
     try:
@@ -274,20 +282,24 @@ def project_mcp(request: HttpRequest, pk) -> HttpResponse:
         if wants_json:
             return JsonResponse({"ok": False, "error": str(exc)}, status=400)
         messages.error(request, str(exc))
-        return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#settings")
+        return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#mcp")
     if wants_json:
         return JsonResponse({"ok": True, "updated": n})
     if n:
         messages.success(request, f"Saved MCP configuration for {n} server(s)")
     else:
         messages.info(request, "No MCP env fields submitted")
-    return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#settings")
+    return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#mcp")
 
 
 @require_http_methods(["POST"])
 @with_project_context
 def project_credentials(request: HttpRequest, pk) -> HttpResponse:
-    """Add/update or delete one project credential (key store)."""
+    """Add/update or delete one project credential (key store).
+
+    Redirects to ``#keystore`` (detail.html data-war-pane=keystore). Wired from
+    be there (should be a seperate page in the project)".
+    """
     from peon.projects.credentials import delete_credential, set_credential
 
     project = get_object_or_404(Project, pk=pk)
@@ -323,7 +335,7 @@ def project_credentials(request: HttpRequest, pk) -> HttpResponse:
         if wants_json:
             return JsonResponse({"ok": False, "error": str(exc)}, status=400)
         messages.error(request, str(exc))
-    return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#settings")
+    return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#keystore")
 
 
 @require_http_methods(["POST"])
@@ -358,33 +370,46 @@ def project_roe(request: HttpRequest, pk) -> HttpResponseRedirect:
         return redirect(reverse("project_detail", kwargs={"pk": project.pk}) + "#assets")
 
     in_scope = parse_target_lines(request.POST.get("in_scope") or "")
-    exclusions = parse_target_lines(request.POST.get("exclusions") or "")
     seed = parse_target_lines(request.POST.get("seed") or "")
+    candidates = parse_target_lines(request.POST.get("candidates") or "")
+    # Prior save wiped exclusions=[] while merging UI into candidates — carve-outs
+    # under broad in_scope became probeable. Persist deny-list separately.
+    exclusions = parse_target_lines(request.POST.get("exclusions") or "")
     authorization = (request.POST.get("authorization") or "").strip()
+
+    # Optional authorization document upload (replaces free-text safety fields).
+    auth_file = request.FILES.get("authorization_doc")
+    if auth_file:
+        try:
+            saved = save_project_input(str(project.id), auth_file)
+            authorization = saved.get("sandbox_path") or saved.get("name") or authorization
+        except Exception as exc:
+            messages.warning(request, f"Authorization document not saved: {exc}")
+
+    roe.in_scope = in_scope
+    roe.exclusions = exclusions
+    roe.seed = seed
+    roe.candidates = candidates
+    roe.authorization_note = authorization
+    roe.testing_window_notes = ""
+    roe.abort_triggers = ""
+    roe.opsec_notes = ""
+    roe.contacts = ""
+    roe.save()
+
     if in_scope:
-        roe.in_scope = in_scope
-        roe.exclusions = exclusions
-        roe.seed = seed
-        roe.authorization_note = authorization
-        roe.save()
         messages.success(request, "Rules of Engagement updated")
     else:
-        roe.exclusions = exclusions
-        roe.seed = seed
-        if authorization:
-            roe.authorization_note = authorization
-        roe.in_scope = []
-        roe.save()
-        _, deduced = provision_project_roe(
+        deduced_roe, deduced = provision_project_roe(
             project,
             texts=[project.title, project.summary],
-            exclusions=exclusions or None,
+            exclusions=None,
             authorization=authorization,
         )
         if deduced:
             messages.info(
                 request,
-                "Rules of Engagement deduced: " + ", ".join(format_targets(project.roe.in_scope)),
+                "Rules of Engagement deduced: " + ", ".join(format_targets(deduced_roe.in_scope)),
             )
         else:
             messages.warning(
@@ -413,7 +438,7 @@ def _after_control(
     if nxt:
         return redirect(nxt)
     if deleted:
-        return redirect("project_list")
+        return redirect("home")
     return redirect("project_detail", pk=project.pk)
 
 
@@ -421,7 +446,7 @@ def _after_control(
 def projects_bulk(request: HttpRequest) -> HttpResponseRedirect:
     """Bulk project actions. GET redirects home (e.g. after an interrupted POST)."""
     if request.method == "GET":
-        return redirect("project_list")
+        return redirect("home")
 
     action = (request.POST.get("action") or "").strip().lower()
     ids = request.POST.getlist("project_ids")
@@ -445,7 +470,7 @@ def projects_bulk(request: HttpRequest) -> HttpResponseRedirect:
         )
     else:
         messages.error(request, f"Unknown bulk action: {action or '(empty)'}")
-    return redirect(_safe_next(request) or "project_list")
+    return redirect(_safe_next(request) or "home")
 
 
 @require_http_methods(["POST"])
@@ -547,12 +572,14 @@ def project_control(request: HttpRequest, pk) -> HttpResponseRedirect:
         sandbox = info.get("sandbox") or {}
         problems = []
         if sandbox.get("action") == "error":
-            problems.append(f"sandbox cleanup failed: {'; '.join(sandbox.get('errors') or []) or 'unknown'}")
+            problems.append(
+                f"sandbox cleanup failed: {'; '.join(sandbox.get('errors') or []) or 'unknown'}"
+            )
         if (info.get("workspace") or {}).get("action") in {"error", "deferred"}:
             problems.append("some workspace files remain (run prune_project_resources --apply)")
         if problems:
             messages.warning(request, f"Deleted project {title}, but {'; '.join(problems)}")
-            return redirect("project_list")
+            return redirect("home")
         extra = {
             "removed": f" (sandbox removed: {sandbox.get('name')})",
             "queued": f" (sandbox cleanup queued: {sandbox.get('name')})",
@@ -838,7 +865,21 @@ def pending_input_decide(request: HttpRequest) -> JsonResponse:
     prompt_id = str(body.get("id") or "").strip()
     decision = str(body.get("decision") or "approve").strip().lower()
     reply = str(body.get("reply") or "").strip()
-    if not prompt_id or prompt_id.startswith("obj-"):
+    kind = str(body.get("kind") or "").strip().lower()
+    from peon.projects.models import OperatorPromptKind
+    from uuid import UUID
+
+    if kind == OperatorPromptKind.BLOCKED_OBJECTIVE:
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Blocked objectives need project chat / replan; open the project.",
+            },
+            status=400,
+        )
+    try:
+        UUID(prompt_id)
+    except ValueError:
         return JsonResponse(
             {
                 "ok": False,
@@ -852,22 +893,16 @@ def pending_input_decide(request: HttpRequest) -> JsonResponse:
         prompt = get_operator_prompt(prompt_id, unresolved_only=True)
     except OperatorPrompt.DoesNotExist:
         return JsonResponse({"ok": False, "error": "prompt not found"}, status=404)
-    if decision == "deny":
-        text = reply or "DENIED by operator"
-    elif decision == "edit":
-        if not reply:
-            return JsonResponse({"ok": False, "error": "edit requires reply text"}, status=400)
-        text = reply
-    else:
-        if not reply and list(prompt.options or []):
-            # A bare "approve" cannot answer a multiple-choice question.
-            return JsonResponse(
-                {"ok": False, "error": "choose one of the options or type an answer"},
-                status=400,
-            )
-        text = reply or "APPROVED by operator"
+    if decision == "edit" and not reply:
+        return JsonResponse({"ok": False, "error": "edit requires reply text"}, status=400)
+    if decision == "approve" and not reply and list(prompt.options or []):
+        # A bare "approve" cannot answer a multiple-choice question.
+        return JsonResponse(
+            {"ok": False, "error": "choose one of the options or type an answer"},
+            status=400,
+        )
     try:
-        resolve_operator_prompt(prompt, text)
+        resolve_operator_prompt(prompt, reply, decision=decision)
     except ValueError as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=400)
     return JsonResponse(

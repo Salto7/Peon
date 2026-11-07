@@ -75,15 +75,21 @@ def save_workflow(
     lint = WorkflowLinter.lint(graph=graph, seed_inputs=seed_inputs)
     if is_published and lint["errors"]:
         raise ValueError("cannot publish a workflow with lint errors: " + "; ".join(lint["errors"]))
-    if is_published:   # publishing means "this will run": it must compile to a plan the scheduler accepts
+    if (
+        is_published
+    ):  # publishing means "this will run": it must compile to a plan the scheduler accepts
         from peon.projects.planning import validate_project_objectives
 
         try:
             validate_project_objectives(
-                compile_workflow(graph=graph, seed_inputs=seed_inputs, name=name, description=description).objectives
+                compile_workflow(
+                    graph=graph, seed_inputs=seed_inputs, name=name, description=description
+                ).objectives
             )
         except Exception as exc:
-            raise ValueError(f"cannot publish: the workflow does not compile to a runnable plan ({exc})") from exc
+            raise ValueError(
+                f"cannot publish: the workflow does not compile to a runnable plan ({exc})"
+            ) from exc
     preset, _ = WorkflowPreset.objects.update_or_create(
         workflow_id=workflow_id,
         defaults={
@@ -112,7 +118,11 @@ def designer_catalog() -> dict[str, list[dict]]:
             "id": r.id,
             "label": r.id,
             "description": (r.goal or "")[:160],
-            "role_kind": "manager" if r.is_manager else "analyzer" if r.is_analyzer else "specialist",
+            "role_kind": "manager"
+            if r.is_manager
+            else "analyzer"
+            if r.is_analyzer
+            else "specialist",
             "bound": list(skills_reg.skills_for_role(r.id))[:12],
         }
         for r in RoleRegistry.shared().list_roles()
@@ -234,8 +244,11 @@ def api_workflow_compile(request: HttpRequest) -> JsonResponse:
     plan = None
     if not lint["errors"]:
         compiled = compile_workflow(
-            graph=graph, seed_inputs=seeds, answers=body.get("answers") or {},
-            name=str(body.get("name") or ""), description=str(body.get("description") or ""),
+            graph=graph,
+            seed_inputs=seeds,
+            answers=body.get("answers") or {},
+            name=str(body.get("name") or ""),
+            description=str(body.get("description") or ""),
         )
         plan = {"objectives": compiled.preview(), "role_ids": compiled.role_ids}
     return JsonResponse({"ok": True, **lint, "plan": plan})
@@ -284,10 +297,13 @@ def api_workflow_layout(request: HttpRequest) -> JsonResponse:
 
 
 def compile_preset(preset: dict, answers: dict[str, str]):
-    """The plan a published preset runs as for one set of seed answers (raises ``WorkflowCompileError``)."""
+    """The plan a preset (published or draft) runs as for one set of seed answers (raises ``WorkflowCompileError``)."""
     return compile_workflow(
-        graph=preset["graph"], seed_inputs=preset["seed_inputs"], answers=answers,
-        name=preset["name"], description=preset["description"],
+        graph=preset["graph"],
+        seed_inputs=preset["seed_inputs"],
+        answers=answers,
+        name=preset["name"],
+        description=preset["description"],
     )
 
 

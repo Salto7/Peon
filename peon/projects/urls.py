@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from peon.projects import live_events, memory_views
+from peon.projects import live_events, memory_views, traffic_capture
 from peon.projects import project_control_views as control
 from peon.projects import project_pages as pages
 from peon.projects import terminal_views as term_views
@@ -146,4 +146,5 @@ urlpatterns = [
         control.job_steer,
         name="job_steer",
     ),
+    *traffic_capture.urlpatterns,
 ]

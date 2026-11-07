@@ -252,6 +252,28 @@ SPECS: dict[str, _S] = {
             hi=8,
         ),
         _S(
+            "ROE_CANDIDATE_CLASSIFIER_ENABLED",
+            "bool",
+            True,
+            "agent",
+            "Soft scope-hint classifier",
+            "LLM labels newly discovered RoE candidates target/third_party/"
+            "uncertain as an advisory hint only; never gates promote_candidates "
+            "or the hard scope blocklist.",
+        ),
+        _S(
+            "AGENT_CHILD_TIMEOUT_SEC",
+            "int",
+            3600,
+            "agent",
+            "Child job timeout (sec)",
+            "A spawned child Job running longer than this without finishing "
+            "raises an operator prompt on that child (watchdog sweep, "
+            "doesn't cancel it).",
+            lo=60,
+            hi=86_400,
+        ),
+        _S(
             "AGENT_RUNTIME_ENABLED",
             "bool",
             1,
@@ -311,29 +333,33 @@ SPECS: dict[str, _S] = {
             hi=5,
         ),
         # memory
+        # Cognee dreaming and Peon memory dataset?"
         _S(
             "COGNEE_ENABLED",
             "bool",
             1,
             "memory",
-            "Cognee memory enabled",
-            "Self-hosted Cognee sidecar for engagement memory + peon recall.",
+            "Cognee sidecar enabled",
+            "Master switch for the Cognee Docker HTTP API (remember/recall/improve). "
+            "Off = Peon never calls Cognee; Django MemoryEntry notes still work.",
         ),
         _S(
             "PEON_MEMORY_ENABLED",
             "bool",
             1,
             "memory",
-            "Peon memory dataset enabled",
-            "Cross-project peon dataset (recall on new project create).",
+            "Cross-project lesson recall",
+            "Bootstrap new projects from the platform `peon` Cognee dataset. "
+            "Does not store notes — Django MemoryEntry is the source of truth.",
         ),
         _S(
             "PEON_DREAMING_ENABLED",
             "bool",
             1,
             "memory",
-            "Cognee dreaming enabled",
-            "Background improve() cycles that consolidate sessions into long-term memory.",
+            "Background dreaming (improve)",
+            "Periodic Cognee improve() + gist/playbook curation. Needs the sidecar on. "
+            "Consolidates sessions; it is not the note store itself.",
         ),
         _S(
             "PEON_DREAMING_INTERVAL_S",
@@ -368,11 +394,19 @@ SPECS: dict[str, _S] = {
         ),
         _S(
             "COGNEE_EMBEDDING_MODEL",
-            "str",
+            "choice",
             "openrouter/openai/text-embedding-3-small",
             "memory",
             "Cognee embedding model",
-            "OpenRouter embedding model for cognify (chat uses LITELLM_MODEL). Requires cognee recreate.",
+            "Embedding model Cognee uses for cognify (chat still uses LITELLM_MODEL). "
+            "Requires `docker compose up -d --force-recreate cognee`.",
+            choices=(
+                "openrouter/openai/text-embedding-3-small",
+                "openrouter/openai/text-embedding-3-large",
+                "openai/text-embedding-3-small",
+                "openai/text-embedding-3-large",
+                "ollama/nomic-embed-text",
+            ),
             restart=True,
         ),
         _S(
@@ -433,6 +467,18 @@ SPECS: dict[str, _S] = {
             lo=0,
             hi=2,
             restart=True,
+        ),
+        _S(
+            "AGENT_PROJECT_BUDGET_USD",
+            "float",
+            0,
+            "llm",
+            "Project LLM budget (USD)",
+            "Raises an operator prompt on a project once its cumulative "
+            "LlmCallLog spend crosses this — advisory only, never pauses "
+            "anything. 0 disables the check.",
+            lo=0,
+            hi=100_000,
         ),
         _S(
             "LLM_PROXY_ENABLED",
@@ -535,6 +581,30 @@ SPECS: dict[str, _S] = {
             "Docker container name prefix. Requires Peon restart.",
             restart=True,
         ),
+        # Outbound HTTP(S) / SOCKS proxy for tools/MCPs inside project sandboxes.
+        # Injected as HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY on SandboxSpec.env.
+        _S(
+            "SANDBOX_HTTP_PROXY",
+            "str",
+            "",
+            "sandbox",
+            "Sandbox HTTP(S) / SOCKS proxy",
+            "Optional outbound proxy for tools and MCP clients in project sandboxes. "
+            "Accepts http://, https://, socks5://, or socks5h:// "
+            "(e.g. http://host.docker.internal:8080 or socks5://host.docker.internal:1080). "
+            "Empty = direct. Requires sandbox recreate for running projects.",
+            restart=True,
+        ),
+        _S(
+            "SANDBOX_NO_PROXY",
+            "str",
+            "localhost,127.0.0.1,::1,.local,cognee,litellm,redis,web,worker",
+            "sandbox",
+            "Sandbox NO_PROXY",
+            "Hosts that bypass the sandbox HTTP(S)/SOCKS proxy (comma-separated). "
+            "Keep Peon services here.",
+            restart=True,
+        ),
         # paths
         _S(
             "PROJECT_WORKSPACES_DIR",
@@ -628,6 +698,40 @@ SPECS: dict[str, _S] = {
             "CSRF trusted origins",
             "Comma-separated origins allowed to POST. Requires Peon restart.",
             restart=True,
+        ),
+        # integrations — notifications (Core 5.1)
+        _S(
+            "NOTIFY_WEBHOOK_URL",
+            "str",
+            "",
+            "integrations",
+            "Notification webhook URL",
+            "POSTed {\"text\": ...} on a new high/critical finding or one "
+            "confirmed. Empty disables this channel.",
+        ),
+        _S(
+            "NOTIFY_TELEGRAM_BOT_TOKEN",
+            "str",
+            "",
+            "integrations",
+            "Telegram bot token",
+            "Needs NOTIFY_TELEGRAM_CHAT_ID too. Empty disables this channel.",
+        ),
+        _S(
+            "NOTIFY_TELEGRAM_CHAT_ID",
+            "str",
+            "",
+            "integrations",
+            "Telegram chat id",
+            "Needs NOTIFY_TELEGRAM_BOT_TOKEN too. Empty disables this channel.",
+        ),
+        _S(
+            "NOTIFY_EMAIL_TO",
+            "str",
+            "",
+            "integrations",
+            "Notification email address",
+            "Uses Django's configured EMAIL_BACKEND. Empty disables this channel.",
         ),
     )
 }

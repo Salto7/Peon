@@ -39,7 +39,7 @@ type Props = {
   toolsmithUrl: string;
 };
 
-export const CATALOG_ADD_EVENT = "peon:catalog-add";
+const CATALOG_ADD_EVENT = "peon:catalog-add";
 
 type AddKind = "skill" | "mcp" | "tool" | "marketplace";
 

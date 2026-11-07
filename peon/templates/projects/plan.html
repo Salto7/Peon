@@ -4,45 +4,60 @@
 {% block content %}
 <c-page-header title="Review the plan" description="Edit agents, prompts and dependencies, then accept to start the engagement.">
   <c-slot name="crumbs">
-    <a class="hover:text-foreground" href="{% url 'project_list' %}">Projects</a>{% icon "chevron-right" "size-3" %}<span>{{ project.title }}</span>{% icon "chevron-right" "size-3" %}<span>Plan</span>
+    <a class="hover:text-foreground" href="{% url 'home' %}">Home</a>{% icon "chevron-right" "size-3" %}<span>{{ project.title }}</span>{% icon "chevron-right" "size-3" %}<span>Plan</span>
   </c-slot>
   <c-button variant="outline" id="plan-add-agent">{% icon "plus" %} Add agent</c-button>
   <c-button variant="outline" id="plan-save">Save draft</c-button>
   <c-button id="plan-accept">{% icon "play" %} Accept & start</c-button>
 </c-page-header>
 
-<div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
-  <section class="min-w-0 overflow-hidden rounded-xl border bg-card shadow-sm" aria-labelledby="plan-graph-heading">
-    <div class="flex items-center justify-between border-b px-4 py-3">
-      <h2 id="plan-graph-heading" class="text-sm font-semibold">Agent graph</h2>
-      <p class="text-xs text-muted-foreground" id="plan-status">Click a node to edit its role, prompt and dependencies.</p>
-    </div>
-    <div id="plan-graph-host" class="agent-tree h-[max(28rem,calc(100dvh-12rem))] overflow-auto" aria-label="Editable agent plan graph"></div>
-  </section>
+<section class="space-y-3" aria-labelledby="plan-layout-heading">
+  <div>
+    <h2 id="plan-layout-heading" class="text-sm font-semibold tracking-tight">Agent graph</h2>
+    <p class="mt-0.5 text-xs text-muted-foreground">Click a node to edit role, prompt, skills and dependencies.</p>
+  </div>
+  <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
+    <section class="min-w-0 overflow-hidden rounded-xl border bg-card shadow-sm" aria-labelledby="plan-graph-heading">
+      <div class="flex items-center justify-between gap-3 border-b px-4 py-3">
+        <h3 id="plan-graph-heading" class="text-sm font-semibold">Canvas</h3>
+        <p class="text-xs text-muted-foreground" id="plan-status">Ready</p>
+      </div>
+      <div id="plan-graph-host" class="agent-tree h-[max(28rem,calc(100dvh-12rem))] overflow-auto" aria-label="Editable agent plan graph"></div>
+    </section>
 
-  <aside id="plan-editor-aside" hidden class="space-y-4 rounded-xl border bg-card p-4 shadow-sm xl:sticky xl:top-6 xl:self-start">
-    <h3 id="plan-edit-title" class="text-sm font-semibold">Edit agent</h3>
-    <c-field label="Role" for="plan-edit-role"><select id="plan-edit-role" class="ui-select"></select></c-field>
-    <c-field label="Title" for="plan-edit-name"><input id="plan-edit-name" type="text" class="ui-input"></c-field>
-    <c-field label="Prompt" for="plan-edit-prompt"><textarea id="plan-edit-prompt" rows="7" class="ui-textarea"></textarea></c-field>
-    <fieldset class="space-y-1.5">
-      <legend class="ui-label">Skills</legend>
-      <div id="plan-edit-skills" class="skill-check-list"></div>
-    </fieldset>
-    <c-field label="Commands" for="plan-edit-commands" help="One per line."><textarea id="plan-edit-commands" rows="3" class="ui-textarea font-mono"></textarea></c-field>
-    <c-field label="Depends on" for="plan-edit-deps" help="Objective numbers, comma-separated."><input id="plan-edit-deps" type="text" class="ui-input" placeholder="1, 2"></c-field>
-    <div class="flex flex-wrap justify-end gap-2 border-t pt-4">
-      <c-button variant="ghost" size="sm" id="plan-edit-close">Close</c-button>
-      <c-button variant="outline" size="sm" id="plan-edit-remove" class="text-destructive hover:text-destructive">Remove</c-button>
-      <c-button size="sm" id="plan-edit-apply">Apply</c-button>
-    </div>
-  </aside>
-</div>
+    <aside id="plan-editor-aside" hidden class="space-y-4 rounded-xl border bg-card p-4 shadow-sm xl:sticky xl:top-6 xl:self-start">
+      <header class="space-y-1 border-b pb-3">
+        <h3 id="plan-edit-title" class="text-sm font-semibold">Edit agent</h3>
+        <p class="text-xs text-muted-foreground">Changes apply to the draft until you accept.</p>
+      </header>
+      <c-field label="Role" for="plan-edit-role"><select id="plan-edit-role" class="ui-select"></select></c-field>
+      <c-field label="Title" for="plan-edit-name"><input id="plan-edit-name" type="text" class="ui-input"></c-field>
+      <c-field label="Prompt" for="plan-edit-prompt"><textarea id="plan-edit-prompt" rows="7" class="ui-textarea"></textarea></c-field>
+      <fieldset class="space-y-1.5">
+        <legend class="ui-label">Skills</legend>
+        <div id="plan-edit-skills" class="skill-check-list"></div>
+      </fieldset>
+      <c-field label="Commands" for="plan-edit-commands" help="One per line."><textarea id="plan-edit-commands" rows="3" class="ui-textarea font-mono"></textarea></c-field>
+      <c-field label="Depends on" for="plan-edit-deps" help="Objective numbers, comma-separated."><input id="plan-edit-deps" type="text" class="ui-input" placeholder="1, 2"></c-field>
+      <div class="flex flex-wrap justify-end gap-2 border-t pt-4">
+        <c-button variant="ghost" size="sm" id="plan-edit-close">Close</c-button>
+        <c-button variant="outline" size="sm" id="plan-edit-remove" class="text-destructive hover:text-destructive">Remove</c-button>
+        <c-button size="sm" id="plan-edit-apply">Apply</c-button>
+      </div>
+    </aside>
+  </div>
+</section>
 
-<c-card title="Schedules" description="Cron or interval cadence for re-firing durable work." id="plan-schedules-panel" class="mt-6">
-  <c-slot name="actions"><c-button variant="outline" size="sm" id="plan-add-schedule">{% icon "plus" %} Add interval schedule</c-button></c-slot>
-  <div id="plan-schedules-host"></div>
-</c-card>
+<section class="mt-8 space-y-3" aria-labelledby="plan-schedules-heading">
+  <div>
+    <h2 id="plan-schedules-heading" class="text-sm font-semibold tracking-tight">Schedules</h2>
+    <p class="mt-0.5 text-xs text-muted-foreground">Cron or interval cadence for re-firing durable work.</p>
+  </div>
+  <c-card id="plan-schedules-panel">
+    <c-slot name="actions"><c-button variant="outline" size="sm" id="plan-add-schedule">{% icon "plus" %} Add interval schedule</c-button></c-slot>
+    <div id="plan-schedules-host"></div>
+  </c-card>
+</section>
 
 {{ plan_graph|json_script:"plan-graph-data" }}
 {% endblock %}

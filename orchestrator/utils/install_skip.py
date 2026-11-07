@@ -71,18 +71,6 @@ def skip_rel_path(rel: str, *, skip_hidden: bool = False) -> bool:
     return False
 
 
-def skip_path(path: Path, *, root: Path | None = None, skip_hidden: bool = False) -> bool:
-    """Skip an on-disk path, optionally relative to ``root``."""
-    target = Path(path)
-    if root is not None:
-        try:
-            rel = target.relative_to(Path(root)).as_posix()
-        except ValueError:
-            rel = target.name
-        return skip_rel_path(rel, skip_hidden=skip_hidden)
-    return skip_rel_path(target.as_posix(), skip_hidden=skip_hidden)
-
-
 def copytree_ignore(*, skip_hidden: bool = False):
     """``shutil.copytree`` ignore callable using the shared rules."""
 
@@ -113,13 +101,8 @@ def public_manifest_name(name: str) -> str:
 
 
 __all__ = [
-    "JUNK_DIR_NAMES",
     "copytree_ignore",
-    "is_hidden_name",
-    "is_junk_dir_name",
     "public_manifest_name",
     "skip_dir_name",
-    "skip_file_name",
-    "skip_path",
     "skip_rel_path",
 ]

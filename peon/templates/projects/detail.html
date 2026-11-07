@@ -15,7 +15,8 @@
   <c-nav-item href="#attack" icon="network" label="Attack surface" data-war-nav="attack" />
   <c-nav-item href="#memory" icon="brain" label="Memory" data-war-nav="memory" />
   <c-nav-item href="#reports" icon="scroll-text" label="Reports & files" data-war-nav="reports" />
-  <c-nav-item href="#settings" icon="plug" label="MCP configuration" data-war-nav="settings" />
+  <c-nav-item href="#keystore" icon="lock" label="Key store" data-war-nav="keystore" />
+  {% if show_mcp_nav %}<c-nav-item href="#mcp" icon="plug" label="MCP configuration" data-war-nav="mcp" />{% endif %}
 </c-nav-section>
 {% endblock %}
 
@@ -164,53 +165,13 @@
     <div data-island="results-board" data-props-ctx="console-ctx" data-props-ops="console-ops"></div>
   </div>
 
-  {# ── Scope & assets (Rules of Engagement) ─────────────────── #}
-  <div data-war-pane="assets" hidden class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
-    <c-card title="Rules of Engagement" description="Values in scope authorize agents to act on them. Use type:value hints where useful." id="roe">
-      <form method="post" action="{% url 'project_roe' project.pk %}" class="space-y-4">
-        {% csrf_token %}
-        <input type="hidden" name="roe_action" value="save">
-        <c-field label="Seed / intent" for="seed" help="Optional — company name, person, sample path…">
-          <textarea id="seed" name="seed" rows="3" class="ui-textarea font-mono" placeholder="domain:acme.com&#10;person:Alice">{% if roe %}{% for t in roe.seed %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
-{% endfor %}{% endif %}</textarea>
-        </c-field>
-        <c-field label="In-scope targets" for="in_scope">
-          <textarea id="in_scope" name="in_scope" rows="5" class="ui-textarea font-mono" placeholder="ip:10.0.0.5&#10;domain:app.lab">{% if roe %}{% for t in roe.in_scope %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
-{% endfor %}{% endif %}</textarea>
-        </c-field>
-        <c-field label="Exclusions" for="exclusions" help="Same format; never touched by agents.">
-          <textarea id="exclusions" name="exclusions" rows="3" class="ui-textarea font-mono">{% if roe %}{% for t in roe.exclusions %}{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}
-{% endfor %}{% endif %}</textarea>
-        </c-field>
-        <c-field label="Authorization note" for="authorization">
-          <input id="authorization" name="authorization" class="ui-input" value="{% if roe %}{{ roe.authorization_note }}{% endif %}">
-        </c-field>
-        <div class="flex justify-end"><c-button type="submit">Save rules</c-button></div>
-      </form>
-    </c-card>
-
-    <c-card title="Candidates" description="Assets discovered during the engagement. Not authorized until promoted into scope." id="roe-candidates-card" flush class="xl:self-start">
-      {% if roe and roe.candidates %}
-      <form method="post" action="{% url 'project_roe' project.pk %}">
-        {% csrf_token %}
-        <input type="hidden" name="roe_action" value="promote">
-        <ul class="max-h-96 divide-y overflow-y-auto">
-          {% for t in roe.candidates %}
-          <li>
-            <label class="flex cursor-pointer items-center gap-3 px-5 py-2.5 hover:bg-muted/40">
-              <input type="checkbox" class="ui-checkbox" name="promote_idx" value="{{ forloop.counter0 }}">
-              <code class="truncate font-mono text-xs">{% if t.value %}{{ t.type }}:{{ t.value }}{% else %}{{ t }}{% endif %}</code>
-            </label>
-          </li>
-          {% endfor %}
-        </ul>
-        <div class="flex justify-end gap-2 border-t px-5 py-3">
-          <c-button variant="ghost" size="sm" type="submit" name="promote_all" value="1">Promote all</c-button>
-          <c-button variant="outline" size="sm" type="submit">Promote selected</c-button>
-        </div>
-      </form>
+  <div data-war-pane="assets" hidden>
+    <c-card title="Rules of Engagement" description="In scope (green), candidates (yellow), seed (blue). Optional authorization document upload." id="roe">
+      {% url 'project_roe' project.pk as roe_save_url %}
+      {% if roe %}
+        {% island "roe-editor" element_id="roe-editor" actionUrl=roe_save_url seed=roe.seed inScope=roe.in_scope exclusions=roe.exclusions candidates=roe.candidates authorization=roe.authorization_note %}
       {% else %}
-      <c-empty icon="target" title="No candidates yet">Discovered assets appear here for promotion into scope.</c-empty>
+        {% island "roe-editor" element_id="roe-editor" actionUrl=roe_save_url %}
       {% endif %}
     </c-card>
   </div>
@@ -276,9 +237,10 @@
     </c-card>
   </div>
 
-  {# ── MCP configuration (per-project server settings) ───────── #}
-  <div data-war-pane="settings" hidden>
-    <c-card title="MCP server configuration" description="Servers run inside this project's sandbox. Each one declares what it needs — secrets, toggles, choices, or plain config — set the values here. Reach host services via host.docker.internal." id="project-mcp">
+  {# ── MCP configuration (only when show_mcp_nav) ─────────────── #}
+  {% if show_mcp_nav %}
+  <div data-war-pane="mcp" hidden>
+    <c-card title="MCP server configuration" description="Servers bound to this project's roles run inside the sandbox. Set env here — secrets stay project-local. Reach host services via host.docker.internal." id="project-mcp">
       <c-slot name="actions"><c-button variant="outline" size="sm" href="{% url 'catalog' %}#mcp">Manage catalog</c-button></c-slot>
       {% if mcp_configs %}
       <form method="post" action="{% url 'project_mcp' project.pk %}" class="space-y-3">
@@ -340,57 +302,72 @@
         <div class="flex justify-end"><c-button type="submit">Save MCP settings</c-button></div>
       </form>
       {% else %}
-      <c-empty icon="server" title="No MCP servers in the catalog">Add one under Catalog → MCP, bind it to a technical role, then configure it here.</c-empty>
+      <c-empty icon="server" title="No MCP servers for this project">Bind an MCP to a role used by this engagement under Catalog → MCP.</c-empty>
       {% endif %}
     </c-card>
   </div>
+  {% endif %}
 
-  {# ── Project key store (credentials any role in the project can use) ── #}
-  <div data-war-pane="settings" hidden>
-    <c-card title="Key store" description="Credentials any agent in this project can use (list_credentials / get_credential). Secret values are never shown again once saved.">
-      {% if credentials %}
-      <table class="ui-table mb-4">
-        <thead><tr><th>Name</th><th>Kind</th><th>Username</th><th>Domain</th><th>Set</th><th></th></tr></thead>
-        <tbody>
-          {% for c in credentials %}
-          <tr>
-            <td class="font-mono">{{ c.name }}</td>
-            <td>{{ c.kind }}</td>
-            <td>{{ c.username|default:"—" }}</td>
-            <td>{{ c.domain|default:"—" }}</td>
-            <td>{% if c.is_set %}<c-badge tone="success">Yes</c-badge>{% else %}<c-badge tone="warning">No</c-badge>{% endif %}</td>
-            <td>
-              <form method="post" action="{% url 'project_credentials' project.pk %}" onsubmit="return confirm('Delete credential {{ c.name }}?');">
-                {% csrf_token %}
-                <input type="hidden" name="action" value="delete">
-                <input type="hidden" name="name" value="{{ c.name }}">
-                <c-button variant="outline" size="sm" type="submit">Delete</c-button>
-              </form>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% endif %}
-      <form method="post" action="{% url 'project_credentials' project.pk %}" class="grid gap-3 sm:grid-cols-2">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="save">
-        <c-field label="Name" for="cred-name"><input id="cred-name" name="name" required placeholder="svc-sql01" class="ui-input font-mono"></c-field>
-        <c-field label="Kind" for="cred-kind">
-          <select id="cred-kind" name="kind" class="ui-select">
-            {% for value, label in credential_kinds %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
-          </select>
-        </c-field>
-        <c-field label="Username" for="cred-user"><input id="cred-user" name="username" class="ui-input"></c-field>
-        <c-field label="Domain" for="cred-domain"><input id="cred-domain" name="domain" class="ui-input"></c-field>
-        <c-field label="Secret" for="cred-secret" help="Password, hash, ticket, key, or token."><input id="cred-secret" name="secret" type="password" autocomplete="off" class="ui-input"></c-field>
-        <c-field label="Notes" for="cred-notes"><input id="cred-notes" name="notes" class="ui-input"></c-field>
-        <div class="sm:col-span-2 flex justify-end"><c-button type="submit">Save credential</c-button></div>
-      </form>
+  <div data-war-pane="keystore" hidden class="space-y-6">
+    {% url 'project_credentials' project.pk as creds_url %}
+    {% island "keystore-editor" element_id="keystore-editor" actionUrl=creds_url kinds=credential_kinds credentials=credentials %}
+
+    <c-card title="Browser traffic capture" description="Optional Chrome extension that records request/response pairs from a tab you start capture on, and posts them into this project as Evidence (kind=traffic). Use it when agents need authenticated browser flows you already logged into — no MITM proxy, no session cookie shared with Peon; only a project-scoped bearer token.">
+      <dl class="grid gap-3 sm:grid-cols-2">
+        <div>
+          <dt class="text-xs text-muted-foreground">Server URL</dt>
+          <dd class="mt-1 font-mono text-sm" id="ext-server-url">{{ request.scheme }}://{{ request.get_host }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs text-muted-foreground">Project ID</dt>
+          <dd class="mt-1 font-mono text-sm">{{ project.pk }}</dd>
+        </div>
+        <div class="sm:col-span-2">
+          <dt class="text-xs text-muted-foreground">Capture token</dt>
+          <dd class="mt-1 flex flex-wrap items-center gap-2">
+            <code id="ext-token" class="font-mono text-sm">(click Show)</code>
+            <c-button id="ext-token-show" variant="outline" size="sm" type="button">Show</c-button>
+            <c-button id="ext-token-regen" variant="outline" size="sm" type="button">Regenerate</c-button>
+          </dd>
+        </div>
+      </dl>
+      <ol class="mt-3 list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
+        <li>In Chrome: <code>chrome://extensions</code> → Developer mode → Load unpacked → select the repo's <code>browser-extension/</code> folder (not a zip).</li>
+        <li>Paste Server URL, Project ID, and token into the extension popup → Save.</li>
+        <li>On the target tab, Start capture → browse → Stop. Traffic lands as Evidence.</li>
+      </ol>
     </c-card>
   </div>
 </div>
 {% csrf_token %}
+{% url 'traffic_capture_token' project.pk as ext_token_url %}
+{% url 'traffic_capture_token_regenerate' project.pk as ext_regen_url %}
+{{ ext_token_url|json_script:"ext-token-url" }}
+{{ ext_regen_url|json_script:"ext-regen-url" }}
+<script>
+(function () {
+  const tokenEl = document.getElementById("ext-token");
+  const showBtn = document.getElementById("ext-token-show");
+  const regenBtn = document.getElementById("ext-token-regen");
+  if (!tokenEl || !showBtn || !regenBtn) return;
+  const tokenUrl = JSON.parse(document.getElementById("ext-token-url").textContent);
+  const regenUrl = JSON.parse(document.getElementById("ext-regen-url").textContent);
+  function csrf() {
+    return document.querySelector("input[name=csrfmiddlewaretoken]")?.value || "";
+  }
+  showBtn.addEventListener("click", async () => {
+    const res = await fetch(tokenUrl, { headers: { Accept: "application/json" } });
+    const data = await res.json();
+    tokenEl.textContent = data.token || "(error)";
+  });
+  regenBtn.addEventListener("click", async () => {
+    if (!confirm("Regenerate the token? The extension needs the new one — old captures stop working.")) return;
+    const res = await fetch(regenUrl, { method: "POST", headers: { "X-CSRFToken": csrf() } });
+    const data = await res.json();
+    tokenEl.textContent = data.token || "(error)";
+  });
+})();
+</script>
 {% endblock %}
 
 {% block scripts %}

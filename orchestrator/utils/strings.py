@@ -9,11 +9,61 @@ from typing import Any
 
 _TRUE = frozenset(["1", "true", "yes", "y", "on"])
 _FALSE = frozenset(["0", "false", "no", "n", "off"])
-_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 _KEBAB = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
 _JSON_OBJ = re.compile(r"\{.*\}", re.S)
 _THINK = frozenset(["thinking", "reasoning", "thought"])
+
+
+def is_env_name(name: str) -> bool:
+    """True for a POSIX-ish env var name (``FOO_BAR``, ``_x``)."""
+    return bool(ENV_NAME_RE.match((name or "").strip()))
+
+
+def normalize_env_map(raw: Any) -> dict[str, str]:
+    """Keep non-empty ``str(k)→str(v)`` pairs; drop None/blank values."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        name = str(key or "").strip()
+        if name:
+            out[name] = text
+    return out
+
+
+def expand_id_tokens(raw: str, *, min_len: int = 2) -> set[str]:
+    """Lower/strip an id and split on ``/ _ . -`` into affinity tokens."""
+    tokens: set[str] = set()
+    t = str(raw or "").strip().lower()
+    if len(t) < min_len:
+        return tokens
+    tokens.add(t)
+    for part in t.replace("/", " ").replace("_", "-").replace(".", " ").split("-"):
+        p = part.strip()
+        if len(p) >= min_len:
+            tokens.add(p)
+            tokens.update(w for w in p.split() if len(w) >= min_len)
+    return tokens
+
+
+def collapse_ws(text: str | None) -> str:
+    """Collapse runs of whitespace to a single space (trim ends)."""
+    return " ".join((text or "").split())
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(name: str, *, max_len: int = 64) -> str:
+    """Lowercase kebab slug for memory/gist names."""
+    return _SLUG_RE.sub("-", (name or "").strip().lower()).strip("-")[:max_len]
 
 
 def is_kebab(value: str) -> bool:

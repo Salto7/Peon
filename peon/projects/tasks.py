@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "peon.config.settings")
 
@@ -156,47 +157,40 @@ def enqueue_sandbox_cleanup(project_id: str, *, runtime_id: str = "") -> dict:
     return ProjectSandbox.remove(pid, runtime_id=rid)
 
 
-@dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
-def decommission_lab(force: bool = False) -> None:
-    """Remove the lab container on the worker.
+def _run_lab_action(label: str, method: str, force: bool) -> None:
+    """Shared body for the lab lifecycle actors below: run, log, never raise.
 
-    Same rationale as project sandbox cleanup: ``docker rm`` on web can drop
-    the browser connection mid-request.
+    ``docker rm``/recreate on the worker can flap Docker's network, so these
+    always run off the web request (same rationale as project sandbox
+    cleanup) — the three actors differ only in which ``LabService`` method
+    they call.
     """
     close_old_connections()
     try:
-        result = LabService.shared().decommission(force=force)
-        logger.info("decommission_lab(force=%s) → %s", force, result)
+        result = getattr(LabService.shared(), method)(force=force)
+        logger.info("%s(force=%s) → %s", label, force, result)
     except Exception:
-        logger.exception("decommission_lab failed")
+        logger.exception("%s failed", label)
     finally:
         close_old_connections()
+
+
+@dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
+def decommission_lab(force: bool = False) -> None:
+    """Remove the lab container on the worker."""
+    _run_lab_action("decommission_lab", "decommission", force)
 
 
 @dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
 def reset_lab(force: bool = False) -> None:
-    """Decommission then set up fresh, on the worker (same docker-flap rationale)."""
-    close_old_connections()
-    try:
-        result = LabService.shared().reset(force=force)
-        logger.info("reset_lab(force=%s) → %s", force, result)
-    except Exception:
-        logger.exception("reset_lab failed")
-    finally:
-        close_old_connections()
+    """Decommission then set up fresh, on the worker."""
+    _run_lab_action("reset_lab", "reset", force)
 
 
 @dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=120_000)
 def reboot_lab(force: bool = False) -> None:
-    """Restart the lab container in place, on the worker (same docker-flap rationale)."""
-    close_old_connections()
-    try:
-        result = LabService.shared().reboot(force=force)
-        logger.info("reboot_lab(force=%s) → %s", force, result)
-    except Exception:
-        logger.exception("reboot_lab failed")
-    finally:
-        close_old_connections()
+    """Restart the lab container in place, on the worker."""
+    _run_lab_action("reboot_lab", "reboot", force)
 
 
 def _enqueue_lab_action(actor, inline, *, force: bool) -> dict:
@@ -339,38 +333,89 @@ def _rearm(actor, name: str, token: str, delay_ms: int) -> None:
     actor.send_with_options(args=(token,), delay=delay_ms)
 
 
+def _run_scheduler_tick(
+    *,
+    actor,
+    key: str,
+    token: str,
+    delay_ms: int,
+    label: str,
+    work: Callable[[], None],
+    rearm_enabled: Callable[[], bool] = _dramatiq_enabled,
+) -> None:
+    """Shared body for a self-requeuing periodic actor: run ``work``, then re-arm.
+
+    Every scheduler in this module (durable/dream/child-timeout) is "do one
+    sweep, log if it did anything, re-queue self" with the same connection
+    cleanup and error handling either side — this is that skeleton, written
+    once.
+    """
+    close_old_connections()
+    try:
+        work()
+    except Exception:
+        logger.exception("%s failed", label)
+    finally:
+        close_old_connections()
+        if rearm_enabled():
+            try:
+                _rearm(actor, key, token, delay_ms)
+            except Exception:
+                logger.warning("%s re-arm failed", label, exc_info=True)
+
+
+def _ensure_scheduler(
+    actor,
+    key: str,
+    initial_delay_ms: int,
+    *,
+    label: str,
+    enabled: Callable[[], bool] = lambda: True,
+    force: bool = False,
+) -> bool:
+    """Shared body for an ``ensure_*_scheduler`` boot hook."""
+    if not _dramatiq_enabled():
+        return False
+    if not enabled():
+        return False
+    try:
+        return _arm(actor, key, initial_delay_ms, force=force)
+    except Exception:
+        logger.warning("%s failed", label, exc_info=True)
+        return False
+
+
 @dramatiq.actor(queue_name="peon.jobs", max_retries=1, time_limit=120_000)
 def durable_scheduler(token: str = "") -> None:
     """Fire due ProjectSchedule rows (cron/interval), then re-queue self."""
-    close_old_connections()
-    try:
+
+    def work() -> None:
         from peon.projects.schedules import fire_due_schedules
 
         result = fire_due_schedules()
         if result.get("fired"):
             logger.info("durable_scheduler fired %s job(s)", len(result["fired"]))
-    except Exception:
-        logger.exception("durable_scheduler failed")
-    finally:
-        close_old_connections()
-        if _dramatiq_enabled():
-            try:
-                _rearm(durable_scheduler, "durable", token, _DURABLE_SCHEDULER_MS)
-            except Exception:
-                logger.warning("durable_scheduler re-arm failed", exc_info=True)
+
+    _run_scheduler_tick(
+        actor=durable_scheduler,
+        key="durable",
+        token=token,
+        delay_ms=_DURABLE_SCHEDULER_MS,
+        label="durable_scheduler",
+        work=work,
+    )
 
 
 def ensure_durable_scheduler(*, force: bool = False) -> bool:
     """Start the durable schedule scanner if no chain is alive (``force``: always)."""
-    if not _dramatiq_enabled():
-        return False
-    if not getattr(settings, "DURABLE_SCHEDULER_ENABLED", True):
-        return False
-    try:
-        return _arm(durable_scheduler, "durable", 5_000, force=force)
-    except Exception:
-        logger.warning("ensure_durable_scheduler failed", exc_info=True)
-        return False
+    return _ensure_scheduler(
+        durable_scheduler,
+        "durable",
+        5_000,
+        label="ensure_durable_scheduler",
+        enabled=lambda: getattr(settings, "DURABLE_SCHEDULER_ENABLED", True),
+        force=force,
+    )
 
 
 def _dream_interval_ms() -> int:
@@ -400,35 +445,35 @@ def _dreaming_enabled() -> bool:
 @dramatiq.actor(queue_name="peon.jobs", max_retries=1, time_limit=600_000)
 def dream_scheduler(token: str = "") -> None:
     """Run a Cognee improve (dream) cycle, then re-queue self."""
-    close_old_connections()
-    try:
+
+    def work() -> None:
         from orchestrator.crew.dreaming import DreamingService
 
         result = DreamingService.shared().run_cycle()
         if result.get("count"):
             logger.info("dream_scheduler improved %s session(s)", result.get("count"))
-    except Exception:
-        logger.exception("dream_scheduler failed")
-    finally:
-        close_old_connections()
-        if _dramatiq_enabled() and _dreaming_enabled():
-            try:
-                _rearm(dream_scheduler, "dream", token, _dream_interval_ms())
-            except Exception:
-                logger.warning("dream_scheduler re-arm failed", exc_info=True)
+
+    _run_scheduler_tick(
+        actor=dream_scheduler,
+        key="dream",
+        token=token,
+        delay_ms=_dream_interval_ms(),
+        label="dream_scheduler",
+        work=work,
+        rearm_enabled=lambda: _dramatiq_enabled() and _dreaming_enabled(),
+    )
 
 
 def ensure_dream_scheduler(*, force: bool = False) -> bool:
     """Start the Cognee dream scanner if no chain is alive (``force``: always)."""
-    if not _dramatiq_enabled():
-        return False
-    if not _dreaming_enabled():
-        return False
-    try:
-        return _arm(dream_scheduler, "dream", 30_000, force=force)
-    except Exception:
-        logger.warning("ensure_dream_scheduler failed", exc_info=True)
-        return False
+    return _ensure_scheduler(
+        dream_scheduler,
+        "dream",
+        30_000,
+        label="ensure_dream_scheduler",
+        enabled=_dreaming_enabled,
+        force=force,
+    )
 
 
 @dramatiq.actor(queue_name="peon.jobs", max_retries=3, time_limit=600_000)
@@ -461,3 +506,131 @@ def enqueue_catalog_resweep() -> dict:
     from peon.projects.platform_catalog import PlatformCatalog
 
     return {"ok": True, **PlatformCatalog.shared().resweep_unbound_owners()}
+
+
+_CHILD_TIMEOUT_WATCHDOG_MS = 300_000  # 5 min; AGENT_CHILD_TIMEOUT_SEC sets the budget itself
+
+
+@dramatiq.actor(queue_name="peon.jobs", max_retries=1, time_limit=120_000)
+def child_timeout_watchdog(token: str = "") -> None:
+    """Flag spawned children over budget (Core 1.4), then re-queue self."""
+
+    def work() -> None:
+        from peon.projects.a2a import sweep_child_timeouts
+
+        result = sweep_child_timeouts()
+        if result.get("flagged"):
+            logger.info("child_timeout_watchdog flagged %s job(s)", len(result["flagged"]))
+
+    _run_scheduler_tick(
+        actor=child_timeout_watchdog,
+        key="child_timeout",
+        token=token,
+        delay_ms=_CHILD_TIMEOUT_WATCHDOG_MS,
+        label="child_timeout_watchdog",
+        work=work,
+    )
+
+
+def ensure_child_timeout_watchdog(*, force: bool = False) -> bool:
+    """Start the child-timeout sweep if no chain is alive (``force``: always)."""
+    return _ensure_scheduler(
+        child_timeout_watchdog, "child_timeout", 10_000, label="ensure_child_timeout_watchdog", force=force
+    )
+
+
+_PROJECT_BUDGET_WATCHDOG_MS = 900_000  # 15 min; AGENT_PROJECT_BUDGET_USD sets the budget itself
+
+
+@dramatiq.actor(queue_name="peon.jobs", max_retries=1, time_limit=120_000)
+def project_budget_watchdog(token: str = "") -> None:
+    """Flag projects over their configured LLM spend (Core 2.5), then re-queue self."""
+
+    def work() -> None:
+        from peon.projects.lifecycle import sweep_project_budgets
+
+        result = sweep_project_budgets()
+        if result.get("flagged"):
+            logger.info("project_budget_watchdog flagged %s project(s)", len(result["flagged"]))
+
+    _run_scheduler_tick(
+        actor=project_budget_watchdog,
+        key="project_budget",
+        token=token,
+        delay_ms=_PROJECT_BUDGET_WATCHDOG_MS,
+        label="project_budget_watchdog",
+        work=work,
+    )
+
+
+def ensure_project_budget_watchdog(*, force: bool = False) -> bool:
+    """Start the project-budget sweep if no chain is alive (``force``: always)."""
+    return _ensure_scheduler(
+        project_budget_watchdog,
+        "project_budget",
+        10_000,
+        label="ensure_project_budget_watchdog",
+        force=force,
+    )
+
+
+@dramatiq.actor(queue_name="peon.jobs", max_retries=1, time_limit=120_000)
+def classify_roe_candidates(project_id: str, values: list[str]) -> None:
+    """Background Core 1.5 soft scope hint pass — never runs on the finding path."""
+    close_old_connections()
+    try:
+        from peon.projects.runtime_settings import PeonSettings
+
+        if not PeonSettings.get_bool("ROE_CANDIDATE_CLASSIFIER_ENABLED", True):
+            return
+        from peon.projects.roe_ops import annotate_candidate_scope_hints
+
+        n = annotate_candidate_scope_hints(project_id, values)
+        if n:
+            logger.info("classify_roe_candidates annotated %s candidate(s)", n)
+    except Exception:
+        logger.exception("classify_roe_candidates failed")
+    finally:
+        close_old_connections()
+
+
+def enqueue_candidate_classification(project_id: str, values: list[str]) -> dict:
+    """Queue a candidate scope-hint pass, or run it inline when Dramatiq is off."""
+    if not values:
+        return {"ok": True, "action": "skipped"}
+    if _dramatiq_enabled():
+        classify_roe_candidates.send(project_id, values)
+        return {"ok": True, "action": "queued"}
+    from peon.projects.runtime_settings import PeonSettings
+
+    if not PeonSettings.get_bool("ROE_CANDIDATE_CLASSIFIER_ENABLED", True):
+        return {"ok": True, "action": "disabled"}
+    from peon.projects.roe_ops import annotate_candidate_scope_hints
+
+    return {"ok": True, "annotated": annotate_candidate_scope_hints(project_id, values)}
+
+
+@dramatiq.actor(queue_name="peon.jobs", max_retries=1, time_limit=30_000)
+def send_notification_task(subject: str, text: str, extra: dict | None = None) -> None:
+    """Fan out one notification on the worker (Core 5.1) — HTTP/SMTP never on the web request."""
+    close_old_connections()
+    try:
+        from peon.projects.notifications import notify
+
+        result = notify(subject, text, extra=extra)
+        if any(result.values()):
+            logger.info("send_notification_task sent via %s", [k for k, v in result.items() if v])
+    except Exception:
+        logger.exception("send_notification_task failed")
+    finally:
+        close_old_connections()
+
+
+def enqueue_notification(subject: str, text: str, *, extra: dict | None = None) -> dict:
+    """Queue a notification fan-out, or run it inline when Dramatiq is off."""
+    if _dramatiq_enabled():
+        send_notification_task.send(subject, text, extra)
+        return {"ok": True, "action": "queued"}
+    from peon.projects.notifications import notify
+
+    return {"ok": True, "sent": notify(subject, text, extra=extra)}

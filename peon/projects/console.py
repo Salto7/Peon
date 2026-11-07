@@ -11,8 +11,13 @@ from django.urls import reverse
 from orchestrator.utils.llm import LLM_NOT_CONFIGURED, chat_json, chat_text, llm_configured
 from peon.projects.crew_control import instruct_project, pause_project, replan_project
 from peon.projects.hitl import first_open_prompt, resolve_operator_prompt
-from peon.projects.http_helpers import json_or_redirect, request_values
-from peon.projects.http_helpers import wants_json as request_wants_json
+from peon.projects.http_helpers import (
+    json_or_redirect,
+    request_values,
+)
+from peon.projects.http_helpers import (
+    wants_json as request_wants_json,
+)
 from peon.projects.lifecycle import project_allows_operator
 from peon.projects.models import (
     AgentMessage,
@@ -61,21 +66,23 @@ Do not invent findings, hosts, or scan results. If the context lacks the answer,
 Do not start scans or suggest out-of-scope probing; for new work the operator should
 send a work request (the console will replan)."""
 
+
 def _record_user(project: Project, text: str, *, event: str = "console_user") -> Job | None:
 
     return audit_project_stream(
         project, text, tag="you", event=event, role="user", message_type="log"
     )
 
+
 def _objective_lines(project: Project, *, limit: int = 12) -> list[str]:
     rows = list(
-        project.objectives.exclude(status=ObjectiveStatus.CANCELLED)
-        .order_by("seq")[:limit]
+        project.objectives.exclude(status=ObjectiveStatus.CANCELLED).order_by("seq")[:limit]
     )
     lines: list[str] = []
     for o in rows:
         lines.append(f"• OBJ-{o.seq} [{o.status}] {o.title}")
     return lines
+
 
 def _replan_narration(project: Project, result: dict, operator_text: str) -> str:
     """Conversational ack for a replan — always shown in the chat thread."""
@@ -101,15 +108,14 @@ def _replan_narration(project: Project, result: dict, operator_text: str) -> str
     )
     return "\n".join(lines)
 
+
 def _project_brief(project: Project) -> str:
     """Compact SoT context for answer + routing (not a domain taxonomy)."""
     from peon.projects.db import qs_using
 
     objs = list(project.objectives.order_by("seq")[:40])
     findings = list(
-        qs_using(Finding, project.id)
-        .filter(project_id=project.id)
-        .order_by("-updated_at")[:15]
+        qs_using(Finding, project.id).filter(project_id=project.id).order_by("-updated_at")[:15]
     )
     jobs_live = (
         project.jobs.filter(
@@ -161,14 +167,20 @@ def _project_brief(project: Project) -> str:
         lines.append(f"- Finding [Severity {sev}/{kind}] {title}")
     return "\n".join(lines)
 
+
 def _fallback_intent(project: Project, text: str) -> str:
-    """Conservative routing when the classifier LLM is unavailable."""
-    normalized = " ".join((text or "").strip().lower().split())
+    """Conservative routing when the classifier LLM is unavailable.
+
+    """
+    from orchestrator.utils.strings import collapse_ws
+
+    normalized = collapse_ws(text).lower()
     if normalized in {"stop", "pause", "halt", "stop project", "pause project"}:
         return "stop"
     if normalized.endswith("?"):
         return "answer"
     return "instruct" if has_live_agents(project) else "replan"
+
 
 def _classify(project: Project, text: str) -> str:
     """Return answer|instruct|replan|stop for default chat mode."""
@@ -192,6 +204,7 @@ def _classify(project: Project, text: str) -> str:
     if intent not in {"answer", "instruct", "replan", "stop"}:
         intent = "answer"
     return intent
+
 
 def _do_replan(project: Project, text: str) -> dict:
     if not llm_configured():
@@ -223,9 +236,8 @@ def _do_replan(project: Project, text: str) -> dict:
         event="console_replan_reply",
     )
 
-def _do_instruct(
-    project: Project, text: str, *, job_id: str | None = None
-) -> dict:
+
+def _do_instruct(project: Project, text: str, *, job_id: str | None = None) -> dict:
     """Steer live agents only. If none are live, escalate to replan."""
     if not job_id and not has_live_agents(project):
         return _do_replan(project, text)
@@ -263,7 +275,10 @@ def _do_instruct(
             JobStatus.IDLE: "It is waiting on its dependencies and will see this when it starts.",
         }.get(target.status, "")
         reply = f"Sent to {label}. {state}".strip()
-        result = {**result, "agent": {"id": str(target.id), "label": label, "status": target.status}}
+        result = {
+            **result,
+            "agent": {"id": str(target.id), "label": label, "status": target.status},
+        }
         meta = {"agent_label": label, "from_job_id": str(target.id)}
     else:
         reply = (
@@ -280,6 +295,7 @@ def _do_instruct(
         event="console_instruct_reply",
         meta=meta,
     )
+
 
 _AGENT_SYSTEM = """You are one agent on a Peon engagement, answering the operator
 who is talking to YOU directly. Speak in the first person as that agent.
@@ -375,9 +391,7 @@ def _agent_context(project: Project, job: Job) -> str:
         for m in reversed(recent):
             lines.append(f"- [{m.message_type}] {(m.content or '').strip()[:220]}")
     mail = list(
-        qs_using(AgentMessage, project.id)
-        .filter(to_job_id=job.id)
-        .order_by("-created_at")[:6]
+        qs_using(AgentMessage, project.id).filter(to_job_id=job.id).order_by("-created_at")[:6]
     )
     if mail:
         lines.append("Messages you received:")
@@ -398,11 +412,14 @@ def _ask_agent(project: Project, text: str, job: Job) -> dict:
         )
     else:
         try:
-            reply = chat_text(
-                _AGENT_SYSTEM,
-                f"Context about your work:\n{_agent_context(project, job)}\n\n"
-                f"Operator asks you:\n{text}",
-            ).strip() or "I could not produce an answer."
+            reply = (
+                chat_text(
+                    _AGENT_SYSTEM,
+                    f"Context about your work:\n{_agent_context(project, job)}\n\n"
+                    f"Operator asks you:\n{text}",
+                ).strip()
+                or "I could not produce an answer."
+            )
         except Exception as exc:
             logger.exception("console agent ask failed")
             reply = f"Could not answer right now: {exc}"
@@ -441,10 +458,13 @@ def _answer(project: Project, text: str) -> dict:
         reply = f"{LLM_NOT_CONFIGURED} Project status: {project.status}."
     else:
         try:
-            reply = chat_text(
-                _ASK_SYSTEM,
-                f"Context:\n{_project_brief(project)}\n\nQuestion:\n{text}",
-            ).strip() or "I could not produce an answer."
+            reply = (
+                chat_text(
+                    _ASK_SYSTEM,
+                    f"Context:\n{_project_brief(project)}\n\nQuestion:\n{text}",
+                ).strip()
+                or "I could not produce an answer."
+            )
         except Exception as exc:
             logger.exception("console ask failed")
             reply = f"Could not answer right now: {exc}"
@@ -461,6 +481,7 @@ def _answer(project: Project, text: str) -> dict:
         tag="ask",
         event="console_ask_reply",
     )
+
 
 def _do_stop(project: Project, text: str) -> dict:
     if project.status == ProjectStatus.CANCELLED:
@@ -553,6 +574,7 @@ def handle_console_chat(
     # instruct — inject into current running objective agents (+ optional job)
     return _do_instruct(project, text, job_id=job_id)
 
+
 def http_handle_console_chat(request, project: Project):
     """Parse request + dispatch + dual JSON/HTML response for the chat endpoint."""
 
@@ -579,13 +601,9 @@ def http_handle_console_chat(request, project: Project):
             project, message, mode=mode, job_id=job_id, prompt_id=prompt_id
         )
     except RuntimeError as exc:
-        return json_or_redirect(
-            request, ok=False, redirect_to=detail, error=str(exc), status=409
-        )
+        return json_or_redirect(request, ok=False, redirect_to=detail, error=str(exc), status=409)
     except ValueError as exc:
-        return json_or_redirect(
-            request, ok=False, redirect_to=detail, error=str(exc), status=400
-        )
+        return json_or_redirect(request, ok=False, redirect_to=detail, error=str(exc), status=400)
     except Exception as exc:
         logger.exception("console chat failed")
         return json_or_redirect(
@@ -597,7 +615,6 @@ def http_handle_console_chat(request, project: Project):
         )
 
     if request_wants_json(request):
-
         return JsonResponse(result)
 
     label = result.get("mode") or mode

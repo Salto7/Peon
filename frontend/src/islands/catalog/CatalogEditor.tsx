@@ -48,7 +48,7 @@ type Draft = {
   script: string;
   files: Record<string, string>;
   bindings: Binding[];
-  role: { id: string; kind: string; aliases: string; goal: string; backstory: string };
+  role: { id: string; kind: string; aliases: string; backstory: string };
 };
 
 type SourcePayload = {
@@ -62,7 +62,6 @@ type SourcePayload = {
   id?: string;
   kind?: string;
   aliases?: string[];
-  goal?: string;
   backstory?: string;
 };
 
@@ -110,7 +109,6 @@ function toDraft(kind: Kind, id: string, d: SourcePayload): Draft {
       id: d.id ?? "",
       kind: d.kind ?? "technical",
       aliases: (d.aliases ?? []).join(", "),
-      goal: d.goal ?? "",
       backstory: d.backstory ?? "",
     },
   };
@@ -269,7 +267,6 @@ export default function CatalogEditor({
             role_id: d.role.id.trim(),
             kind: d.role.kind,
             aliases: d.role.aliases.split(",").map((a) => a.trim()).filter(Boolean),
-            goal: d.role.goal,
             backstory: d.role.backstory,
           },
         });
@@ -392,10 +389,6 @@ export default function CatalogEditor({
                       onChange={(e) => setRole({ aliases: e.target.value })}
                       placeholder="legacy-id, other-alias"
                     />
-                  </div>
-                  <div className="space-y-1.5 sm:col-span-2">
-                    <Label htmlFor={`${ids}-rgoal`}>Goal</Label>
-                    <Textarea id={`${ids}-rgoal`} rows={3} value={draft.role.goal} onChange={(e) => setRole({ goal: e.target.value })} />
                   </div>
                   <div className="space-y-1.5 sm:col-span-2">
                     <Label htmlFor={`${ids}-rstory`}>Backstory</Label>

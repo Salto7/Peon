@@ -15,7 +15,11 @@ from orchestrator.crew.runtime_base import (
     CrewRunResult,
 )
 from orchestrator.utils import llm_usage
-from orchestrator.utils.stream_events import envelope
+from orchestrator.utils.stream_events import (
+    EVENT_PROJECT_CREW_DONE,
+    EVENT_PROJECT_CREW_START,
+    envelope,
+)
 
 
 class ProjectCrewOrchestrator(CrewOrchestratorBase):
@@ -74,7 +78,7 @@ class ProjectCrewOrchestrator(CrewOrchestratorBase):
             "status",
             f"project crew {action} flow={flow_id[:8]}",
             metadata=envelope(
-                "crew_project_start",
+                EVENT_PROJECT_CREW_START,
                 {"flow_id": flow_id, "action": action},
             ),
         )
@@ -95,7 +99,7 @@ class ProjectCrewOrchestrator(CrewOrchestratorBase):
         scope.bridge.emit(
             "status",
             f"project crew done flow={flow_id[:8]}",
-            metadata=envelope("crew_project_done", {"flow_id": flow_id}),
+            metadata=envelope(EVENT_PROJECT_CREW_DONE, {"flow_id": flow_id}),
         )
         return CrewRunResult(
             ok=True,

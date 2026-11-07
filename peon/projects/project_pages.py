@@ -48,7 +48,7 @@ from peon.projects.role_job_tree import RoleJobTree
 from peon.projects.runtime_settings import PeonSettings
 from peon.projects.sandbox import ProjectSandbox
 from peon.projects.streaming import project_message_dicts
-from peon.projects.target_shapes import (
+from peon.projects.targets import (
     format_targets,
     parse_target_lines,
 )
@@ -63,7 +63,6 @@ PROJECT_LIST_LIMIT = 50
 PROJECT_JOBS_LIMIT = 40
 STREAM_BOOTSTRAP_LIMIT = 120
 STREAM_POLL_LIMIT = 200
-HOME_PROJECT_LIMIT = 40
 HOME_ALERT_LIMIT = 12
 ALERTS_CLEARED_KEY = "alerts_cleared_at"
 
@@ -88,8 +87,11 @@ def alerts_clear(request: HttpRequest) -> HttpResponse:
 
 @require_GET
 def home(request: HttpRequest) -> HttpResponse:
-    """Control-plane dashboard: KPIs, project table, recent errors."""
-    projects = list(Project.objects.all()[:HOME_PROJECT_LIMIT])
+    """Home is the project list (KPIs + full engagements table + alerts).
+
+    ``/projects/`` redirects here — user: home and all projects are the same page.
+    """
+    projects = list(Project.objects.all()[:PROJECT_LIST_LIMIT])
     sandbox = ProjectSandbox.shared()
     per_project = sandbox.per_project()
     project_rows = [
@@ -110,9 +112,7 @@ def home(request: HttpRequest) -> HttpResponse:
 
     active_n = Project.objects.filter(status=ProjectStatus.ACTIVE).count()
     paused_n = Project.objects.filter(status=ProjectStatus.PAUSED).count()
-    agg = Project.objects.aggregate(
-        running=Sum("running_jobs"), failed=Sum("failed_jobs")
-    )
+    agg = Project.objects.aggregate(running=Sum("running_jobs"), failed=Sum("failed_jobs"))
     running_jobs = int(agg.get("running") or 0)
     failed_jobs = int(agg.get("failed") or 0)
     failed_recent = []
@@ -120,22 +120,14 @@ def home(request: HttpRequest) -> HttpResponse:
     cleared_at = _alerts_cleared_at(request)
     for pid, alias in iter_project_aliases():
         if len(failed_recent) < HOME_ALERT_LIMIT:
-            failed_qs = (
-                Job.objects.using(alias)
-                .filter(status=JobStatus.FAILED)
-                .exclude(error="")
-            )
+            failed_qs = Job.objects.using(alias).filter(status=JobStatus.FAILED).exclude(error="")
             if cleared_at:
                 failed_qs = failed_qs.filter(updated_at__gt=cleared_at)
-            for job in failed_qs.order_by("-updated_at")[
-                : HOME_ALERT_LIMIT - len(failed_recent)
-            ]:
+            for job in failed_qs.order_by("-updated_at")[: HOME_ALERT_LIMIT - len(failed_recent)]:
                 job.project = Project.objects.filter(pk=pid).first()
                 failed_recent.append(job)
         if len(stream_errors) < HOME_ALERT_LIMIT:
-            err_qs = StreamMessage.objects.using(alias).filter(
-                message_type=StreamMessageType.ERROR
-            )
+            err_qs = StreamMessage.objects.using(alias).filter(message_type=StreamMessageType.ERROR)
             if cleared_at:
                 err_qs = err_qs.filter(created_at__gt=cleared_at)
             for msg in err_qs.select_related("job").order_by("-created_at")[
@@ -157,6 +149,7 @@ def home(request: HttpRequest) -> HttpResponse:
                 "failed_jobs": failed_jobs,
             },
             "project_rows": project_rows,
+            "projects": [row["project"] for row in project_rows],
             "failed_recent": failed_recent,
             "stream_errors": stream_errors,
             "notices": notices,
@@ -170,7 +163,6 @@ def settings_page(request: HttpRequest) -> HttpResponse:
     """Operator runtime policy (caps + agent governors)."""
     restart_needed = False
     if request.method == "POST":
-
         updates = {}
         for field in PeonSettings.field_meta():
             key = field["key"]
@@ -227,15 +219,10 @@ def settings_page(request: HttpRequest) -> HttpResponse:
 
 @require_http_methods(["GET", "POST"])
 def project_list(request: HttpRequest) -> HttpResponse:
-    projects = Project.objects.all()[:PROJECT_LIST_LIMIT]
-    return render(
-        request,
-        "projects/list.html",
-        {
-            "projects": projects,
-            "nav": "projects",
-        },
-    )
+    """Legacy URL — same page as home."""
+    from django.shortcuts import redirect as _redirect
+
+    return _redirect("home")
 
 
 @require_http_methods(["GET", "POST"])
@@ -252,6 +239,7 @@ def project_create(request: HttpRequest) -> HttpResponse:
             return redirect("project_detail", pk=result["project_id"])
         return redirect("project_create")
 
+    # project_create GET — create-scope-creds island needs [{value,label}] kinds.
     return render(
         request,
         "projects/create.html",
@@ -259,7 +247,11 @@ def project_create(request: HttpRequest) -> HttpResponse:
             "nav": "projects",
             "available_roles": RoleCards.picker(),
             "selected_roles": RoleCards.required_names(),
-            "workflow_list_url": "/lab/workflows/api/?published=1",
+            # List published + drafts so create can pick any existing preset.
+            "workflow_list_url": "/lab/workflows/api/",
+            "credential_kinds": [
+                {"value": value, "label": label} for value, label in CredentialKind.choices
+            ],
         },
     )
 
@@ -270,7 +262,7 @@ def _apply_workflow_preset(
     """Fold a chosen ``WorkflowPreset``'s seed inputs into the manual fields and compile its graph.
 
     Returns ``(role_ids, summary, in_scope_raw, compiled)``. ``compiled`` is the runnable plan (objectives with
-    roles, skills, tools and dependencies) when a published workflow was picked, every required seed input was
+    roles, skills, tools and dependencies) when a workflow preset was picked, every required seed input was
     supplied and the graph compiles; project creation then executes it instead of asking the LLM planner.
     """
     from orchestrator.workflow import WorkflowCompileError
@@ -280,10 +272,9 @@ def _apply_workflow_preset(
     if not workflow_id:
         return [], summary, in_scope_raw, None
     preset = get_workflow(workflow_id)
-    if preset is None or not preset["is_published"]:
-        flashes.append(
-            ("warning", f"Workflow {workflow_id!r} not found or unpublished; using manual fields.")
-        )
+    # Allow drafts that compile — create should reuse any existing preset.
+    if preset is None:
+        flashes.append(("warning", f"Workflow {workflow_id!r} not found; using manual fields."))
         return [], summary, in_scope_raw, None
 
     missing: list[str] = []
@@ -331,7 +322,12 @@ def _apply_workflow_preset(
     try:
         compiled = compile_preset(preset, answers)
     except WorkflowCompileError as exc:
-        flashes.append(("warning", f"Workflow {preset['name']!r} cannot run as designed ({exc}); planning with its roles instead."))
+        flashes.append(
+            (
+                "warning",
+                f"Workflow {preset['name']!r} cannot run as designed ({exc}); planning with its roles instead.",
+            )
+        )
     return role_ids, summary, in_scope_raw, compiled
 
 
@@ -340,9 +336,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
     stages: list[dict] = []
 
     def stage(key: str, label: str, status: str = "done", detail: str = "") -> None:
-        stages.append(
-            {"key": key, "label": label, "status": status, "detail": detail or ""}
-        )
+        stages.append({"key": key, "label": label, "status": status, "detail": detail or ""})
 
     title = (request.POST.get("title") or "").strip() or "untitled"
     summary = (request.POST.get("summary") or "").strip()
@@ -376,19 +370,73 @@ def _create_project_from_post(request: HttpRequest) -> dict:
             uploaded_paths.append(saved["sandbox_path"])
             roe_add_path(project, saved["sandbox_path"])
         except Exception as exc:
-            flashes.append(
-                ("warning", f"Upload skipped ({getattr(f, 'name', '?')}): {exc}")
-            )
+            flashes.append(("warning", f"Upload skipped ({getattr(f, 'name', '?')}): {exc}"))
     if uploaded_paths:
         project.refresh_from_db()
         roe = getattr(project, "roe", None)
         scope = list(roe.in_scope) if roe else scope
 
+    # Optional create-time credentials (same key-store as project detail).
+    # Prefer credentials_json from the create-scope-creds island; fall back to
+    # a single legacy cred_* set for older clients.
+    from peon.projects.credentials import set_credential
+
+    cred_items: list[dict] = []
+    raw_creds = (request.POST.get("credentials_json") or "").strip()
+    if raw_creds:
+        try:
+            import json
+
+            parsed = json.loads(raw_creds)
+            if isinstance(parsed, list):
+                cred_items = [row for row in parsed if isinstance(row, dict)]
+        except Exception as exc:
+            flashes.append(("warning", f"Credentials JSON ignored: {exc}"))
+    if not cred_items:
+        legacy_name = (request.POST.get("cred_name") or "").strip()
+        if legacy_name:
+            cred_items = [
+                {
+                    "name": legacy_name,
+                    "kind": (request.POST.get("cred_kind") or "password").strip(),
+                    "username": (request.POST.get("cred_username") or "").strip(),
+                    "domain": (request.POST.get("cred_domain") or "").strip(),
+                    "secret": (request.POST.get("cred_secret") or "").strip(),
+                    "notes": (request.POST.get("cred_notes") or "").strip(),
+                }
+            ]
+    for item in cred_items:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        secret = str(item.get("secret") or "").strip()
+        # Create-time rows without a secret are useless (nothing to rotate later
+        # from this form) — skip rather than storing an empty keystore slot.
+        if not secret:
+            flashes.append(("warning", f"Credential {name} skipped (empty secret)"))
+            continue
+        try:
+            set_credential(
+                project.pk,
+                name,
+                kind=str(item.get("kind") or "password").strip(),
+                username=str(item.get("username") or "").strip(),
+                domain=str(item.get("domain") or "").strip(),
+                secret=secret,
+                notes=str(item.get("notes") or "").strip(),
+                source="provided",
+            )
+            flashes.append(("info", f"Saved credential {name}"))
+        except Exception as exc:
+            flashes.append(("warning", f"Credential {name} not saved: {exc}"))
+
     scope_detail = ", ".join(format_targets(scope)[:8]) if scope else "none yet"
     stage("roe", "Configured Rules of Engagement", "done", scope_detail)
 
     if in_scope and not operator_scope and not uploaded_paths:
-        flashes.append(("info", "Rules of Engagement deduced: " + ", ".join(format_targets(in_scope))))
+        flashes.append(
+            ("info", "Rules of Engagement deduced: " + ", ".join(format_targets(in_scope)))
+        )
     if uploaded_paths:
         flashes.append(
             (
@@ -429,7 +477,11 @@ def _create_project_from_post(request: HttpRequest) -> dict:
     }
 
     if compiled is not None or (llm_configured() and brief):
-        stage("plan", "Compiling workflow…" if compiled is not None else "Planning objectives…", "active")
+        stage(
+            "plan",
+            "Compiling workflow…" if compiled is not None else "Planning objectives…",
+            "active",
+        )
         try:
             if compiled is not None:
                 # the designed graph is the plan: no LLM in the loop, same persistence + scheduler as any plan
@@ -475,10 +527,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
                     "accept agent graph before start",
                 )
                 redirect_url = reverse("project_plan", kwargs={"pk": project.pk})
-                msg = (
-                    f"Created durable project {project.title} — "
-                    f"review {n_obj} planned agent(s)"
-                )
+                msg = f"Created durable project {project.title} — review {n_obj} planned agent(s)"
                 flashes.append(("success", msg))
                 out.update(
                     {
@@ -498,9 +547,7 @@ def _create_project_from_post(request: HttpRequest) -> dict:
                     "done",
                     job_title if result.job else "waiting for a ready objective",
                 )
-                msg = (
-                    f"Created {project.title} — queued {job_title} ({n_obj} objectives)"
-                )
+                msg = f"Created {project.title} — queued {job_title} ({n_obj} objectives)"
                 flashes.append(("success", msg))
                 out.update(
                     {
@@ -592,9 +639,7 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
     ops = ProjectOpsPayload.for_project(project, jobs_limit=PROJECT_JOBS_LIMIT)
     objectives = list(project.objectives.all())
     roe = getattr(project, "roe", None)
-    bootstrap = project_message_dicts(
-        project, limit=STREAM_BOOTSTRAP_LIMIT, newest_first=True
-    )
+    bootstrap = project_message_dicts(project, limit=STREAM_BOOTSTRAP_LIMIT, newest_first=True)
     reports = list_reports(str(project.id))
     board = FindingStore.board_query(project, request, default_status="open")
     status_f = board["status"]
@@ -605,18 +650,21 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
     project_inputs = list_project_inputs(str(project.id))
     # Full finding set for the asset graph (board may be status-filtered).
     graph_findings = list(project.findings.order_by("seq", "created_at")[:300])
+    # Delta sync only — full rebuild on every detail GET is too slow.
     attack_surface = AssetGraphEngine(project).engagement(
         findings=graph_findings,
-        rebuild=True,
+        rebuild=False,
     )
     try:
         org_chart = RoleJobTree.org_nodes_for_project(project)
     except Exception:
         org_chart = {"roots": [], "roles": [], "crew_status": "", "crew_flow_id": ""}
     try:
-        from peon.projects.mcp_ops import list_project_mcp_configs
+        from peon.projects.mcp_ops import list_project_mcp_configs, mcp_nav_visible
 
-        mcp_configs = list_project_mcp_configs(project.pk)
+        # relevant_only keeps role-bound MCPs available for first-time secret
+        # setup; mcp_nav_visible hides pure role-bound zero-config servers the
+        mcp_configs = list_project_mcp_configs(project.pk, relevant_only=True)
     except Exception:
         import logging
 
@@ -624,6 +672,7 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
             "project mcp configs failed for %s", project.pk, exc_info=True
         )
         mcp_configs = []
+    show_mcp_nav = mcp_nav_visible(mcp_configs)
     try:
         from peon.projects.credentials import list_credentials
 
@@ -670,8 +719,11 @@ def project_detail(request: HttpRequest, pk) -> HttpResponse:
             "attack_surface": attack_surface,
             "org_chart": org_chart,
             "mcp_configs": mcp_configs,
+            "show_mcp_nav": show_mcp_nav,
             "credentials": credential_rows,
-            "credential_kinds": CredentialKind.choices,
+            "credential_kinds": [
+                {"value": value, "label": label} for value, label in CredentialKind.choices
+            ],
             "nav": "projects",
             "stream_bootstrap": bootstrap,
         },
@@ -735,4 +787,3 @@ def project_report_file(request: HttpRequest, pk, file_path: str) -> HttpRespons
     response = FileResponse(path.open("rb"), as_attachment=not inline, filename=path.name)
     response["Content-Disposition"] = f'{disposition}; filename="{path.name}"'
     return response
-

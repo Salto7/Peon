@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from django.db.models import Q
 from django.http import HttpRequest, JsonResponse
-from django.urls import reverse
+from django.urls import Resolver404, resolve, reverse
 from django.views.decorators.http import require_GET
 
 from peon.projects.catalog_cards import RoleCards, ToolCards
@@ -17,33 +19,25 @@ PALETTE_ROLE_LIMIT = 40
 PALETTE_TOOL_LIMIT = 40
 
 
-@require_GET
-def search_json(request: HttpRequest) -> JsonResponse:
-    """Operator Search (⇧S): projects, findings, roles, tools, settings, jumps."""
-    q = (request.GET.get("q") or "").strip()
-    q_lower = q.lower()
-    items: list[dict] = [
-        {
-            "id": "nav-home",
-            "label": "Home",
-            "group": "Navigate",
-            "href": reverse("home"),
-            "keywords": "dashboard ops status kpis",
-        },
-        {
-            "id": "nav-projects",
-            "label": "Projects",
-            "group": "Navigate",
-            "href": reverse("project_list"),
-            "keywords": "list engagements",
-        },
-        {
-            "id": "nav-project-new",
-            "label": "New project",
-            "group": "Navigate",
-            "href": reverse("project_create"),
-            "keywords": "create start engagement",
-        },
+def _in_project_page(request: HttpRequest) -> bool:
+    """True when the palette was opened from a project-scoped page.
+
+    The palette fetches ``search.json`` from the current page, so the Referer
+    path resolves to the originating route; project routes carry a ``pk`` kwarg.
+    """
+    referer = request.META.get("HTTP_REFERER", "")
+    if not referer:
+        return False
+    try:
+        match = resolve(urlparse(referer).path)
+    except Resolver404:
+        return False
+    return "pk" in match.kwargs and match.route.startswith("projects/")
+
+
+def _platform_nav_items() -> list[dict]:
+    """Catalog + Lab jumps; shown on platform pages only."""
+    return [
         {
             "id": "nav-catalog",
             "label": "Shared catalog",
@@ -100,6 +94,30 @@ def search_json(request: HttpRequest) -> JsonResponse:
             "href": reverse("catalog") + "#tools",
             "keywords": "cli sandbox provision",
         },
+    ]
+
+
+@require_GET
+def search_json(request: HttpRequest) -> JsonResponse:
+    """Operator Search (⇧S): projects, findings, roles, tools, settings, jumps."""
+    q = (request.GET.get("q") or "").strip()
+    q_lower = q.lower()
+    items: list[dict] = [
+        {
+            "id": "nav-home",
+            "label": "Home",
+            "group": "Navigate",
+            "href": reverse("home"),
+            "keywords": "dashboard ops status kpis",
+        },
+        # (nav-home above already points at reverse("home").)
+        {
+            "id": "nav-project-new",
+            "label": "New project",
+            "group": "Navigate",
+            "href": reverse("project_create"),
+            "keywords": "create start engagement",
+        },
         {
             "id": "nav-settings",
             "label": "Peon Settings",
@@ -123,6 +141,9 @@ def search_json(request: HttpRequest) -> JsonResponse:
             "keywords": "django",
         },
     ]
+    project_scoped = _in_project_page(request)
+    if not project_scoped:
+        items.extend(_platform_nav_items())
     # Settings field keywords (so Shift+S search finds knobs by name).
     for field in PeonSettings.field_meta():
         items.append(
@@ -184,8 +205,7 @@ def search_json(request: HttpRequest) -> JsonResponse:
                 "id": f"finding-{f.id}",
                 "label": f"FIND-{f.seq}: {f.title}",
                 "group": "Findings",
-                "href": reverse("project_detail", kwargs={"pk": f.project_id})
-                + "#findings",
+                "href": reverse("project_detail", kwargs={"pk": f.project_id}) + "#findings",
                 "keywords": f"{f.kind} {f.severity} {f.host} {f.cve_id} {project.title}",
                 "meta": f"{f.severity} · {project.title}",
             }
@@ -193,7 +213,8 @@ def search_json(request: HttpRequest) -> JsonResponse:
 
     catalog_base = reverse("catalog") + "?all=1"
     role_hits = 0
-    for role in RoleCards.catalog():
+    # Roles/tools are platform-catalog entries; omit them inside a project page.
+    for role in () if project_scoped else RoleCards.catalog():
         hay = " ".join(
             [
                 role.get("name") or "",
@@ -221,7 +242,7 @@ def search_json(request: HttpRequest) -> JsonResponse:
             break
 
     tool_hits = 0
-    for tool in ToolCards.catalog():
+    for tool in () if project_scoped else ToolCards.catalog():
         hay = " ".join(
             [
                 tool.get("id") or "",
@@ -257,18 +278,14 @@ def search_json(request: HttpRequest) -> JsonResponse:
         if project is None:
             continue
         for job in (
-            Job.objects.using(alias)
-            .filter(status=JobStatus.RUNNING)
-            .order_by("-updated_at")[:20]
+            Job.objects.using(alias).filter(status=JobStatus.RUNNING).order_by("-updated_at")[:20]
         ):
             items.append(
                 {
                     "id": f"job-{job.id}",
                     "label": f"{job.title} (running)",
                     "group": "Active runs",
-                    "href": reverse(
-                        "job_live", kwargs={"pk": job.project_id, "job_id": job.pk}
-                    ),
+                    "href": reverse("job_live", kwargs={"pk": job.project_id, "job_id": job.pk}),
                     "keywords": f"live {project.title}",
                     "meta": "running",
                 }

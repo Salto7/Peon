@@ -274,25 +274,39 @@ class DreamingService(SharedServiceBase):
             "errors": errors,
         }
 
-    def clear(self, *, reindex: bool = True) -> dict[str, Any]:
+    def clear(self, *, reindex: bool = False) -> dict[str, Any]:
         """Wipe Cognee, reset what the dream cycle tracked about it, optionally re-index.
 
-        Peon's own records (memory notes, gists, playbooks) are untouched; they
-        are the source of truth. With ``reindex`` the platform dataset is rebuilt
-        from them straight away, otherwise the next dream cycle that writes a
-        gist or playbook rebuilds it.
+        (``lab-dream.js`` Clear Cognee). Writes dream cursor JSON under
+        platform workspace; does not touch Peon ``MemoryEntry`` rows.
+        Must not require dreaming-enabled — only Cognee reachability.
+        Default ``reindex=False``: reindex-on-clear was refilling the `peon`
+        dataset from MemoryEntry so deletes looked broken.
         """
-        if not self.enabled():
-            return {"ok": False, "skipped": True, "reason": "disabled"}
         from orchestrator.crew.cognee_backend import CogneeBackend
 
-        wiped = CogneeBackend.shared().clear_all()
+        backend = CogneeBackend.shared()
+        health = backend.health()
+        if not health.get("ok"):
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "unreachable",
+                "error": str(health.get("error") or "Cognee is unreachable")[:400],
+                "deleted": [],
+            }
+        wiped = backend.clear_all()
         cursor = self.load_cursor()
         cursor["sessions"] = {}  # the sessions they referred to are gone
         cursor.pop("last_report", None)
         self.save_cursor(cursor)
         index = self.sync_platform_index() if reindex and wiped.get("ok") else None
-        return {"ok": bool(wiped.get("ok")), **wiped, "reindex": index}
+        return {
+            "ok": bool(wiped.get("ok")),
+            **wiped,
+            "reindex": index,
+            "error": ("; ".join(wiped.get("errors") or []) or None),
+        }
 
     def sync_platform_index(self) -> dict[str, Any]:
         """Keep the Cognee retrieval index equal to the platform memory records."""

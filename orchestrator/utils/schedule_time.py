@@ -69,4 +69,8 @@ def compute_next_run(
         return next_interval_after(interval_seconds, now, anchor=aware_utc(anchor) if anchor else now)
     if k == "cron":
         return next_cron_after(cron, now)
+    if k == "condition":
+        # Not time-driven: this is how often fire_schedule re-checks the
+        # condition, not a promise to actually fire (Core 5.2).
+        return next_interval_after(60, now, anchor=now)
     raise ValueError(f"unknown schedule kind {kind!r}")

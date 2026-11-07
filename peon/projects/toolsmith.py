@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import yaml
@@ -15,15 +16,16 @@ from django.views.decorators.http import require_GET, require_http_methods
 from orchestrator.tools.catalog import ToolCatalog
 from orchestrator.toolsmith import PeonAuthoring
 from orchestrator.utils.llm import LLM_NOT_CONFIGURED, llm_configured
-from orchestrator.utils.strings import is_kebab
+from orchestrator.utils.strings import as_str_list, is_kebab
 from peon.projects.catalog_cards.tool import ToolCards
-from peon.projects.http_helpers import json_errors, parse_json_body, split_csv, sse_response
+from peon.projects.http_helpers import json_errors, parse_json_body, sse_response
 from peon.projects.lab_service import LabService
 from peon.projects.llm_proxy import LlmProxy
 from peon.projects.opencode import PROXY_REQUIRED_MSG, OpenCodeEngine
 from peon.projects.terminal_session import LAB_SCOPE, decode_input_bytes, get_registry
 
 ENGINES = {"peon": PeonAuthoring, "opencode": OpenCodeEngine}
+logger = logging.getLogger(__name__)
 
 
 def _engine(body: dict):
@@ -138,7 +140,7 @@ def toolsmith_write_skill(request: HttpRequest) -> JsonResponse:
         return gated
     tools = body.get("tools") or []
     if isinstance(tools, str):
-        tools = split_csv(tools)
+        tools = as_str_list(tools)
     result = engine.shared().write_skill(str(body.get("prompt") or ""), tools=list(tools))
     result["author"] = "opencode" if engine is OpenCodeEngine else "peon"
     return JsonResponse({"ok": True, "mode": "skill", **result})
@@ -472,6 +474,19 @@ def toolsmith_save_skill(request: HttpRequest) -> JsonResponse:
         files=_file_map(body.get("files") or {}),
         binary=draft_binary(skill_md),
     )
+    if saved.get("ok"):
+        # place_pack() above only wrote the pack to skills/ for the Claude-
+        # provider SkillRegistry — the platform catalog (role bindings, the
+        # auto-affinity/role-draft pipeline) never sees it until a sync runs.
+        # Without this, a Toolsmith-authored skill sits inert and roleless
+        # until someone happens to click "Refresh skills" on the Catalog page.
+        try:
+            from peon.projects.platform_catalog import PlatformCatalog
+
+            diff = PlatformCatalog.shared().sync_skills_from_disk()
+            saved["catalog_sync"] = diff
+        except Exception as exc:
+            logger.warning("catalog sync after skill save failed: %s", exc, exc_info=True)
     status = 200 if saved.get("ok") else 400
     return JsonResponse(saved, status=status)
 

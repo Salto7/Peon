@@ -26,8 +26,9 @@ from pathlib import Path
 from typing import Any
 
 from agent_runtime.api import Session
+from orchestrator.mcp.parse import REMOTE_TRANSPORTS as _REMOTE_TRANSPORTS
 from orchestrator.sandbox.materialize import materialize_tree
-from orchestrator.skills.runtime.sandbox import emit_event, job_role_id
+from orchestrator.skills.runtime.sandbox import current_job_phase, emit_event, job_role_id
 from orchestrator.utils.stream_events import (
     EVENT_CALL_MCP_TOOL,
     EVENT_LIST_MCP_RESOURCES,
@@ -148,7 +149,7 @@ def mcp_prompt_block(role_id: str) -> str:
     ]
     for rec in records:
         required = ", ".join(name for name, req in rec.env_schema if req) or "(none)"
-        filt = _binding_tools_filter(role_id, rec.mcp_id)
+        filt = _binding_tools_filter(_binding_for(role_id, rec.mcp_id))
         curation = _tools_filter_summary(filt)
         lines.append(
             f"- `{rec.mcp_id}`: {rec.description or rec.command}. Required env: {required}."
@@ -203,7 +204,11 @@ def _invoke(
     rec = _record_for_role(name, role_id)
     if isinstance(rec, str):
         return rec
-    tools_filter = _binding_tools_filter(role_id, rec.mcp_id)
+    binding = _binding_for(role_id, rec.mcp_id)
+    phase_denial = _binding_phase_denial(role_id, rec.mcp_id, binding)
+    if phase_denial:
+        return f"Error: {phase_denial}"
+    tools_filter = _binding_tools_filter(binding)
     if op == "call" and not _tool_allowed(tool, tools_filter):
         return (
             f"Error: tool {tool!r} on MCP server {rec.mcp_id!r} is not enabled "
@@ -218,26 +223,40 @@ def _invoke(
             "Set values under Project settings → MCP servers "
             "(use host.docker.internal for host endpoints)."
         )
-    dest = f"/workspace/.peon/mcp/{rec.mcp_id}"
-    install, install_error = _effective_install(rec)
-    if install_error:
-        return install_error
-    revision = _install_digest(rec, install)
-    prepared = _prepare(session, rec, dest, install, revision)
-    if prepared:
-        return prepared
-    command, args = _runtime_command(rec, dest, install)
     timeout = 180 if op in {"call", "read_resource"} else 60
-    request: dict[str, Any] = {
-        "op": op,
-        "mcp_id": rec.mcp_id,
-        "command": command,
-        "args": list(args),
-        "cwd": dest if not rec.cwd else f"{dest}/{rec.cwd}",
-        "env": {**env, "PEON_FINDINGS_QUEUE": _FINDINGS_QUEUE},
-        "timeout": timeout,
-        "revision": revision,
-    }
+    if rec.transport in _REMOTE_TRANSPORTS:
+        # Nothing to stage or install — the sandbox only opens an outbound
+        # connection to rec.url. The project's resolved env values become
+        # HTTP headers (e.g. an Authorization bearer token), not env vars.
+        request = {
+            "op": op,
+            "mcp_id": rec.mcp_id,
+            "transport": rec.transport,
+            "url": rec.url,
+            "headers": dict(env),
+            "timeout": timeout,
+            "revision": rec.mcp_id,
+        }
+    else:
+        dest = f"/workspace/.peon/mcp/{rec.mcp_id}"
+        install, install_error = _effective_install(rec)
+        if install_error:
+            return install_error
+        revision = _install_digest(rec, install)
+        prepared = _prepare(session, rec, dest, install, revision)
+        if prepared:
+            return prepared
+        command, args = _runtime_command(rec, dest, install)
+        request = {
+            "op": op,
+            "mcp_id": rec.mcp_id,
+            "command": command,
+            "args": list(args),
+            "cwd": dest if not rec.cwd else f"{dest}/{rec.cwd}",
+            "env": {**env, "PEON_FINDINGS_QUEUE": _FINDINGS_QUEUE},
+            "timeout": timeout,
+            "revision": revision,
+        }
     if op == "call":
         request["tool"] = tool
         request["arguments"] = arguments or {}
@@ -273,10 +292,14 @@ def _invoke(
             if not isinstance(item, dict)
             or _tool_allowed(str(item.get("name") or ""), tools_filter)
         ]
-        return _format_catalog(rec.mcp_id, "tools", tools)
-    if op == "list_resources":
-        return _format_catalog(rec.mcp_id, "resources", reply.get("resources") or [])
-    return json.dumps(reply.get("result"), default=str)
+        body = _format_catalog(rec.mcp_id, "tools", tools)
+    elif op == "list_resources":
+        body = _format_catalog(rec.mcp_id, "resources", reply.get("resources") or [])
+    else:
+        body = json.dumps(reply.get("result"), default=str)
+    from orchestrator.sandbox.tool_output import wrap_untrusted
+
+    return wrap_untrusted(body, kind="MCP tool output")
 
 
 def _prepare(session, rec, dest: str, install: dict | None, revision: str) -> str:
@@ -388,12 +411,8 @@ def _bound(role_id: str):
         return []
 
 
-def _binding_tools_filter(role_id: str, mcp_id: str) -> dict | None:
-    """The ``{"mode", "values"}`` tool curation for one role<->server binding.
-
-    ``None`` means every tool the server advertises is callable — the
-    default, and the only option before this filter existed.
-    """
+def _binding_for(role_id: str, mcp_id: str):
+    """The role<->server binding row, or ``None`` if there isn't one."""
     try:
         from peon.projects.platform_catalog import PlatformCatalog
 
@@ -401,12 +420,19 @@ def _binding_tools_filter(role_id: str, mcp_id: str) -> dict | None:
             role_id=role_id, owner_kind="mcp", owner_id=mcp_id
         )
     except Exception as exc:
-        logger.warning("mcp tool-filter lookup failed for %s/%s: %s", role_id, mcp_id, exc)
+        logger.warning("mcp binding lookup failed for %s/%s: %s", role_id, mcp_id, exc)
         return None
-    for row in rows:
-        if isinstance(row.tools, dict):
-            return row.tools
-    return None
+    return rows[0] if rows else None
+
+
+def _binding_tools_filter(binding) -> dict | None:
+    """The ``{"mode", "values"}`` tool curation for one role<->server binding.
+
+    ``None`` means every tool the server advertises is callable — the
+    default, and the only option before this filter existed.
+    """
+    tools = getattr(binding, "tools", None)
+    return tools if isinstance(tools, dict) else None
 
 
 def _tool_allowed(name: str, filt: dict | None) -> bool:
@@ -420,6 +446,35 @@ def _tool_allowed(name: str, filt: dict | None) -> bool:
     return name not in values
 
 
+def _binding_phase_denial(role_id: str, mcp_id: str, binding) -> str:
+    """Governance-framed denial when this binding's phase gate isn't met yet.
+
+    Core 1.3: a binding may declare
+    ``min_phase`` — the bound job's Objective must have reached that
+    ``KillChainPhase`` before the server's tools are reachable at all.
+    Empty string = no gate / gate satisfied. ``binding`` is already fetched
+    by the caller (``_binding_for``) — passed through so this never re-queries
+    the catalog for the same row.
+    """
+    from peon.projects.platform_catalog import binding_phase_denial
+
+    denial = binding_phase_denial(
+        role_id=role_id,
+        owner_kind="mcp",
+        owner_id=mcp_id,
+        current_phase=current_job_phase(),
+        label=f"MCP server {mcp_id!r}",
+        binding=binding,
+    )
+    if denial:
+        min_phase = str(getattr(binding, "min_phase", "") or "")
+        if min_phase:
+            from orchestrator.agent.job import get_job
+
+            get_job().bridge.request_phase_advance(min_phase)
+    return denial
+
+
 def _record_for_role(name: str, role_id: str):
     mid = str(name or "").strip().lower()
     if not mid:
@@ -428,6 +483,9 @@ def _record_for_role(name: str, role_id: str):
         return "Error: MCP calls require a bound role."
     bound = _bound(role_id)
     if not any(rec.mcp_id == mid for rec in bound):
+        from orchestrator.utils.skill_gap import record_skill_gap
+
+        record_skill_gap(role_id, "mcp", mid)
         known = ", ".join(rec.mcp_id for rec in bound) or "(none)"
         return f"Error: MCP server {mid!r} is not bound to role {role_id}. Bound: {known}."
     try:
@@ -484,12 +542,26 @@ def _project_env(project_id: str, rec) -> tuple[dict[str, str], list[str]]:
                 .filter(project_id=project_id, mcp_id=rec.mcp_id)
                 .first()
             )
-            if row is not None and isinstance(row.env, dict):
-                stored = {
-                    str(k): str(v).strip()
-                    for k, v in row.env.items()
-                    if v is not None and str(v).strip()
+            if row is not None:
+                from orchestrator.utils.strings import normalize_env_map
+
+                stored = normalize_env_map(row.env)
+                secret_names = {
+                    f["name"] for f in rec.env_schema_full if f.get("type") == "secret"
                 }
+                if secret_names:
+                    from peon.projects.secrets_crypto import SecretDecryptError, decrypt_secret
+
+                    for name in secret_names & stored.keys():
+                        try:
+                            stored[name] = decrypt_secret(stored[name])
+                        except SecretDecryptError:
+                            logger.warning(
+                                "mcp %s: stored secret %r for project %s could not be "
+                                "decrypted (rotated SECRET_KEY?) — treating as unset",
+                                rec.mcp_id, name, project_id,
+                            )
+                            stored.pop(name, None)
         except Exception as exc:
             logger.warning("mcp project env read failed for %s: %s", rec.mcp_id, exc)
             return {}, [f"project configuration ({exc})"]

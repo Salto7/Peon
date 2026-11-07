@@ -8,7 +8,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from orchestrator.utils.strings import as_str_list
 from peon.projects.planning import run_llm_plan
-from peon.projects.target_shapes import parse_target_lines
+from peon.projects.targets import parse_target_lines
 
 
 class Command(BaseCommand):

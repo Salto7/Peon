@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Peon Traffic Capture",
+  "version": "0.1.0",
+  "description": "Captures authenticated browser traffic on the active tab and sends it to a Peon project as Evidence(kind=traffic).",
+  "permissions": ["debugger", "activeTab", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Peon Traffic Capture",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

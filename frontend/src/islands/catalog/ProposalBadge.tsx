@@ -12,7 +12,7 @@ type Props = { listUrl: string; kind: string };
  * Shares the ["catalog-proposals"] query with MarketplacePanel/ProposalsQueue
  * (one QueryClient per page), so acting anywhere refreshes this for free.
  * ``kind`` is comma-separated when a tab covers more than one proposal kind
- * (e.g. Roles: "role,role_draft").
+ * (e.g. Skills: "skill,skill_overlap,skill_binding").
  */
 export default function ProposalBadge({ listUrl, kind }: Props) {
   const { data } = useQuery({

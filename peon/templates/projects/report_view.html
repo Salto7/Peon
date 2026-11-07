@@ -10,13 +10,19 @@
   <c-button variant="outline" href="{{ download_url }}">{% icon "file-text" %} Download</c-button>
 </c-page-header>
 
-<c-card>
-  {% if is_markdown %}
-  <article class="prose prose-sm max-w-none dark:prose-invert prose-headings:tracking-tight prose-p:max-w-[80ch] prose-a:text-link prose-pre:max-w-none prose-pre:bg-muted prose-pre:text-foreground prose-code:before:content-none prose-code:after:content-none">
-    {{ report_html|safe }}
-  </article>
-  {% else %}
-  <pre class="overflow-x-auto text-xs leading-relaxed whitespace-pre-wrap">{{ report_text }}</pre>
-  {% endif %}
-</c-card>
+<section class="space-y-3" aria-labelledby="report-body-heading">
+  <div>
+    <h2 id="report-body-heading" class="text-sm font-semibold tracking-tight">Report</h2>
+    <p class="mt-0.5 text-xs text-muted-foreground">Workspace deliverable for this engagement.</p>
+  </div>
+  <c-card>
+    {% if is_markdown %}
+    <article class="prose prose-sm max-w-none dark:prose-invert prose-headings:tracking-tight prose-p:max-w-[80ch] prose-a:text-link prose-pre:max-w-none prose-pre:bg-muted prose-pre:text-foreground prose-code:before:content-none prose-code:after:content-none">
+      {{ report_html|safe }}
+    </article>
+    {% else %}
+    <pre class="overflow-x-auto text-xs leading-relaxed whitespace-pre-wrap">{{ report_text }}</pre>
+    {% endif %}
+  </c-card>
+</section>
 {% endblock %}

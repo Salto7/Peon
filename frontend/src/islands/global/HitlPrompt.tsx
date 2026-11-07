@@ -33,6 +33,14 @@ type Decision = "approve" | "deny" | "edit";
 
 const SEEN_KEY = "peon-hitl-seen";
 
+// UI-1: two prompt kinds the operator sees as an approval ask rather than a
+// plain question — same generic rendering below, just a clearer label and
+// accent than the raw snake_case kind string.
+const APPROVAL_KIND_LABELS: Record<string, string> = {
+  phase_advance_request: "Phase advance requested",
+  spawn_cap_request: "Spawn cap reached",
+};
+
 function loadSeen(): Set<string> {
   try {
     return new Set(JSON.parse(sessionStorage.getItem(SEEN_KEY) || "[]") as string[]);
@@ -104,7 +112,7 @@ export default function HitlPrompt({
 
   const decide = useMutation({
     mutationFn: (decision: Decision) =>
-      api(decideUrl, { json: { id: current?.id, decision, reply } }),
+      api(decideUrl, { json: { id: current?.id, kind: current?.kind, decision, reply } }),
     onSuccess: () => {
       if (current) markSeen(current.id);
       toast.success("Response sent");
@@ -117,23 +125,25 @@ export default function HitlPrompt({
     if (current) markSeen(current.id);
   };
 
-  // Blocked objectives cannot be answered here; they need the project page.
-  const projectOnly = !!current?.id.startsWith("obj-");
-  // A multiple-choice question is answered, not approved/denied.
+  // Synthetic blocked-objective rows are project-only (no OperatorPrompt id).
+  const projectOnly = current?.kind === "blocked_objective";
   const options = (current?.options ?? []).filter((o) => o.trim());
   const hasOptions = options.length > 0;
+  const approvalLabel = current?.kind ? APPROVAL_KIND_LABELS[current.kind] : undefined;
 
   return (
     <Dialog open={!!current} onOpenChange={(o) => !o && close()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Operator input needed</DialogTitle>
-          <DialogDescription>
-            {current?.project_title || current?.project_id}
-          </DialogDescription>
+          <DialogDescription>{current?.project_title || current?.project_id}</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          {current?.kind ? <Badge variant="secondary">{current.kind}</Badge> : null}
+          {current?.kind ? (
+            <Badge variant={approvalLabel ? "default" : "secondary"}>
+              {approvalLabel ?? current.kind}
+            </Badge>
+          ) : null}
           {current?.job_title ? (
             <p className="text-xs text-muted-foreground">Asked by {current.job_title}</p>
           ) : null}

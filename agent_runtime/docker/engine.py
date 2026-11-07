@@ -169,6 +169,12 @@ class DockerClient(SharedBase):
         command: list[str] | None = None,
         shm_size: str = "",
     ) -> ExecResult:
+        from agent_runtime.docker.broker import SandboxPolicyError, assert_spawn_allowed
+
+        try:
+            assert_spawn_allowed(image=image, volumes=volumes)
+        except SandboxPolicyError as exc:
+            return ExecResult(1, "", str(exc))
         kwargs: dict[str, Any] = {
             "name": name,
             "detach": True,

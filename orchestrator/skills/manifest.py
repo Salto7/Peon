@@ -18,6 +18,7 @@ from orchestrator.skills.common import (
     MAX_COMPATIBILITY_LEN,
     MAX_DESCRIPTION_LEN,
     MAX_NAME_LEN,
+    split_frontmatter,
     valid_skill_name,
 )
 from orchestrator.utils.strings import as_bool, as_str_list, unique
@@ -277,10 +278,16 @@ def _validate_description(description: str, *, profile: ParseProfile) -> None:
         )
 
 
-def _split_frontmatter(text: str) -> tuple[str, str] | None:
-    from orchestrator.skills.common import split_frontmatter
-
-    return split_frontmatter(text)
+def skill_name_from_markdown(text: str) -> str:
+    """Return frontmatter ``name`` (lowercase), or "" when missing/invalid."""
+    split = split_frontmatter(text or "")
+    if not split:
+        return ""
+    try:
+        fm = parse_frontmatter_mapping(split[0])
+    except SkillParseError:
+        return ""
+    return str(fm.get("name") or "").strip().lower()
 
 
 def parse_frontmatter_mapping(fm_raw: str) -> dict[str, Any]:
@@ -315,7 +322,7 @@ def parse_skill_manifest(
     except OSError as exc:
         raise SkillParseError(f"Could not read {manifest_path}: {exc}", code="read_error") from exc
 
-    split = _split_frontmatter(body_text)
+    split = split_frontmatter(body_text)
     if not split:
         if prof == ParseProfile.CLAUDE_CODE:
             # Claude may treat body-only files as skills named after the directory.
@@ -412,24 +419,6 @@ def parse_skill_manifest(
     )
 
 
-def find_skill_manifest(skill_dir: Path) -> Path | None:
-    from orchestrator.skills.common import find_manifest
-
-    return find_manifest(Path(skill_dir))
-
-
-def load_skill_manifest(
-    path: Path,
-    *,
-    profile: ParseProfile | str = ParseProfile.PEON,
-) -> tuple[SkillManifest | None, tuple[str, ...]]:
-    """Parse without raising: ``(manifest|None, error messages)``."""
-    try:
-        return parse_skill_manifest(path, profile=profile), ()
-    except SkillParseError as exc:
-        return None, (exc.message,)
-
-
 __all__ = [
     "AGENTSKILLS_FIELDS",
     "CLAUDE_EXTENSION_FIELDS",
@@ -437,8 +426,7 @@ __all__ = [
     "ParseProfile",
     "SkillManifest",
     "SkillParseError",
-    "find_skill_manifest",
-    "load_skill_manifest",
+    "skill_name_from_markdown",
     "parse_frontmatter_mapping",
     "parse_skill_manifest",
     "tokenize_allowed_tools",

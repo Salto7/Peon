@@ -1,6 +1,7 @@
-/* War-room left nav: pane switch + collapsible icon rail. */
+/* War-room left nav: hash → pane switcher. */
 (function () {
-  var STORAGE = "peon-war-side-collapsed";
+  // Loaded by peon/templates/projects/detail.html (scripts block). Sole war-room
+  // hash→pane switcher; reads location.hash / data-war-nav, toggles data-war-pane.
   var VALID = {
     dashboard: true,
     assets: true,
@@ -8,8 +9,12 @@
     attack: true,
     memory: true,
     reports: true,
-    settings: true,
+    keystore: true,
   };
+
+  function mcpAvailable() {
+    return !!document.querySelector('[data-war-nav="mcp"]');
+  }
 
   function normalize(hash) {
     var h = String(hash || "")
@@ -25,25 +30,11 @@
       h === "results-card"
     )
       return "results";
+    // Legacy #settings → MCP only when that pane exists for this project.
+    if (h === "settings") return mcpAvailable() ? "mcp" : "keystore";
+    if (h === "mcp") return mcpAvailable() ? "mcp" : "dashboard";
     if (VALID[h]) return h;
     return "dashboard";
-  }
-
-  function setCollapsed(layout, collapsed) {
-    layout.dataset.collapsed = collapsed ? "1" : "0";
-    layout.classList.toggle("is-side-collapsed", !!collapsed);
-    var btn = document.getElementById("war-side-toggle");
-    if (btn) {
-      btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      btn.setAttribute(
-        "aria-label",
-        collapsed ? "Expand sidebar" : "Collapse sidebar"
-      );
-      btn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
-    }
-    try {
-      localStorage.setItem(STORAGE, collapsed ? "1" : "0");
-    } catch (_) {}
   }
 
   function showPane(name) {
@@ -77,21 +68,7 @@
   }
 
   function init() {
-    var layout = document.getElementById("war-layout");
-    if (!layout) return;
-
-    var collapsed = false;
-    try {
-      collapsed = localStorage.getItem(STORAGE) === "1";
-    } catch (_) {}
-    setCollapsed(layout, collapsed);
-
-    var toggle = document.getElementById("war-side-toggle");
-    if (toggle) {
-      toggle.addEventListener("click", function () {
-        setCollapsed(layout, !layout.classList.contains("is-side-collapsed"));
-      });
-    }
+    if (!document.getElementById("war-layout")) return;
 
     document.querySelectorAll("[data-war-nav]").forEach(function (el) {
       el.addEventListener("click", function () {

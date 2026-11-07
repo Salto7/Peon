@@ -18,6 +18,8 @@ from orchestrator.utils.stream_events import (
     EVENT_READ_MCP_RESOURCE,
     EVENT_RECORD_FINDING,
     EVENT_REPORT_NOTE,
+    EVENT_ROLE_DONE,
+    EVENT_ROLE_START,
     EVENT_RUN_CLI,
     EVENT_RUN_PERIODIC,
     EVENT_SPAWN_WORK,
@@ -173,9 +175,9 @@ def _running_label(
         return "Analyzing tool results"
     if children_active:
         return "Waiting for sub-agent"
-    if event == "crewai_role_start":
+    if event == EVENT_ROLE_START:
         return "Starting"
-    if event == "crewai_role_done":
+    if event == EVENT_ROLE_DONE:
         return "Finishing"
     return ""
 

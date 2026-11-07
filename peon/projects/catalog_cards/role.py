@@ -82,7 +82,8 @@ class RoleCards(CatalogCardsBase):
         card["aliases"] = list(defn.aliases) if defn else []
         card["skills"] = list(role.skills or ())
         card["kind"] = defn.kind if defn else getattr(role, "kind", "") or ""
-        card["deletable"] = not bool(defn.is_protected) if defn else False
+        # Called from catalog list.html via RoleCards.catalog(); EngagementRole cards.
+        card["deletable"] = False
         card["pending"] = bool(defn.pending) if defn else False
         return card
 

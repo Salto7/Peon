@@ -2,24 +2,14 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { subscribe } from "@/lib/sse";
-import type { FindingsResponse, Ops, StreamMessage } from "./types";
+import type { FindingsResponse, Ops } from "./types";
 import { projectUrls } from "./urls";
-
-/** Messages kept in memory per project; older lines drop off the activity feed. */
-const MESSAGE_CAP = 1500;
 
 export const keys = {
   ops: (pk: string) => ["ops", pk] as const,
-  messages: (pk: string) => ["messages", pk] as const,
-  findings: (pk: string, status: string, severity: string) => ["findings", pk, status, severity] as const,
+  findings: (pk: string, status: string, severity: string) =>
+    ["findings", pk, status, severity] as const,
 };
-
-export function mergeMessages(prev: StreamMessage[] | undefined, incoming: StreamMessage[]) {
-  const list = prev ? [...prev] : [];
-  const seen = new Set(list.map((m) => String(m.id)));
-  for (const m of incoming) if (!seen.has(String(m.id))) list.push(m);
-  return list.length > MESSAGE_CAP ? list.slice(-MESSAGE_CAP) : list;
-}
 
 /** Map server invalidation keys onto the queries that render them. */
 function invalidate(qc: QueryClient, pk: string, changed: string[]) {
@@ -40,10 +30,6 @@ export function useLiveProject(pk: string) {
       subscribe(
         projectUrls(pk).events,
         {
-          messages: (rows) =>
-            qc.setQueryData<StreamMessage[]>(keys.messages(pk), (prev) =>
-              mergeMessages(prev, rows as StreamMessage[]),
-            ),
           invalidate: (data) => invalidate(qc, pk, (data as { keys?: string[] }).keys ?? []),
         },
         setLive,
@@ -61,16 +47,6 @@ export function useOps(pk: string, initial?: Ops) {
     // Pushed invalidations drive refreshes; this is only a safety net.
     refetchInterval: 60_000,
   });
-}
-
-export function useMessages(pk: string, bootstrap: StreamMessage[] = []) {
-  return useQuery({
-    queryKey: keys.messages(pk),
-    queryFn: () => bootstrap,
-    initialData: bootstrap,
-    staleTime: Infinity,
-    gcTime: Infinity,
-  }).data;
 }
 
 export function useFindings(pk: string, status: string, severity: string) {

@@ -28,11 +28,6 @@ from peon.projects.workspaces import project_workspace_dir, safe_workspace_key
 logger = logging.getLogger(__name__)
 
 
-def _project_alias(project_id) -> str:
-    from peon.projects.db import ensure_project_database
-
-    return ensure_project_database(project_id)
-
 
 def inherited_objective_dependencies(
     parent: Objective | None,
@@ -71,7 +66,7 @@ class ObjectiveScheduler:
     """Gate and enqueue Jobs for ready objectives (deps + caps, not serial stall)."""
 
     def dependencies_met(self, objective: Objective) -> bool:
-        alias = _project_alias(objective.project_id)
+        alias = ensure_project_database(objective.project_id)
         objective = (
             Objective.objects.using(alias).prefetch_related("depends_on").get(pk=objective.pk)
         )
@@ -178,7 +173,7 @@ class ObjectiveScheduler:
         from peon.projects.db import using_project
 
         supplied = objective
-        alias = _project_alias(objective.project_id)
+        alias = ensure_project_database(objective.project_id)
         with using_project(objective.project_id):
             with transaction.atomic(using=alias):
                 return self._mark_locked(supplied, objective.pk, alias, status, reason=reason)
@@ -233,21 +228,17 @@ class ObjectiveScheduler:
 
     def _resolve_blocked_prompts(self, objective: Objective, *, status: str) -> None:
         """Close open blocked_objective HITL rows once the objective leaves BLOCKED."""
-        from django.db.models import Q
-
         from peon.projects.models import OperatorPrompt, OperatorPromptKind
 
         now = dj_tz.now()
         note = f"auto-resolved: objective moved to {status}"
-        prefix = f"OBJ-{objective.seq} "
-        alias = _project_alias(objective.project_id)
+        alias = ensure_project_database(objective.project_id)
         OperatorPrompt.objects.using(alias).filter(
             project_id=objective.project_id,
             kind=OperatorPromptKind.BLOCKED_OBJECTIVE,
             resolved_at__isnull=True,
-        ).filter(Q(job__objective_id=objective.id) | Q(question__startswith=prefix)).update(
-            resolved_at=now, reply=note
-        )
+            job__objective_id=objective.id,
+        ).update(resolved_at=now, reply=note)
 
     def roles_for(self, objective: Objective) -> list[str]:
         """Primary role id for the first Job (single id; not a peer list)."""
@@ -308,7 +299,7 @@ class ObjectiveScheduler:
         from peon.projects.db import using_project
 
         del workspace_id  # project identity is the only workspace identity
-        alias = _project_alias(project.id)
+        alias = ensure_project_database(project.id)
         with using_project(project.id), transaction.atomic(using=alias):
             objective = Objective.objects.using(alias).select_for_update().get(pk=objective.pk)
             job, created = self._create_run_locked(
@@ -324,9 +315,7 @@ class ObjectiveScheduler:
             return None
         if job.status == JobStatus.IDLE:
             enqueue = False  # standby agents are woken, not queued
-        # Dramatiq + Cognee only after commit, and only for newly created Jobs.
-        # Re-enqueueing an already-active Job was a regression from moving
-        # enqueue outside the atomic.
+        # Only newly created (non-standby) Jobs get Dramatiq enqueue.
         if created and enqueue:
             enqueue_job(str(job.id))
         if created:
@@ -452,7 +441,7 @@ class ObjectiveScheduler:
             logger.warning("standby sweep / governance PM failed: %s", exc, exc_info=True)
         plan_text = latest_plan_text(project)
         started: list[Job] = []
-        alias = _project_alias(project.id)
+        alias = ensure_project_database(project.id)
         ready = self.ready_objectives(project)
         for obj in ready:
             idle = (

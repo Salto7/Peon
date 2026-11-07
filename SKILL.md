@@ -18,7 +18,7 @@ This repo keeps its own history in `docs/`, not only in commit messages or chat 
 
 ## `docs/plans/` — one file per plan, named by topic
 
-- Path: `docs/plans/<descriptive-slug>.md` (e.g. `docs/plans/mcp-runtime-hardening.md`, `docs/plans/artex-port-plan.md`).
+- Path: `docs/plans/<descriptive-slug>.md` (e.g. `docs/plans/mcp-runtime-hardening.md`, `docs/plans/memory-safety-boundary.md`).
 - Longer-lived design/implementation documents: architecture proposals, feature plans, multi-step roadmaps, anything meant to be read and updated over the life of the work rather than appended to daily.
 - Update the plan doc in place as scope or decisions change; don't fork a new file for a revision of the same plan.
 - When a plan doc is created or meaningfully updated, add a short changelog entry for that day pointing at it (`docs/plans/<slug>.md` — one line on what changed) — the changelog is the index of "something happened," the plan doc is the detail.

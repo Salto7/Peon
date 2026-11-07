@@ -80,7 +80,9 @@ def spawn_work_body(
     if kind not in {"peer", "child"}:
         return "Error: link must be 'peer' or 'child'"
     if kind == "child" and ctx.depth >= cfg.max_subagent_depth:
-        return f"Error: child depth limit ({cfg.max_subagent_depth})"
+        reason = f"child depth limit ({cfg.max_subagent_depth})"
+        ctx.bridge.request_spawn_cap_approval(reason)
+        return f"Error: {reason}"
 
     scope: dict[str, str] | None = None
     raw_slice = (scope_slice_json or "").strip()

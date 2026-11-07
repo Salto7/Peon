@@ -2,7 +2,7 @@
 {% load ui %}
 {% block title %}{{ job.title }} · Peon{% endblock %}
 {% block content %}
-<c-page-header title="{{ job.title }}" description="Live job output. Updates every second until the job finishes.">
+<c-page-header title="{{ job.title }}" description="Live job output — pushed as it happens.">
   <c-slot name="crumbs">
     <a class="hover:text-foreground" href="{% url 'project_detail' project.pk %}">{{ project.title }}</a>
     {% icon "chevron-right" "size-3" %}<span>Job</span>
@@ -16,40 +16,68 @@
   </form>
 </c-page-header>
 
-<dl class="mb-6 grid gap-3 sm:grid-cols-3">
-  <div class="rounded-xl border bg-card p-4">
-    <dt class="text-xs text-muted-foreground">Status</dt>
-    <dd class="mt-1.5"><c-status value="{{ job.status }}" label="{{ job.get_status_display }}" id="job-status" /></dd>
-  </div>
-  <div class="rounded-xl border bg-card p-4">
-    <dt class="text-xs text-muted-foreground">Roles</dt>
-    <dd class="mt-1.5 truncate text-sm">{{ job.role_ids|join:", "|default:"—" }}</dd>
-  </div>
-  <div class="rounded-xl border bg-card p-4">
-    <dt class="text-xs text-muted-foreground">Job ID</dt>
-    <dd class="mt-1.5 truncate font-mono text-xs">{{ job.id }}</dd>
-  </div>
-</dl>
+<section class="mb-8 space-y-3" aria-labelledby="job-meta-heading">
+  <h2 id="job-meta-heading" class="text-sm font-semibold tracking-tight">Job status</h2>
+  <dl class="grid gap-3 sm:grid-cols-3">
+    <div class="rounded-xl border bg-card p-4">
+      <dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</dt>
+      <dd class="mt-2"><c-status value="{{ job.status }}" label="{{ job.get_status_display }}" id="job-status" /></dd>
+    </div>
+    <div class="rounded-xl border bg-card p-4">
+      <dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Roles</dt>
+      <dd class="mt-2 truncate text-sm">{{ job.role_ids|join:", "|default:"—" }}</dd>
+    </div>
+    <div class="rounded-xl border bg-card p-4">
+      <dt class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Job ID</dt>
+      <dd class="mt-2 truncate font-mono text-xs">{{ job.id }}</dd>
+    </div>
+  </dl>
+</section>
 
 <div id="job-error" class="mb-6" {% if not job.error %}hidden{% endif %}>
   <c-alert tone="danger" title="Job error"><span id="job-error-text" class="whitespace-pre-wrap">{{ job.error }}</span></c-alert>
 </div>
 
-<c-card title="Output" flush>
-  <pre id="job-result" class="min-h-[max(24rem,calc(100dvh-18rem))] overflow-auto p-5 font-mono text-xs leading-relaxed whitespace-pre-wrap">{{ job.result|default:"Waiting for the worker…" }}</pre>
-</c-card>
+<section class="space-y-3" aria-labelledby="job-output-heading">
+  <div>
+    <h2 id="job-output-heading" class="text-sm font-semibold tracking-tight">Output</h2>
+    <p class="mt-0.5 text-xs text-muted-foreground">Streamed as the worker writes results.</p>
+  </div>
+  <c-card flush>
+    <pre id="job-result" class="min-h-[max(24rem,calc(100dvh-18rem))] overflow-auto p-5 font-mono text-xs leading-relaxed whitespace-pre-wrap">{{ job.result|default:"Waiting for the worker…" }}</pre>
+  </c-card>
+</section>
+
+<section class="mt-8 space-y-3" aria-labelledby="job-memory-heading">
+  <div>
+    <h2 id="job-memory-heading" class="text-sm font-semibold tracking-tight">Memory used by this agent</h2>
+    <p class="mt-0.5 text-xs text-muted-foreground">What this job started knowing — point-in-time, not instructions.</p>
+  </div>
+  <c-card>
+    {% url 'job_messages_json' project.pk job.pk as job_messages_url %}
+    {% island "memory-transparency-panel" element_id="memory-transparency-panel" messagesUrl=job_messages_url %}
+  </c-card>
+</section>
 
 {% url 'job_live_json' project.pk job.pk as live_url %}
+{% url 'project_events' project.pk as events_url %}
 {{ live_url|json_script:"job-live-url" }}
+{{ events_url|json_script:"job-events-url" }}
+{{ job.pk|json_script:"job-id" }}
 <script>
 (function () {
   const url = JSON.parse(document.getElementById("job-live-url").textContent);
+  const eventsUrl = JSON.parse(document.getElementById("job-events-url").textContent);
+  const jobId = JSON.parse(document.getElementById("job-id").textContent);
   const status = document.querySelector("#job-status");
   const result = document.getElementById("job-result");
   const errorBox = document.getElementById("job-error");
   const errorText = document.getElementById("job-error-text");
-  async function tick() {
-    if (document.hidden) return setTimeout(tick, 1000);
+  let terminal = false;
+  let pending = null;
+
+  async function refresh() {
+    if (terminal) return;
     try {
       const res = await fetch(url, { headers: { Accept: "application/json" } });
       if (res.ok) {
@@ -58,12 +86,50 @@
         result.textContent = data.result || "Waiting for the worker…";
         errorBox.hidden = !data.error;
         errorText.textContent = data.error || "";
-        if (data.terminal) return;
+        if (data.terminal) {
+          terminal = true;
+          source.close();
+        }
       }
-    } catch (_) { /* transient; retry */ }
-    setTimeout(tick, 1000);
+    } catch (_) { /* transient; the SSE stream or the fallback poll will retry */ }
   }
-  tick();
+
+  // Coalesce bursts of SSE events (several StreamMessage rows for this job
+  // in one push) into a single job_live_json fetch instead of one per event.
+  function scheduleRefresh() {
+    if (pending) return;
+    pending = setTimeout(() => {
+      pending = null;
+      refresh();
+    }, 150);
+  }
+
+  // Server-sent events replace the old 1s poll — pushed the instant this
+  // job's status/result changes (peon/projects/live_events.py), same stream
+  // the war-room islands already use. job_live_json stays the single source
+  // of truth; SSE only tells us WHEN to re-fetch it, not what changed.
+  const source = new EventSource(eventsUrl, { withCredentials: true });
+  source.addEventListener("messages", (e) => {
+    try {
+      const rows = JSON.parse(e.data);
+      if (rows.some((r) => String(r.job_id) === String(jobId))) scheduleRefresh();
+    } catch (_) { /* malformed row; next invalidate/poll will catch up */ }
+  });
+  source.addEventListener("invalidate", (e) => {
+    try {
+      const keys = JSON.parse(e.data).keys || [];
+      if (keys.includes("jobs")) scheduleRefresh();
+    } catch (_) { /* ignore */ }
+  });
+  source.addEventListener("gone", () => source.close());
+
+  // Safety net: the stream can silently stall behind a proxy that buffers
+  // text/event-stream despite the no-buffering headers. Slow enough to add
+  // no real load, frequent enough that a stalled stream is never noticed.
+  const fallback = setInterval(() => { if (!terminal) refresh(); }, 10000);
+  window.addEventListener("beforeunload", () => { source.close(); clearInterval(fallback); });
+
+  refresh();
 })();
 </script>
 {% endblock %}

@@ -10,13 +10,12 @@ from orchestrator.skills.providers.base import (
     SkillDocument,
     SkillId,
 )
-from orchestrator.skills.registry_scan import discover_skill_manifests
 from orchestrator.utils.paths import safe_join
 from orchestrator.utils.service import SharedServiceBase
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SkillRegistry", "discover_skill_manifests"]
+__all__ = ["SkillRegistry"]
 
 
 def _document_from_record(rec) -> SkillDocument:

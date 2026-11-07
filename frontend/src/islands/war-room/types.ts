@@ -57,17 +57,15 @@ export type SurfaceSource = { name: string; first_seen: string; last_seen: strin
 export type SurfaceNode = {
   id: string;
   label: string;
+  /** Producer type slug — open vocabulary (host, path, function, person, …). */
   type: string;
-  /** Open Asset Model class slug (fqdn, ip, netblock, …) and its display fields. */
-  class?: string;
+  /** All producer type slugs merged onto this label. */
+  types?: string[];
   class_label?: string;
   oam?: string;
-  group?: string;
   bucket: string;
-  kind?: string;
   center?: boolean;
   value?: string;
-  source?: string;
   sources?: SurfaceSource[];
   first_seen?: string;
   last_seen?: string;
@@ -76,8 +74,6 @@ export type SurfaceNode = {
   status?: string;
   finding_count?: number;
   degree?: number;
-  parent_id?: string;
-  props?: Record<string, unknown>;
 };
 export type SurfaceEdge = {
   source: string;
@@ -88,14 +84,22 @@ export type SurfaceEdge = {
   status?: "ok" | "unexpected" | "custom";
   derived?: boolean;
 };
+/** Consumed by AttackSurface.tsx from ops.attack_surface (per-project AssetGraph). */
 export type AttackSurface = {
   nodes: SurfaceNode[];
   edges: SurfaceEdge[];
   legend?: Record<string, unknown>;
   stats?: { nodes: number; edges: number };
+  /** project = per-project SQLite AssetGraph JSON (Cytoscape viewer). */
+  store?: "project" | string;
 };
 
-export type RoleSummary = { name: string; description?: string; tags?: string[]; category?: string };
+export type RoleSummary = {
+  name: string;
+  description?: string;
+  tags?: string[];
+  category?: string;
+};
 
 export type Ops = {
   project: {
@@ -120,17 +124,6 @@ export type Ops = {
   next_objective_ready: boolean;
   pending_inputs: PendingInput[];
   command_hints?: { cli?: string[]; capabilities?: string[] };
-};
-
-export type StreamMessage = {
-  id: number | string;
-  message_type: string;
-  content: string;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  job_id: string;
-  job_title: string;
-  job_status?: string;
 };
 
 export type Finding = {

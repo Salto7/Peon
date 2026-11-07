@@ -45,3 +45,24 @@ def decrypt_secret(ciphertext: str) -> str:
         return _fernet().decrypt(text.encode("ascii")).decode("utf-8")
     except (InvalidToken, ValueError) as exc:
         raise SecretDecryptError("stored credential could not be decrypted") from exc
+
+
+def retain_unset_secrets(
+    incoming: dict[str, str],
+    stored: dict[str, str],
+    *,
+    secret_keys: set[str] | frozenset[str],
+    clear: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """Copy stored secret values when the form omitted them (blank = keep).
+
+    secret-retention logic between credentials and MCP env saves.
+    """
+    out = dict(incoming)
+    for name in secret_keys:
+        if name in clear:
+            out.pop(name, None)
+            continue
+        if name not in out and stored.get(name):
+            out[name] = stored[name]
+    return out

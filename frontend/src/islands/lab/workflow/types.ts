@@ -72,7 +72,10 @@ export type PlanPreview = { objectives: PlanRow[]; role_ids: string[] };
 export const PHASES = ["recon", "initial-access", "post-exploit", "reporting"] as const;
 
 /** What an edge may connect: role→role, role→skill, role→tool, skill→tool. */
-export const ALLOWED_LINKS: ReadonlySet<string> = new Set(["role>role", "role>skill", "role>tool", "skill>tool"]);
+const ALLOWED_LINKS: ReadonlySet<string> = new Set([
+  "role>role",
+  "role>skill",
+  "role>tool",
+  "skill>tool",
+]);
 export const canLink = (from: NodeKind, to: NodeKind) => ALLOWED_LINKS.has(`${from}>${to}`);
-
-export const KIND_LABEL: Record<NodeKind, string> = { role: "Role", skill: "Skill", tool: "Tool" };

@@ -38,7 +38,7 @@ from peon.projects.objectives import (
     latest_plan_text,
 )
 from peon.projects.roe_ops import provision_project_roe
-from peon.projects.target_shapes import (
+from peon.projects.targets import (
     coerce_targets,
     extract_targets,
     format_targets,
@@ -62,12 +62,15 @@ def _assume_breach_context(project: Project) -> str:
     from peon.projects.credentials import list_credentials
 
     creds = list_credentials(project.id)
-    cred_lines = "\n".join(
-        f"- {row['name']} [{row['kind']}]"
-        + (f" {row['username']}" if row["username"] else "")
-        + (f"@{row['domain']}" if row["domain"] else "")
-        for row in creds
-    ) or "(none stored yet — the operator brief below may still name assets to target)"
+    cred_lines = (
+        "\n".join(
+            f"- {row['name']} [{row['kind']}]"
+            + (f" {row['username']}" if row["username"] else "")
+            + (f"@{row['domain']}" if row["domain"] else "")
+            for row in creds
+        )
+        or "(none stored yet — the operator brief below may still name assets to target)"
+    )
     return (
         "\n\n## Assume-breach mode\n"
         "Initial access is already granted — do NOT plan phishing/initial-access "
@@ -113,9 +116,7 @@ def validate_project_objectives(objectives_payload: list[dict[str, Any]]) -> Non
     registry = RoleRegistry.shared()
     roles = registry.list_roles()
     if not roles:
-        raise ValueError(
-            "No CrewAI roles found — check orchestrator/crew/roles/catalog.py"
-        )
+        raise ValueError("No CrewAI roles found — check orchestrator/crew/roles/catalog.py")
     manager = registry.manager()
     analyzer = registry.analyzer()
     if manager is None or analyzer is None:
@@ -143,16 +144,27 @@ def validate_project_objectives(objectives_payload: list[dict[str, Any]]) -> Non
         if role_id not in known and role_id not in invalid:
             invalid.append(role_id)
     if invalid:
-        raise ValueError(
-            "Planner used unknown CrewAI role id(s): " + ", ".join(invalid)
-        )
-    if str(rows[0].get("role_id") or "").strip() != manager.id:
+        raise ValueError("Planner used unknown CrewAI role id(s): " + ", ".join(invalid))
+    if resolve_role_id(str(rows[0].get("role_id") or "").strip()) != manager.id:
         raise ValueError(f"First objective must use manager role {manager.id}")
-    if str(rows[-1].get("role_id") or "").strip() != analyzer.id:
+    if resolve_role_id(str(rows[-1].get("role_id") or "").strip()) != analyzer.id:
         raise ValueError(f"Last objective must use analyzer role {analyzer.id}")
+    # ``persist_project_plan``. Observed on project 14478da9… (PM+analyzer only).
+    bookends = {manager.id, analyzer.id}
+    middle = [
+        rid
+        for row in rows
+        if (rid := resolve_role_id(str(row.get("role_id") or "").strip())) and rid not in bookends
+    ]
+    if not middle:
+        raise ValueError(
+            "Planner returned no specialist objectives between manager and "
+            "reporter — replan required"
+        )
 
 
-def draft_llm_plan(*,
+def draft_llm_plan(
+    *,
     description: str,
     mode: str = "project",
     title: str = "adhoc",
@@ -199,25 +211,30 @@ def draft_llm_plan(*,
         if not prior_plan:
             try:
                 plan_path = (
-                    project_workspace_dir(str(project.id), create=False)
-                    / "plans"
-                    / "latest.md"
+                    project_workspace_dir(str(project.id), create=False) / "plans" / "latest.md"
                 )
                 if plan_path.is_file():
-                    prior_plan = plan_path.read_text(encoding="utf-8", errors="replace")[
-                        :4000
-                    ]
+                    prior_plan = plan_path.read_text(encoding="utf-8", errors="replace")[:4000]
             except Exception:
                 prior_plan = ""
         lines = []
         for obj in project.objectives.order_by("seq")[:40]:
-            lines.append(
-                f"- OBJ-{obj.seq} [{obj.status}] {obj.title} "
-                f"role={obj.role_id or '-'}"
-            )
+            lines.append(f"- OBJ-{obj.seq} [{obj.status}] {obj.title} role={obj.role_id or '-'}")
         existing_summary = "\n".join(lines)
 
     if mode_norm == "project":
+        from orchestrator.crew.memory import MemoryService
+
+        # create_project_shell() already ran this recall once and wrote it to
+        # the project's bootstrap file — read that instead of paying for a
+        # second Cognee round-trip for the same title/summary in one request.
+        # Only a project-less draft (job mode never reaches here) would need
+        # a fresh recall, which is why the fallback keeps calling it directly.
+        lessons_context = (
+            MemoryService.read_project_bootstrap(str(project.id))
+            if project is not None
+            else MemoryService.recall_for_new_project(title=title, summary=summary, top_k=5)
+        )
         planner = ProjectPlanner()
         msgs = planner.build_messages(
             prompt,
@@ -232,19 +249,39 @@ def draft_llm_plan(*,
             ),
             filtered_roles_index=(
                 RoleRouter.shared().roles_index_text()
-                + (
-                    ("\n\n" + _rs)
-                    if (_rs := role_skills_prompt_block())
-                    else ""
-                )
+                + (("\n\n" + _rs) if (_rs := role_skills_prompt_block()) else "")
             ),
             focus_tags=tags or None,
             prior_plan=prior_plan,
+            lessons_context=lessons_context,
             existing_objectives_summary=existing_summary,
         )
         with llm_usage.purpose("planner_project"):
             raw = planner.message_text(chat_messages(msgs))
         payload = parse_project_objectives(raw)
+        # One retry when the model returns bookends only (no specialists).
+        try:
+            validate_project_objectives(list(payload.get("objectives") or []))
+        except ValueError as exc:
+            # Only hollow plans get this retry — other validation errors must surface.
+            if "no specialist objectives" not in str(exc).lower():
+                raise
+            retry_msgs = list(msgs) + [
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous plan had no specialist middle objectives. "
+                        "Return JSON again with at least one technical objective "
+                        f"(role_id from the catalog, not {RoleRegistry.shared().engagement_bookends()[0]} "
+                        f"or {RoleRegistry.shared().engagement_bookends()[1]}) that does the "
+                        "in-scope work before reporting."
+                    ),
+                }
+            ]
+            with llm_usage.purpose("planner_project"):
+                raw = planner.message_text(chat_messages(retry_msgs))
+            payload = parse_project_objectives(raw)
+            validate_project_objectives(list(payload.get("objectives") or []))
         plan_text = planner.format_result(raw, project_title=title)
         obj_roles = [
             str(o.get("role_id") or "").strip()
@@ -279,7 +316,8 @@ def draft_llm_plan(*,
     )
 
 
-def run_llm_plan(*,
+def run_llm_plan(
+    *,
     description: str,
     mode: str = "project",
     title: str = "adhoc",
@@ -331,10 +369,15 @@ def replan_project(project: Project, *, description: str | None = None) -> PlanR
             roe.exclusions = fixed_excl
             changed = True
         if changed:
-            roe.save(update_fields=["in_scope", "exclusions", "updated_at"])
+            from peon.projects.db import ensure_project_database
+
+            roe.save(
+                using=ensure_project_database(project.pk),
+                update_fields=["in_scope", "exclusions", "updated_at"],
+            )
         in_scope = list(roe.in_scope or [])
         exclusions = list(roe.exclusions or [])
-        auth = (roe.authorization_note or "")
+        auth = roe.authorization_note or ""
     return run_llm_plan(
         description=brief,
         mode="project",
@@ -349,7 +392,8 @@ def replan_project(project: Project, *, description: str | None = None) -> PlanR
 
 
 @transaction.atomic
-def persist_project_plan(*,
+def persist_project_plan(
+    *,
     title: str,
     summary: str,
     description: str,
@@ -389,9 +433,7 @@ def persist_project_plan(*,
         if not scope:
             scope = extract_targets(description, title, summary)
         with using_project(project.id):
-            RulesOfEngagement.objects.using(
-                ensure_project_database(project.id)
-            ).create(
+            RulesOfEngagement.objects.using(ensure_project_database(project.id)).create(
                 project=project,
                 in_scope=scope,
                 exclusions=excl,
@@ -455,12 +497,8 @@ def persist_project_plan(*,
     ws = safe_workspace_key(str(project.id))
     project_workspace_dir(ws)
     ensure_project_database(project.id)
-    created = ObjectivePlanSync().sync(
-        project, objectives_payload, replace=replace_objectives
-    )
-    ProjectPlanner().persist(
-        ws, plan_text, reason="replan" if replace_objectives else "initial"
-    )
+    created = ObjectivePlanSync().sync(project, objectives_payload, replace=replace_objectives)
+    ProjectPlanner().persist(ws, plan_text, reason="replan" if replace_objectives else "initial")
 
     job = None
     if start:
@@ -468,11 +506,7 @@ def persist_project_plan(*,
         queued = sched.enqueue_ready(project)
         job = queued[0] if queued else None
 
-    used_roles = [
-        str(o.role_id).strip()
-        for o in created
-        if str(o.role_id or "").strip()
-    ]
+    used_roles = [str(o.role_id).strip() for o in created if str(o.role_id or "").strip()]
     return PlanResult(
         project=project,
         job=job,
@@ -483,7 +517,8 @@ def persist_project_plan(*,
 
 
 @transaction.atomic
-def persist_job_plan(*,
+def persist_job_plan(
+    *,
     description: str,
     plan_text: str,
     title: str = "adhoc-job",
@@ -513,7 +548,8 @@ def persist_job_plan(*,
     return PlanResult(job=job, plan_text=plan_text, role_ids=roles)
 
 
-def persist_draft(draft: PlanDraft,
+def persist_draft(
+    draft: PlanDraft,
     *,
     workspace_id: str | None = None,
     project: Project | None = None,
@@ -592,10 +628,10 @@ def create_project_shell(
             scope = extract_targets(title)
     if not scope and (summary or title).strip():
         # Bare asset names / free-text subjects in the brief.
-        from peon.projects.target_discovery import SubjectCanonicalizer
+        from peon.projects.target_discovery import suggest_assets
 
         brief = "\n".join(p for p in (summary, title) if (p or "").strip())
-        scope = coerce_targets(SubjectCanonicalizer.suggest_assets(brief))
+        scope = coerce_targets(suggest_assets(brief))
 
     seed: list = []
     if summary and not scope:
@@ -618,29 +654,16 @@ def create_project_shell(
                 else ""
             ),
         )
-    provision_project_roe(project, texts=[title, summary])
+    roe, _ = provision_project_roe(project, texts=[title, summary])
     project.refresh_from_db()
-    try:
-        roe = project.roe
-    except RulesOfEngagement.DoesNotExist:
-        roe = None
     final_scope = list(roe.in_scope) if roe else coerce_targets(scope)
     try:
         from orchestrator.crew.memory import MemoryService
 
-        scope_hints: list[str] = []
-        for item in final_scope or []:
-            if isinstance(item, dict):
-                val = str(item.get("value") or "").strip()
-                if val:
-                    scope_hints.append(val)
         # Write workspace file only here — do not mutate summary before the
         # LLM plan runs (bootstrap text was polluting objectives / validation).
-        recall = MemoryService.recall_for_new_project(
-            title=title,
-            summary=summary,
-            scope_hints=scope_hints[:24],
-        )
+        # Query is title/summary only (target values pull target-specific text).
+        recall = MemoryService.recall_for_new_project(title=title, summary=summary)
         if recall:
             MemoryService.write_project_bootstrap(str(project.id), recall)
     except Exception as exc:
