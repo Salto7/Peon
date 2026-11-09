@@ -8,6 +8,7 @@ each other, and a reconnect replays recent output instead of a blank screen.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import select
 import threading
@@ -129,10 +130,8 @@ class PtyTerminal(TerminalHandle):
             if (cols, rows) == (self.cols, self.rows):
                 return
             self.cols, self.rows = cols, rows
-            try:
+            with contextlib.suppress(OSError):
                 self._proc.setwinsize(rows, cols)
-            except OSError:
-                pass
 
     def alive(self) -> bool:
         return self._proc.isalive() and not self._eof
@@ -141,15 +140,11 @@ class PtyTerminal(TerminalHandle):
         if self._closed:
             return
         self._closed = True
-        try:
+        with contextlib.suppress(Exception):
             self._proc.terminate(force=True)
-        except Exception:
-            pass
         self._pump.join(timeout=1.5)
-        try:
+        with contextlib.suppress(Exception):
             self._proc.close(force=True)
-        except Exception:
-            pass
         with self._cond:
             self._eof = True
             self._cond.notify_all()

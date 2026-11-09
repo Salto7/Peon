@@ -94,7 +94,7 @@ def parse_graph(raw: Any) -> Graph:
 
 
 def find_cycle(g: Graph) -> list[str] | None:
-    color = {n: 0 for n in g.nodes}  # 0 new, 1 on stack, 2 done
+    color = dict.fromkeys(g.nodes, 0)  # 0 new, 1 on stack, 2 done
     path: list[str] = []
 
     def visit(n: str) -> list[str] | None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import socket
 import threading
 import time
@@ -92,10 +93,8 @@ class DockerSession(SandboxSession):
         timed_out = reader.is_alive()
         if timed_out:
             # Unblocks the reader; the command keeps running, as with a killed ``docker exec``.
-            try:
+            with contextlib.suppress(OSError):
                 raw.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
             reader.join(5)
         stream.close()
 

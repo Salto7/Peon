@@ -344,7 +344,7 @@ def sync_platform_dataset() -> dict[str, Any]:
     if not (memory_enabled() and peon_memory_enabled()):
         return {"ok": False, "skipped": True}
     backend = CogneeBackend.shared()
-    entries = [e for e in _scope_qs(None)]
+    entries = list(_scope_qs(None))
     removed = backend.clear_dataset("peon")
     sent = 0
     for e in entries:
