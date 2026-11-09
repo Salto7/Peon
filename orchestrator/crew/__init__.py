@@ -1,25 +1,14 @@
-"""CrewAI project orchestration (Peon-crewAI branch).
+"""Crew domain: roles, tools, routing, and memory.
 
-- ``registry`` — ``AGENT_MODULE`` resolution (job runtime)
-- ``roles`` — platform role store + affinity skill decoration + CrewAI agent factory
-- ``tools`` — sandbox / RoE / findings tool allowlists
-- ``runtimes`` — job role runtime, which expands into the project crew
-  (``runtimes.project_crewai.run_project_crew``) when the manager role
-  requests it
+CrewAI execution lives in ``orchestrator.agent.backends.crewai``.
+``AGENT_MODULE`` resolution lives in ``orchestrator.agent.registry``.
 """
 
-from orchestrator.crew.registry import (
-    agent_module_id,
-    get_job_runtime,
-    reset_agent_modules,
-)
-from orchestrator.crew.roles import RoleRegistry, RoleSpec, build_crew_agent
+from orchestrator.crew.roles import AgentSpec, RoleRegistry, RoleSpec, build_agent_spec
 
 __all__ = [
+    "AgentSpec",
     "RoleRegistry",
     "RoleSpec",
-    "agent_module_id",
-    "build_crew_agent",
-    "get_job_runtime",
-    "reset_agent_modules",
+    "build_agent_spec",
 ]

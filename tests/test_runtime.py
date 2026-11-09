@@ -37,7 +37,9 @@ def test_set_agent_runtime_returns_fake_then_reloads_configured_module():
         set_agent_runtime(None)
         loaded = get_agent_runtime()
         assert loaded is not fake
-        assert type(loaded).__name__ == "CrewAIAgentExecutor"
+        assert type(loaded).__name__ == "CrewAIBackend"
+        assert loaded.supports_project_crew is True
+        loaded.warm()
         assert get_agent_runtime() is loaded
     finally:
         set_agent_runtime(None)

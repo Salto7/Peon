@@ -3,10 +3,11 @@
 Layers:
 - ``config`` — run caps
 - ``bridge_base`` / ``job`` — control-plane adapter + per-Job scope
-- ``runtime_base`` — Job runtime ABC; concrete impl via ``orchestrator.crew``
+- ``runtime_base`` — Job runtime ABC; concrete backend via ``registry``
+- ``backends`` — one package per framework (crewai)
 - ``propose`` — LLM specialist proposals (control plane spawns Jobs)
 
-Multi-agent / role orchestration lives in ``orchestrator.crew`` (CrewAI).
+Role, tool, and memory domain stays in ``orchestrator.crew``.
 """
 
 from orchestrator.agent.bridge_base import AgentBridgeBase, AgentLink

@@ -1,7 +1,7 @@
 """Project-level CrewAI runtime (hierarchical manager crew).
 
-One implementation, one caller (``job_crewai.py``) — a plain function, not an
-ABC/DTO pair, since nothing else needs the extra indirection.
+One implementation, called by the CrewAI backend when the job asks for a
+project crew. A plain function, not an ABC/DTO pair.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Any
 from orchestrator.agent.config import AgentRunConfig
 from orchestrator.agent.job import JobScope, bind_job
 from orchestrator.agent.runtime_base import AgentRunResult
-from orchestrator.crew.flows.engagement import build_engagement_crew
+from orchestrator.agent.backends.crewai.engagement import build_engagement_crew
 from orchestrator.crew.roles.registry import RoleRegistry
 from orchestrator.utils import llm_usage
 from orchestrator.utils.stream_events import (

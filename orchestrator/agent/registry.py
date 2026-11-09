@@ -1,4 +1,4 @@
-"""Resolve agent / crew modules from RuntimeConfig (parallel to llm.registry)."""
+"""Resolve ``AGENT_MODULE`` to one backend. Production has a single entry."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import importlib
 from orchestrator.agent.runtime_base import AgentExecutorBase
 from orchestrator.config import get_config
 
-# Job-level modules (one Job / role tool loop).
-_JOB_MODULES: dict[str, str] = {
-    "crewai": "orchestrator.crew.runtimes.job_crewai:CrewAIAgentExecutor",
+# One line per backend. A new id is a new package plus one entry here.
+_BACKENDS: dict[str, str] = {
+    "crewai": "orchestrator.agent.backends.crewai:CrewAIBackend",
 }
 
 _job_cached: AgentExecutorBase | None = None
@@ -35,18 +35,18 @@ def _load_class(path: str) -> type:
 
 
 def agent_module_id() -> str:
-    """Return configured module id (crewai only)."""
+    """Return the configured backend id (``crewai`` unless tests select another)."""
     return (get_config().agent_module or "crewai").strip().lower() or "crewai"
 
 def get_job_runtime() -> AgentExecutorBase:
-    """Return the Job-level agent runtime for ``AGENT_MODULE``."""
+    """Return the backend for ``AGENT_MODULE``."""
     global _job_cached, _job_cached_id
     module_id = agent_module_id()
     if _job_cached is not None and _job_cached_id == module_id:
         return _job_cached
-    path = _JOB_MODULES.get(module_id)
+    path = _BACKENDS.get(module_id)
     if path is None:
-        known = ", ".join(sorted(_JOB_MODULES))
+        known = ", ".join(sorted(_BACKENDS))
         raise RuntimeError(
             f"Unknown AGENT_MODULE={module_id!r}; known modules: {known}"
         )

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from orchestrator.agent.config import AgentRunConfig
-from orchestrator.crew.roles.model import build_crew_agent, llm_id_for_crew
+from orchestrator.agent.backends.crewai.factory import build_crew_agent, llm_id_for_crew
 from orchestrator.crew.roles.registry import RoleRegistry
 
 

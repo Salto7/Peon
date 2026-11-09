@@ -1,16 +1,13 @@
-"""Per-role CrewAI job runtime (manager role expands to project crew)."""
+"""Per-role CrewAI job runtime (manager project-crew when the job asks for it)."""
 
 from __future__ import annotations
 
+from orchestrator.agent.backends import AgentBackend
+from orchestrator.agent.backends.crewai.factory import build_crew_agent
+from orchestrator.agent.backends.crewai.project import run_project_crew
 from orchestrator.agent.job import bind_job
-from orchestrator.agent.runtime_base import (
-    AgentExecutorBase,
-    AgentRunRequest,
-    AgentRunResult,
-)
-from orchestrator.crew.roles.model import build_crew_agent
+from orchestrator.agent.runtime_base import AgentRunRequest, AgentRunResult
 from orchestrator.crew.roles.registry import RoleRegistry
-from orchestrator.crew.runtimes.project_crewai import run_project_crew
 from orchestrator.utils import llm_usage
 from orchestrator.utils.stream_events import EVENT_ROLE_DONE, EVENT_ROLE_START, envelope
 
@@ -28,59 +25,78 @@ def resolve_role_id(scope) -> str:
     return ""
 
 
-def project_crew_requested(scope) -> bool:
-    """True only for explicit project-crew runs, never merely for a manager role."""
-    extras = getattr(scope, "extras", None) or {}
-    return str(extras.get("crew_mode") or "").strip().lower() == "project"
-
-
-class CrewAIAgentExecutor(AgentExecutorBase):
-    """Run one CrewAI role, or an explicitly requested full project crew."""
-
-    def start(self, request: AgentRunRequest) -> AgentRunResult:
-        if not request.config.runtime_enabled:
-            return AgentRunResult(
+def _open(
+    request: AgentRunRequest,
+) -> tuple[AgentRunResult | None, object, object]:
+    if not request.config.runtime_enabled:
+        return (
+            AgentRunResult(
                 ok=False,
                 error="agent runtime disabled (AGENT_RUNTIME_ENABLED=false)",
-            )
-        scope = request.scope
-        role_id = resolve_role_id(scope)
-        if not role_id:
-            return AgentRunResult(
+            ),
+            None,
+            None,
+        )
+    scope = request.scope
+    role_id = resolve_role_id(scope)
+    if not role_id:
+        return (
+            AgentRunResult(
                 ok=False,
                 error=(
                     "AGENT_MODULE=crewai requires a role id "
                     "(extras.role_id or role_ids matching the "
                     "platform role store)"
                 ),
-            )
-        try:
-            role = RoleRegistry.shared().require(role_id)
-        except KeyError as exc:
-            return AgentRunResult(ok=False, error=str(exc))
+            ),
+            None,
+            None,
+        )
+    try:
+        role = RoleRegistry.shared().require(role_id)
+    except KeyError as exc:
+        return AgentRunResult(ok=False, error=str(exc)), None, None
+    return None, scope, role
 
-        if project_crew_requested(scope):
+
+class CrewAIBackend(AgentBackend):
+    """Run one CrewAI role, or an explicitly requested full project crew."""
+
+    supports_project_crew = True
+
+    def warm(self) -> None:
+        import crewai  # noqa: F401 — pay the import cost before the first job
+
+    def run_project(self, request: AgentRunRequest) -> AgentRunResult:
+        err, scope, role = _open(request)
+        if err is not None:
+            return err
+        planned = tuple(
+            str(r).strip()
+            for r in (scope.role_ids or ())
+            if str(r).strip() and str(r).strip() != role.id
+        )
+        extra_roles = scope.extras.get("crew_role_ids") or scope.extras.get(
+            "specialist_role_ids"
+        )
+        if extra_roles:
             planned = tuple(
-                str(r).strip()
-                for r in (scope.role_ids or ())
-                if str(r).strip() and str(r).strip() != role_id
-            )
-            extra_roles = scope.extras.get("crew_role_ids") or scope.extras.get(
-                "specialist_role_ids"
-            )
-            if extra_roles:
-                planned = tuple(
-                    str(r).strip() for r in extra_roles if str(r or "").strip()
-                ) or planned
-            return run_project_crew(
-                scope,
-                request.config,
-                role_ids=planned,
-                resume=request.resume,
-                replan=bool(scope.extras.get("replan")),
-                steer=request.steer,
-                flow_id=str(scope.extras.get("crew_flow_id") or ""),
-            )
+                str(r).strip() for r in extra_roles if str(r or "").strip()
+            ) or planned
+        return run_project_crew(
+            scope,
+            request.config,
+            role_ids=planned,
+            resume=request.resume,
+            replan=bool(scope.extras.get("replan")),
+            steer=request.steer,
+            flow_id=str(scope.extras.get("crew_flow_id") or ""),
+        )
+
+    def run_job(self, request: AgentRunRequest) -> AgentRunResult:
+        err, scope, role = _open(request)
+        if err is not None:
+            return err
 
         # The objective brief always stays; steer (operator guidance, A2A
         # inbox, memory, checkpoint context) is added to it — never a

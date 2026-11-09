@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from orchestrator.agent.config import AgentRunConfig
 from orchestrator.agent.job import JobScope
-from orchestrator.crew.runtimes import project_crewai
+from orchestrator.agent.backends.crewai import project as project_crewai
 from tests.support.recording_bridge import RecordingBridge
 
 
