@@ -8,6 +8,7 @@ from typing import Any
 ToolFactory = Callable[[], Any]
 
 _FACTORIES: dict[str, ToolFactory] = {}
+_TAGS: dict[str, frozenset[str]] = {}
 
 # Engagement roles get these without listing them on every skill pack.
 # In the job model (one role per Dramatiq Job — the default) peer messaging is
@@ -137,8 +138,15 @@ def register_tool(name: str, factory: ToolFactory) -> ToolFactory:
     return factory
 
 
-def crew_tool(name: str, description: str) -> Callable[[Callable[..., str]], Callable[..., str]]:
-    """Register a function as a named CrewAI tool factory."""
+def crew_tool(
+    name: str, description: str, *, tags: Iterable[str] = ()
+) -> Callable[[Callable[..., str]], Callable[..., str]]:
+    """Register a function as a named CrewAI tool factory.
+
+    ``tags`` is read by ``orchestrator.utils.commands`` (e.g. the ``shell``
+    tag on ``bash`` drives its shell-arg detection) — it carries no other
+    behavior here.
+    """
 
     def deco(fn: Callable[..., str]) -> Callable[..., str]:
         if description and not (fn.__doc__ or "").strip():
@@ -163,6 +171,7 @@ def crew_tool(name: str, description: str) -> Callable[[Callable[..., str]], Cal
             return wrapped
 
         register_tool(name, factory)
+        _TAGS[name] = frozenset(tags)
         return fn
 
     return deco
@@ -171,6 +180,12 @@ def crew_tool(name: str, description: str) -> Callable[[Callable[..., str]], Cal
 def known_tool_names() -> list[str]:
     _ensure()
     return sorted(_FACTORIES)
+
+
+def tool_tags(name: str) -> frozenset[str]:
+    """Tags registered for ``name`` via ``crew_tool(..., tags=...)``, or empty."""
+    _ensure()
+    return _TAGS.get(name, frozenset())
 
 
 def canonicalize_crew_tools(names: Iterable[str] | None) -> tuple[str, ...]:

@@ -6,8 +6,6 @@ import ast
 import re
 from functools import lru_cache
 
-from orchestrator.capabilities.registry import ensure_registered
-
 _TOKEN_CLEAN = re.compile(r"[^a-z0-9._+/-]+")
 
 
@@ -33,13 +31,10 @@ def catalog_cli_names() -> frozenset[str]:
 
 @lru_cache(maxsize=1)
 def capability_tool_names() -> frozenset[str]:
-    """Registered capability + CrewAI tool names (e.g. bash, provision_cli)."""
+    """Registered CrewAI tool names (e.g. bash, provision_cli)."""
     names: set[str] = set()
     try:
-        names.update(ensure_registered().names())
-    except Exception:
-        pass
-    try:
+        # circular: adapters → crew_tool from orchestrator.crew.tools.catalog
         from orchestrator.crew.tools import known_tool_names
 
         names.update(known_tool_names())
@@ -135,8 +130,9 @@ def _shell_from_capability_call(text: str) -> str:
             val = _str_const(kw.value)
             if val:
                 return val
-    entry = ensure_registered().get(name)
-    if entry is not None and "shell" in entry.tags and body.args:
+    from orchestrator.crew.tools import tool_tags
+
+    if "shell" in tool_tags(name) and body.args:
         return _str_const(body.args[0])
     return ""
 

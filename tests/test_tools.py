@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from orchestrator.capabilities.registry import ensure_registered
 from orchestrator.crew.tools.catalog import (
     canonicalize_crew_tools,
     for_dispatch_only,
     known_tool_names,
+    tool_tags,
     with_collab_tools,
 )
 
@@ -55,34 +55,6 @@ _KNOWN_TOOLS = (
     "wait_for_work",
     "write_report_note",
     "write_workspace_artifact",
-)
-
-# (name, tags) in registry order. commands.py treats a ``shell`` tag as the
-# bash positional payload. bash is the only tagged name.
-_CAPABILITY_PAIRS = (
-    ("sandbox_status", ()),
-    ("provision_cli", ()),
-    ("bash", ("shell",)),
-    ("run_periodic", ()),
-    ("list_objectives", ()),
-    ("update_objective_status", ()),
-    ("ask_operator", ()),
-    ("record_finding", ()),
-    ("record_findings", ()),
-    ("recall_memory", ()),
-    ("save_memory", ()),
-    ("forget_memory", ()),
-    ("list_credentials", ()),
-    ("get_credential", ()),
-    ("list_team", ()),
-    ("send_message", ()),
-    ("check_inbox", ()),
-    ("go_idle", ()),
-    ("record_assets", ()),
-    ("list_findings", ()),
-    ("search_evidence", ()),
-    ("record_observation", ()),
-    ("record_intent", ()),
 )
 
 _ANALYZER_TOOLS = (
@@ -254,10 +226,11 @@ def test_for_dispatch_only():
     )
 
 
-def test_capability_name_tag_pairs_include_bash_shell():
-    registry = ensure_registered()
-    pairs = tuple(
-        (name, tuple(sorted(registry.get(name).tags))) for name in registry.names()
-    )
-    assert pairs == _CAPABILITY_PAIRS
-    assert [name for name, tags in pairs if "shell" in tags] == ["bash"]
+def test_bash_is_the_only_shell_tagged_tool():
+    # commands.py treats a ``shell`` tag as the bash positional payload.
+    assert [name for name in known_tool_names() if "shell" in tool_tags(name)] == [
+        "bash"
+    ]
+    assert tool_tags("bash") == frozenset({"shell"})
+    assert tool_tags("sandbox_status") == frozenset()
+    assert tool_tags("not_a_tool") == frozenset()
