@@ -24,7 +24,12 @@ from orchestrator.skills.providers.base import CLAUDE_PROVIDER, PEON_PROVIDER, S
 from orchestrator.skills.registry import SkillRegistry
 from orchestrator.skills.runtime.interp import interpreter_argv
 from orchestrator.tools.install import InstallResolver
-from orchestrator.utils.commands import as_shell_cli, known_cli_names
+from orchestrator.utils.commands import (
+    as_shell_cli,
+    catalog_cli_in_command,
+    file_args_in_command,
+    known_cli_names,
+)
 from orchestrator.utils.paths import normalize_rel_path, safe_join
 from orchestrator.utils.stream import StreamEmitter
 from orchestrator.utils.stream_events import (
@@ -33,6 +38,7 @@ from orchestrator.utils.stream_events import (
     EVENT_RUN_PERIODIC,
     cli_payload,
     envelope,
+    hosts_in_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,6 +183,72 @@ def _command_binary(command: str) -> str:
     return shell.split(None, 1)[0].strip().lower()
 
 
+# File-sourced-target reading: small, bounded, best-effort.
+_MAX_FILE_ARGS = 6
+_MAX_FILE_BYTES = 65_536
+_MAX_FILE_TARGETS = 500
+
+
+def _read_sandboxed_file(session: Session, path: str) -> str:
+    """Best-effort text of a small, existing file via a guarded ``cat``.
+
+    Same idiom as ``SandboxSession._read_base_commands``: never raises, and
+    returns ``""`` for anything that isn't a small regular file (including a
+    path that doesn't exist — most file-looking tokens are output paths or
+    unrelated args, not a targets file).
+    """
+    quoted = shlex.quote(path)
+    probe = (
+        f"if [ -f {quoted} ] && [ \"$(wc -c <{quoted} 2>/dev/null || echo 0)\" "
+        f"-le {_MAX_FILE_BYTES} ]; then cat {quoted}; fi"
+    )
+    try:
+        result = session.exec(probe, shell=True, cwd=session.workdir(), timeout=10)
+    except Exception:
+        return ""
+    return result.stdout if result.ok else ""
+
+
+def _file_sourced_targets(session: Session, command: str) -> list[str]:
+    """Candidate RoE targets named inside any file ``command`` references.
+
+    Type-agnostic by construction, in two layers that are each already used
+    for literal command-line targets — nothing new or IP/hostname-specific
+    is added here:
+
+    - Which *files* a command references is decided generically
+      (``file_args_in_command``): no per-tool flag list (``-iL``,
+      ``--input-file``, …).
+    - Which *lines* of those files are targets is decided by the same
+      unified host/IP/URL shape matcher (``hosts_in_command``) already
+      applied to the command text itself, not a bespoke per-type regex.
+      A non-target line (a wordlist entry, a comment, free text) simply
+      yields no match and is ignored, same as it would on the command line.
+
+    Each extracted candidate is then checked with the existing, fully
+    generic ``bridge.assert_in_scope`` — the identical scope-matching
+    primitive already used for a literal ``nmap 10.0.0.1`` target.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for path in file_args_in_command(command)[:_MAX_FILE_ARGS]:
+        content = _read_sandboxed_file(session, path)
+        if not content:
+            continue
+        for line in content.splitlines():
+            value = line.strip()
+            if not value or value.startswith("#"):
+                continue
+            for host in hosts_in_command(value):
+                if host in seen:
+                    continue
+                seen.add(host)
+                out.append(host)
+                if len(out) >= _MAX_FILE_TARGETS:
+                    return out
+    return out
+
+
 def _gate(command: str) -> str | None:
     """RoE and duplicate-scan refusal. ``None`` means allowed."""
     cmd = (command or "").strip()
@@ -186,6 +258,15 @@ def _gate(command: str) -> str | None:
     blocked = bridge.assert_command_allowed(cmd)
     if blocked:
         return f"Error: RoE blocked — {blocked}"
+    if catalog_cli_in_command(cmd):
+        # ``assert_command_allowed`` only sees hosts spelled out in the
+        # command text; a target supplied via a file argument (``-iL
+        # targets.txt``, a wordlist, …) never appears there, so check it
+        # here against the same RoE scope.
+        for value in _file_sourced_targets(Session.current(), cmd):
+            reason = bridge.assert_in_scope(value)
+            if reason:
+                return f"Error: RoE blocked — {reason} (file-sourced target {value!r})"
     dup = bridge.duplicate_scan_reason(cmd)
     if dup:
         return f"Skipped: {dup}"
