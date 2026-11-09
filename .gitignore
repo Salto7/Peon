@@ -18,8 +18,6 @@ todo.txt
 .claude/
 /docs/
 pytest.ini
-tests/
-test_*.py
 # Frontend (Vite) — build output is generated, not committed
 frontend/node_modules/
 peon/static/dist/

@@ -75,8 +75,7 @@ def current_job_phase() -> str:
         job = get_job()
     except RuntimeError:
         return ""
-    checker = getattr(job.bridge, "current_phase", None)
-    return str(checker() if callable(checker) else "")
+    return str(job.bridge.current_phase() or "")
 
 
 def _skill_binary_phase_denial(name: str, role_id: str, skill_ids: tuple[str, ...]) -> str:
@@ -187,11 +186,9 @@ def _gate(command: str) -> str | None:
     blocked = bridge.assert_command_allowed(cmd)
     if blocked:
         return f"Error: RoE blocked — {blocked}"
-    checker = getattr(bridge, "duplicate_scan_reason", None)
-    if callable(checker):
-        dup = checker(cmd) or ""
-        if dup:
-            return f"Skipped: {dup}"
+    dup = bridge.duplicate_scan_reason(cmd) or ""
+    if dup:
+        return f"Skipped: {dup}"
     return None
 
 
@@ -564,8 +561,7 @@ class SandboxTools:
         if cmd is None:
             return result.stderr or "Error: command refused"
         out = render_tool_output(Session.current(), result, label="bash")
-        checker = getattr(get_job().bridge, "stagnation_note", None)
-        note = checker(cmd) if callable(checker) else ""
+        note = get_job().bridge.stagnation_note(cmd) or ""
         return f"{out}\n{note}" if note else out
 
     def periodic(
