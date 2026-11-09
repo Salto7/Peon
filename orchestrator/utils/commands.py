@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import ipaddress
 import re
 from functools import lru_cache
 
@@ -175,6 +176,36 @@ def looks_like_agent_command(text: str) -> bool:
         return False
     name = _call_func_name(body)
     return bool(name and name in capability_tool_names())
+
+
+def file_args_in_command(text: str) -> list[str]:
+    """Non-flag tokens that could name a local file, in first-seen order.
+
+    Deliberately tool-agnostic: no per-CLI flag names (``-iL``,
+    ``--input-file``, ``-webx``, …) are hardcoded here, because any catalog
+    tool can accept a file of targets under a flag of its own choosing. A
+    flag (``-x``), a URL, and a bare IP literal are excluded since none of
+    those name a file; everything else is a candidate, and it is the
+    caller's job to confirm a candidate is actually a readable file before
+    trusting its contents (see
+    ``orchestrator/skills/runtime/sandbox.py::_file_sourced_targets``).
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (text or "").split():
+        token = raw.strip().strip("'\"")
+        if not token or token.startswith("-") or token in seen:
+            continue
+        if token.lower().startswith(("http://", "https://")):
+            continue
+        try:
+            ipaddress.ip_address(token)
+            continue
+        except ValueError:
+            pass
+        seen.add(token)
+        out.append(token)
+    return out
 
 
 def pick_agent_command(*candidates: str) -> str:
