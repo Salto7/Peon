@@ -1,14 +1,27 @@
-"""Named CrewAI tools selectable from role/skill tool lists."""
+"""Named tools selectable from role/skill tool lists.
+
+Registration stores a plain function. The CrewAI path converts a ``ToolSpec``
+when it builds an agent; this module does not import a framework.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 
-ToolFactory = Callable[[], Any]
 
-_FACTORIES: dict[str, ToolFactory] = {}
-_TAGS: dict[str, frozenset[str]] = {}
+@dataclass(frozen=True)
+class ToolSpec:
+    """Plain tool function plus the description and tags callers read."""
+
+    name: str
+    fn: Callable[..., str]
+    description: str
+    tags: frozenset[str] = frozenset()
+
+
+_SPECS: dict[str, ToolSpec] = {}
 
 # Engagement roles get these without listing them on every skill pack.
 # In the job model (one role per Dramatiq Job — the default) peer messaging is
@@ -130,18 +143,10 @@ SKILL_TOOL_ALIASES: dict[str, str | None] = {
 }
 
 
-def register_tool(name: str, factory: ToolFactory) -> ToolFactory:
-    key = (name or "").strip()
-    if not key:
-        raise ValueError("tool name required")
-    _FACTORIES[key] = factory
-    return factory
-
-
 def crew_tool(
     name: str, description: str, *, tags: Iterable[str] = ()
 ) -> Callable[[Callable[..., str]], Callable[..., str]]:
-    """Register a function as a named CrewAI tool factory.
+    """Register a plain function under ``name``.
 
     ``tags`` is read by ``orchestrator.utils.commands`` (e.g. the ``shell``
     tag on ``bash`` drives its shell-arg detection) — it carries no other
@@ -151,27 +156,15 @@ def crew_tool(
     def deco(fn: Callable[..., str]) -> Callable[..., str]:
         if description and not (fn.__doc__ or "").strip():
             fn.__doc__ = description
-
-        def factory() -> Any:
-            try:
-                # deferred: optional heavy crewai
-                from crewai.tools import tool as crewai_tool
-            except ImportError as exc:  # pragma: no cover
-                raise RuntimeError(
-                    "crewai is required for AGENT_MODULE=crewai "
-                    "(pip install 'crewai>=1.0.0')"
-                ) from exc
-
-            wrapped = crewai_tool(name)(fn)
-            if description and hasattr(wrapped, "description"):
-                try:
-                    wrapped.description = description
-                except Exception:
-                    pass
-            return wrapped
-
-        register_tool(name, factory)
-        _TAGS[name] = frozenset(tags)
+        key = (name or "").strip()
+        if not key:
+            raise ValueError("tool name required")
+        _SPECS[key] = ToolSpec(
+            name=key,
+            fn=fn,
+            description=description,
+            tags=frozenset(tags),
+        )
         return fn
 
     return deco
@@ -179,13 +172,19 @@ def crew_tool(
 
 def known_tool_names() -> list[str]:
     _ensure()
-    return sorted(_FACTORIES)
+    return sorted(_SPECS)
+
+
+def get_tool_spec(name: str) -> ToolSpec | None:
+    """Return the registered spec, or ``None`` when ``name`` is unknown."""
+    _ensure()
+    return _SPECS.get(name)
 
 
 def tool_tags(name: str) -> frozenset[str]:
     """Tags registered for ``name`` via ``crew_tool(..., tags=...)``, or empty."""
-    _ensure()
-    return _TAGS.get(name, frozenset())
+    spec = get_tool_spec(name)
+    return spec.tags if spec is not None else frozenset()
 
 
 def canonicalize_crew_tools(names: Iterable[str] | None) -> tuple[str, ...]:
@@ -271,26 +270,24 @@ def partition_tool_names(
     return tuple(direct), canonicalize_crew_tools(rest)
 
 
-def build_tools(names: Iterable[str]) -> list[Any]:
-    """Instantiate allowlisted tools; unknown names raise."""
-    _ensure()
+def resolved_tool_names(names: Iterable[str]) -> tuple[str, ...]:
+    """Allowlist order after aliasing, with unknown names rejected."""
     direct, aliased = partition_tool_names(names)
-    out: list[Any] = []
+    out: list[str] = []
     seen: set[str] = set()
     for raw in (*aliased, *direct):
         if raw in seen:
             continue
         seen.add(raw)
-        factory = _FACTORIES.get(raw)
-        if factory is None:
+        if get_tool_spec(raw) is None:
             known = ", ".join(known_tool_names()) or "(none)"
             raise KeyError(f"unknown role tool {raw!r}; known: {known}")
-        out.append(factory())
-    return out
+        out.append(raw)
+    return tuple(out)
 
 
 def _ensure() -> None:
-    if _FACTORIES:
+    if _SPECS:
         return
     # circular: adapters → crew_tool from this module
     from orchestrator.crew.tools import adapters as _adapters  # noqa: F401

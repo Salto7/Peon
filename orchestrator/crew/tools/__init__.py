@@ -1,16 +1,18 @@
-"""CrewAI tool factories bound to Peon sandbox / RoE / findings."""
+"""Named tool specs bound to the sandbox, RoE, and findings."""
 
 from orchestrator.crew.tools.catalog import (
-    build_tools,
+    ToolSpec,
     canonicalize_crew_tools,
+    get_tool_spec,
     known_tool_names,
     tool_tags,
     with_collab_tools,
 )
 
 __all__ = [
-    "build_tools",
+    "ToolSpec",
     "canonicalize_crew_tools",
+    "get_tool_spec",
     "known_tool_names",
     "tool_tags",
     "with_collab_tools",
