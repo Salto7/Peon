@@ -50,6 +50,7 @@ def provision_cli(binary: str, package: str = "") -> str:
     "bash",
     "Claude Bash tool. Run a shell command in this job's project sandbox "
     "(RoE applies). Nothing runs on the host.",
+    tags=("shell",),
 )
 def bash(command: str) -> str:
     return SandboxTools().bash(command)

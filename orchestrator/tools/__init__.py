@@ -1,7 +1,7 @@
 """CLI tool catalog + install resolver.
 
-Shared capability tool defs live in ``orchestrator.capabilities.tools``.
-CrewAI role tools live in ``orchestrator.crew.tools``.
+CrewAI role tools (and their ``commands.py``-visible tags) live in
+``orchestrator.crew.tools``.
 """
 
 from orchestrator.tools.catalog import CatalogProvisioner, CatalogTool, ToolCatalog

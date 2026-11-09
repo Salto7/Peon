@@ -10,7 +10,7 @@ from orchestrator.agent.runtime_base import (
 )
 from orchestrator.crew.roles.model import build_crew_agent
 from orchestrator.crew.roles.registry import RoleRegistry
-from orchestrator.crew.runtimes.project_crewai import run_project_crew_from_scope
+from orchestrator.crew.runtimes.project_crewai import run_project_crew
 from orchestrator.utils import llm_usage
 from orchestrator.utils.stream_events import EVENT_ROLE_DONE, EVENT_ROLE_START, envelope
 
@@ -72,7 +72,7 @@ class CrewAIAgentExecutor(AgentExecutorBase):
                 planned = tuple(
                     str(r).strip() for r in extra_roles if str(r or "").strip()
                 ) or planned
-            crew_result = run_project_crew_from_scope(
+            return run_project_crew(
                 scope,
                 request.config,
                 role_ids=planned,
@@ -80,12 +80,6 @@ class CrewAIAgentExecutor(AgentExecutorBase):
                 replan=bool(scope.extras.get("replan")),
                 steer=request.steer,
                 flow_id=str(scope.extras.get("crew_flow_id") or ""),
-            )
-            return AgentRunResult(
-                ok=crew_result.ok,
-                output=crew_result.output,
-                error=crew_result.error,
-                iterations=1,
             )
 
         # The objective brief always stays; steer (operator guidance, A2A
