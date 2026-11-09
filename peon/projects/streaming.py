@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -422,19 +423,15 @@ class StreamSocketServer:
     def stop(self) -> None:
         self._running = False
         if self._server is not None:
-            try:
+            with contextlib.suppress(OSError):
                 self._server.close()
-            except OSError:
-                pass
             self._server = None
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=True)
             self._pool = None
         if os.path.exists(self.socket_path):
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(self.socket_path)
-            except OSError:
-                pass
 
     def _serve(self) -> None:
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -459,10 +456,8 @@ class StreamSocketServer:
                     continue
                 pool.submit(self._handle_client, conn)
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 server.close()
-            except OSError:
-                pass
 
     def _handle_client(self, conn: socket.socket) -> None:
         buf = b""
@@ -495,10 +490,8 @@ class StreamSocketServer:
         except (ConnectionResetError, TimeoutError, OSError):
             pass
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 conn.close()
-            except OSError:
-                pass
 
 
 def start_stream_server(

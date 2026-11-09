@@ -8,6 +8,7 @@ real coding agent, Toolsmith-lab-only) and ``orchestrator.toolsmith.engine
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -57,7 +58,7 @@ class PeonAuthoring(CodeWritingEngine, SharedServiceBase):
                     "Return corrected JSON only for the stated authoring mode.",
                 )
             if isinstance(repair, dict):
-                try:
+                with contextlib.suppress(RuntimeError):
                     name, skill_md, files, suggested, mode, lint = finalize_skill_payload(
                         repair,
                         prompt=prompt,
@@ -65,8 +66,6 @@ class PeonAuthoring(CodeWritingEngine, SharedServiceBase):
                         install_recipes=install_recipes,
                         suggested=suggested,
                     )
-                except RuntimeError:
-                    pass
         return skill_result_dict(
             name=name,
             skill_md=skill_md,

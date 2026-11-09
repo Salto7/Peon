@@ -20,6 +20,7 @@ and an ASGI server; each open stream holds one worker thread.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -160,10 +161,8 @@ class _Waker:
 
     def close(self) -> None:
         if self._pubsub is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._pubsub.close()
-            except Exception:  # noqa: BLE001
-                pass
 
 
 def _project_stream(project, cursor: int) -> Iterator[str]:

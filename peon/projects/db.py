@@ -7,7 +7,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -196,14 +196,10 @@ def register_project_database(project_id: object) -> str:
         databases[alias] = cfg
         # Close any stale handle so Django rebuilds from settings.DATABASES.
         if alias in connections:
-            try:
+            with suppress(Exception):
                 connections[alias].close()
-            except Exception:
-                pass
-            try:
+            with suppress(Exception):
                 del connections[alias]
-            except Exception:
-                pass
     return alias
 
 

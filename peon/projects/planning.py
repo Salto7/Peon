@@ -193,6 +193,7 @@ def draft_llm_plan(
         text,
         explicit=explicit or None,
         project=mode_norm == "project",
+        focus_tags=tags or None,
     )
     prompt = text
     if resolved:

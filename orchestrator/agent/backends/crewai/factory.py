@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterable
 from typing import Any
 
@@ -51,10 +52,8 @@ def _to_crewai_tools(names: tuple[str, ...]) -> list[Any]:
             raise KeyError(f"unknown role tool {name!r}; known: {known}")
         wrapped = crewai_tool(spec.name)(spec.fn)
         if spec.description and hasattr(wrapped, "description"):
-            try:
+            with contextlib.suppress(Exception):
                 wrapped.description = spec.description
-            except Exception:
-                pass
         out.append(wrapped)
     return out
 

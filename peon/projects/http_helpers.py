@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from functools import wraps
@@ -208,12 +209,10 @@ async def _pump(events: Iterator[str]) -> AsyncIterator[str]:
                 return
             yield chunk  # type: ignore[misc]
     finally:
-        try:
+        # ValueError: a cancelled step is still running in its thread; the
+        # generator finishes that tick and is collected afterwards.
+        with contextlib.suppress(AttributeError, ValueError):
             await sync_to_async(events.close, thread_sensitive=False)()  # type: ignore[attr-defined]
-        except (AttributeError, ValueError):
-            # ValueError: a cancelled step is still running in its thread; the
-            # generator finishes that tick and is collected afterwards.
-            pass
 
 
 def sse_response(request: HttpRequest, events: Iterator[str]) -> StreamingHttpResponse:
