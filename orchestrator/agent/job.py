@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from orchestrator.agent.bridge_base import AgentBridgeBase
-from orchestrator.agent.bridges import NullAgentBridge
 from orchestrator.agent.config import AgentRunConfig
 
 
@@ -24,8 +23,8 @@ class JobScope:
     role_ids: list[str] = field(default_factory=list)
     brief: str = ""
     depth: int = 1
-    bridge: AgentBridgeBase = field(default_factory=NullAgentBridge)
     extras: dict[str, Any] = field(default_factory=dict)
+    bridge: AgentBridgeBase = field(kw_only=True)
 
 
 _scope: ContextVar[JobScope | None] = ContextVar("agent_job_scope", default=None)
@@ -43,7 +42,7 @@ def get_agent_config() -> AgentRunConfig:
     """Bound ``AgentRunConfig`` for the current job (not ``orchestrator.config``)."""
     cfg = _cfg.get()
     if cfg is None:
-        return AgentRunConfig()
+        raise RuntimeError("no agent job config bound")
     return cfg
 
 

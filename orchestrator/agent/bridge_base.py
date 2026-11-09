@@ -1,7 +1,8 @@
-"""Control-plane bridge ABC for one Job agent (orchestrator never imports peon).
+"""Control-plane bridge ABC for one Job agent.
 
 Peon implements this; the agent calls into it for streaming, spawn, findings, etc.
 Not the Docker/OpenShell runtime — that is ``agent_runtime``.
+This module does not import peon. Other orchestrator modules do.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ AgentLink = Literal["peer", "child"]
 
 
 class AgentBridgeBase(ABC):
-    """Control-plane adapter injected per Job so the library stays peon-agnostic."""
+    """Control-plane adapter injected per Job."""
 
     @abstractmethod
     def emit(
@@ -46,29 +47,28 @@ class AgentBridgeBase(ABC):
     ) -> str:
         """Non-blocking status of agents this job spawned (children)."""
 
-    def list_agents(self) -> str:
-        return "list_agents bridge not configured."
+    @abstractmethod
+    def list_agents(self) -> str: ...
 
+    @abstractmethod
     def list_delegations(self) -> str:
         """Spawn tree for manager oversight (project/objective)."""
-        return "list_delegations bridge not configured."
 
+    @abstractmethod
     def propose_agents(self, *, context_notes: str = "", max_agents: int = 4) -> str:
         """Propose (and optionally spawn) context-driven Jobs."""
-        del context_notes, max_agents
-        return "propose_agents bridge not configured."
 
+    @abstractmethod
     def append_transcript(self, record: Any) -> None:
-        """Persist a structured transcript record (optional)."""
-        del record
+        """Persist a structured transcript record."""
 
-    def list_objectives(self) -> str:
-        return "Objectives bridge not configured."
+    @abstractmethod
+    def list_objectives(self) -> str: ...
 
-    def update_objective_status(self, seq: int, status: str, note: str = "") -> str:
-        del seq, status, note
-        return "update_objective_status bridge not configured."
+    @abstractmethod
+    def update_objective_status(self, seq: int, status: str, note: str = "") -> str: ...
 
+    @abstractmethod
     def ask_operator(
         self,
         question: str,
@@ -77,20 +77,15 @@ class AgentBridgeBase(ABC):
         blocks_job: bool = True,
     ) -> str:
         """Request human-in-the-loop input (typed OperatorPrompt)."""
-        del question, options, blocks_job
-        return "ask_operator bridge not configured."
 
-    def record_finding(self, **fields: Any) -> str:
-        del fields
-        return "record_finding bridge not configured."
+    @abstractmethod
+    def record_finding(self, **fields: Any) -> str: ...
 
-    def record_findings(self, findings_json: str) -> str:
-        del findings_json
-        return "record_findings bridge not configured."
+    @abstractmethod
+    def record_findings(self, findings_json: str) -> str: ...
 
-    def list_findings(self, kind: str = "") -> str:
-        del kind
-        return "list_findings bridge not configured."
+    @abstractmethod
+    def list_findings(self, kind: str = "") -> str: ...
 
     # --- Agent-to-agent (A2A) messaging --------------------------------
 
@@ -98,38 +93,35 @@ class AgentBridgeBase(ABC):
     idle_requested: bool = False
     idle_note: str = ""
 
+    @abstractmethod
     def send_message(
         self, to: str, content: str, *, kind: str = "inform", reply_to: str = ""
     ) -> str:
         """Send an A2A message to one or more live agents (wakes/resumes as needed)."""
-        del to, content, kind, reply_to
-        return "send_message bridge not configured."
 
+    @abstractmethod
     def check_inbox(self) -> str:
         """Read (and consume) messages other agents or the operator sent."""
-        return "check_inbox bridge not configured."
 
+    @abstractmethod
     def message_status(self, limit: int = 10) -> str:
         """Delivery/read state of messages this agent sent, most recent first."""
-        del limit
-        return "message_status bridge not configured."
 
+    @abstractmethod
     def go_idle(self, reason: str = "") -> str:
         """Park this agent until another agent/operator messages it."""
-        del reason
-        return "go_idle bridge not configured."
 
+    @abstractmethod
     def list_team(self) -> str:
         """Every agent on the project with id, objective, role and state."""
-        return "list_team bridge not configured."
 
     # --- Memory --------------------------------------------------------
 
+    @abstractmethod
     def recall_memory(self, query: str) -> str:
         """Search persistent memory (this engagement + platform lessons)."""
-        del query
-        return "recall_memory bridge not configured."
 
+    @abstractmethod
     def save_memory(
         self,
         name: str,
@@ -139,68 +131,91 @@ class AgentBridgeBase(ABC):
         scope: str = "project",
     ) -> str:
         """Create/update a durable memory entry."""
-        del name, kind, description, body, scope
-        return "save_memory bridge not configured."
 
+    @abstractmethod
     def forget_memory(self, name: str, scope: str = "project") -> str:
         """Retire a stale memory entry."""
-        del name, scope
-        return "forget_memory bridge not configured."
 
     # --- Credentials (project key store) --------------------------------
 
+    @abstractmethod
     def list_credentials(self) -> str:
         """List credential names/kinds stored for this project (never values)."""
-        return "list_credentials bridge not configured."
 
+    @abstractmethod
     def get_credential(self, name: str, part: str = "secret") -> str:
         """Plaintext of a stored credential (``secret``|``username``|``domain``|``full``)."""
-        del name, part
-        return "get_credential bridge not configured."
 
+    @abstractmethod
     def record_assets(self, assets_json: str, relations_json: str = "") -> str:
         """Add assets/relations to the engagement asset graph (Open Asset Model)."""
-        del assets_json, relations_json
-        return "record_assets bridge not configured."
 
+    @abstractmethod
     def write_report_note(self, section: str, body: str) -> str:
         """Append a markdown section into findings/report.md (not a Finding row)."""
-        del section, body
-        return "write_report_note bridge not configured."
 
+    @abstractmethod
     def write_workspace_artifact(self, path: str, content: str) -> str:
         """Write a text deliverable under ``workspace/`` (no execution)."""
-        del path, content
-        return "write_workspace_artifact bridge not configured."
 
+    @abstractmethod
     def list_workspace_artifacts(self) -> str:
         """List evidence files under the job workspace (prior agent outputs)."""
-        return "list_workspace_artifacts bridge not configured."
 
+    @abstractmethod
     def read_workspace_artifact(self, path: str, max_chars: int = 100_000) -> str:
         """Read one workspace/ or findings/ evidence file."""
-        del path, max_chars
-        return "read_workspace_artifact bridge not configured."
 
-    def drain_operator_guidance(self) -> list[str]:
-        return []
+    @abstractmethod
+    def drain_operator_guidance(self) -> list[str]: ...
 
     # --- RoE (CrewAI roles; peon implements against RulesOfEngagement) ---
 
-    def roe_summary(self) -> str:
-        return "RoE bridge not configured."
+    @abstractmethod
+    def roe_summary(self) -> str: ...
 
+    @abstractmethod
     def roe_probe_block_reason(self) -> str:
         """Empty when RoE in_scope is usable for probes; else denial reason."""
-        return "RoE bridge not configured."
 
+    @abstractmethod
     def assert_in_scope(self, target: str) -> str:
         """Return empty string if allowed, else a denial reason."""
-        del target
-        return "RoE bridge not configured."
 
+    @abstractmethod
     def assert_command_allowed(self, command: str) -> str:
         """Return empty string if sandbox command may run, else denial reason."""
-        del command
-        return ""
 
+    @abstractmethod
+    def search_evidence(
+        self, kind: str = "", host: str = "", finding_seq: int = 0
+    ) -> str:
+        """Evidence anywhere in this project, not only this job."""
+
+    @abstractmethod
+    def record_observation(self, asset_key: str, text: str) -> str:
+        """Note something about an asset-graph node."""
+
+    @abstractmethod
+    def record_intent(self, asset_key: str, text: str, status: str = "planned") -> str:
+        """Plan something about an asset-graph node."""
+
+    @abstractmethod
+    def request_phase_advance(self, required_phase: str) -> None:
+        """Ask the operator to advance the objective phase."""
+
+    @abstractmethod
+    def request_spawn_cap_approval(self, reason: str) -> None:
+        """Notify the operator that a spawn hit the fan-out cap."""
+
+    @abstractmethod
+    def current_phase(self) -> str:
+        """This job's objective phase, or empty when there is none."""
+
+    @abstractmethod
+    def duplicate_scan_reason(self, command: str) -> str:
+        """Non-empty when this job already ran the same catalog CLI against the host."""
+
+    @abstractmethod
+    def stagnation_note(self, command: str) -> str:
+        """Non-empty nudge when catalog probes are not producing findings."""
