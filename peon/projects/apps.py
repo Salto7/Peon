@@ -20,20 +20,20 @@ logger = logging.getLogger(__name__)
 
 
 @register()
-def crewai_roles_check(app_configs, **kwargs):
-    """Fail fast when CrewAI is configured without a usable role catalog."""
-    del app_configs, kwargs
-    module = str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai").strip().lower()
-    if module != "crewai":
-        return []
+def roles_catalog_check(app_configs, **kwargs):
+    """Fail fast when the configured agent backend has no usable role catalog.
 
+    Runs for any ``AGENT_MODULE``, not just ``crewai`` — the platform role
+    store (manager/analyzer bookends) is a backend-agnostic requirement.
+    """
+    del app_configs, kwargs
     try:
         registry = RoleRegistry.shared()
         roles = registry.list_roles()
     except Exception as exc:
         return [
             Error(
-                f"Could not load CrewAI roles: {exc}",
+                f"Could not load agent roles: {exc}",
                 hint="Check Lab → Roles / PlatformCatalog.",
                 id="projects.E001",
             )
@@ -66,6 +66,37 @@ def crewai_roles_check(app_configs, **kwargs):
             )
         )
     return errors
+
+
+@register()
+def agent_backend_check(app_configs, **kwargs):
+    """Fail fast when the configured ``AGENT_MODULE`` backend isn't usable.
+
+    Catches a missing optional dependency (e.g. ``crewai`` not installed)
+    at boot instead of on the first job's first tool call.
+    """
+    del app_configs, kwargs
+    try:
+        from orchestrator.agent.registry import agent_module_id, get_job_runtime
+
+        module_id = agent_module_id()
+        if not get_job_runtime().available():
+            return [
+                Error(
+                    f"Agent backend {module_id!r} is configured but not available.",
+                    hint="Install its dependency (e.g. pip install 'crewai>=1.0.0').",
+                    id="projects.E005",
+                )
+            ]
+    except Exception as exc:
+        return [
+            Error(
+                f"Could not load the configured agent backend: {exc}",
+                hint="Check AGENT_MODULE and orchestrator/agent/registry.py.",
+                id="projects.E005",
+            )
+        ]
+    return []
 
 
 def configure_orchestrator() -> None:
@@ -198,13 +229,12 @@ def _boot_services(kind: str) -> None:
     while not apps.ready and time.monotonic() < deadline:
         time.sleep(0.2)
     time.sleep(1.0)  # let the worker finish importing its actor module
-    if str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai").strip().lower() == "crewai":
-        try:
-            from orchestrator.agent.registry import get_job_runtime
+    try:
+        from orchestrator.agent.registry import get_job_runtime
 
-            get_job_runtime().warm()
-        except Exception as exc:
-            logger.warning("crewai warm import skipped: %s", exc)
+        get_job_runtime().warm()
+    except Exception as exc:
+        logger.warning("agent backend warm-up skipped: %s", exc)
     try:
         from peon.projects.llm_proxy import LlmProxy
         from peon.projects.runtime_settings import PeonSettings

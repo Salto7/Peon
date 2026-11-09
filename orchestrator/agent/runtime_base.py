@@ -35,6 +35,16 @@ class AgentExecutorBase(ABC):
     def start(self, request: AgentRunRequest) -> AgentRunResult:
         """Run (or continue) the agent for ``request.scope.job_id``."""
 
+    def available(self) -> bool:
+        """True when this backend's framework can actually run here.
+
+        Default ``True``; a backend whose framework may be missing (an
+        optional dependency) overrides this with a real check so
+        ``agent_backend_check`` can fail fast instead of erroring on the
+        first job.
+        """
+        return True
+
     def resume(self, request: AgentRunRequest) -> AgentRunResult:
         return self.start(
             AgentRunRequest(
@@ -53,7 +63,9 @@ def get_agent_runtime() -> AgentExecutorBase:
     """Return the backend for ``AGENT_MODULE`` (crewai)."""
     global _DEFAULT
     if _DEFAULT is None:
-        # circular: agent.registry → AgentExecutorBase
+        # Lazy: orchestrator.agent.registry imports AgentExecutorBase from
+        # this module at module scope, so a top-level import here would be
+        # a real import cycle, not just a stale warning.
         from orchestrator.agent.registry import get_job_runtime
 
         _DEFAULT = get_job_runtime()
@@ -64,7 +76,7 @@ def set_agent_runtime(runtime: AgentExecutorBase | None) -> None:
     global _DEFAULT
     _DEFAULT = runtime
     if runtime is None:
-        # circular: agent.registry → AgentExecutorBase
+        # Lazy for the same reason as get_agent_runtime() above.
         from orchestrator.agent.registry import reset_agent_modules
 
         reset_agent_modules()

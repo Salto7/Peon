@@ -622,7 +622,12 @@ def run_job_via_agent(
             and not job.objective_id
             and job.profile != GOVERNANCE_PROFILE  # resident governor runs solo
         ):
-            extras["crew_mode"] = "project"
+            from orchestrator.agent.registry import get_job_runtime
+
+            # A backend without a hierarchical project crew runs the
+            # manager as a normal single-role job instead (D4).
+            if get_job_runtime().supports_project_crew:
+                extras["crew_mode"] = "project"
 
     extras["dispatch_only"] = _is_dispatch_supervisor(job, names)
 
