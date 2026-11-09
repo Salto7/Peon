@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from orchestrator.crew.roles.catalog import DEFAULT_ROLES
-from orchestrator.crew.roles.model import build_crew_agent
+from orchestrator.agent.backends.crewai.factory import build_crew_agent
 from orchestrator.crew.roles.registry import RoleRegistry
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "role_agent_kwargs.json"

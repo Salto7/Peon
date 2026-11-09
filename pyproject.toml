@@ -2,4 +2,10 @@
 testpaths = ["tests"]
 
 [tool.ruff.lint]
-select = ["F", "E9"]
+select = ["F", "E9", "TID251"]
+
+[tool.ruff.lint.per-file-ignores]
+"orchestrator/agent/backends/crewai/**" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"crewai".msg = "Import crewai only from orchestrator.agent.backends.crewai"

@@ -1,4 +1,4 @@
-"""Role catalog: platform DB + affinity skills → RoleSpec → CrewAI Agent factory."""
+"""Role catalog: platform DB + affinity skills → RoleSpec → AgentSpec."""
 
 from orchestrator.crew.roles.catalog import (
     DEFAULT_ROLES,
@@ -7,7 +7,7 @@ from orchestrator.crew.roles.catalog import (
     catalog_role_ids,
     resolve_role_id,
 )
-from orchestrator.crew.roles.model import AgentSpec, RoleSpec, build_agent_spec, build_crew_agent
+from orchestrator.crew.roles.model import AgentSpec, RoleSpec, build_agent_spec
 from orchestrator.crew.roles.registry import RoleRegistry
 
 __all__ = [
@@ -18,7 +18,6 @@ __all__ = [
     "RoleRegistry",
     "RoleSpec",
     "build_agent_spec",
-    "build_crew_agent",
     "catalog_role_ids",
     "resolve_role_id",
 ]

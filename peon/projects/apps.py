@@ -200,7 +200,9 @@ def _boot_services(kind: str) -> None:
     time.sleep(1.0)  # let the worker finish importing its actor module
     if str(getattr(settings, "AGENT_MODULE", "crewai") or "crewai").strip().lower() == "crewai":
         try:
-            import crewai  # noqa: F401 — pay the import cost before the first job
+            from orchestrator.agent.registry import get_job_runtime
+
+            get_job_runtime().warm()
         except Exception as exc:
             logger.warning("crewai warm import skipped: %s", exc)
     try:
