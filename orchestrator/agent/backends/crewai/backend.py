@@ -67,6 +67,13 @@ class CrewAIBackend(AgentBackend):
     def warm(self) -> None:
         import crewai  # noqa: F401 — pay the import cost before the first job
 
+    def available(self) -> bool:
+        try:
+            import crewai  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
     def run_project(self, request: AgentRunRequest) -> AgentRunResult:
         err, scope, _role = _open(request)
         if err is not None:
