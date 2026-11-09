@@ -78,6 +78,29 @@ def test_crewai_project_mode_still_runs_the_project_crew(monkeypatch):
     assert captured["flow_id"] == "flow-9"
 
 
+def test_project_crew_drops_the_requested_role_id_even_when_it_is_an_alias(monkeypatch):
+    captured: dict = {}
+
+    def fake_run_project_crew(scope, config, **kwargs):
+        del scope, config
+        captured["role_ids"] = kwargs["role_ids"]
+        return AgentRunResult(ok=True, output="crew", iterations=1)
+
+    monkeypatch.setattr(
+        "orchestrator.agent.backends.crewai.backend.run_project_crew",
+        fake_run_project_crew,
+    )
+    scope = JobScope(
+        job_id="job-4",
+        bridge=RecordingBridge(),
+        role_ids=("osint-expert", "appsec"),
+        extras={"role_id": "osint-expert", "crew_mode": "project"},
+    )
+    result = CrewAIBackend().start(_request(scope))
+    assert result.ok is True
+    assert captured["role_ids"] == ("appsec",)
+
+
 def _request(scope: JobScope):
     from orchestrator.agent.runtime_base import AgentRunRequest
 
