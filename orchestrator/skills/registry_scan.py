@@ -45,10 +45,8 @@ def _is_skipped_dir(path: Path) -> bool:
     name = path.name
     if name in _SKIP_DIR_NAMES:
         return True
-    if name.startswith(".") and name not in {".claude", ".agents", ".agent", ".cursor"}:
-        # Allow known agent skill roots; skip other dot-dirs.
-        return True
-    return False
+    # Allow known agent skill roots; skip other dot-dirs.
+    return name.startswith(".") and name not in {".claude", ".agents", ".agent", ".cursor"}
 
 
 def discover_skill_candidates(

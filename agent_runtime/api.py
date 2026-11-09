@@ -6,6 +6,7 @@ and any later backend stay in their own packages.
 
 from __future__ import annotations
 
+import contextlib
 import shlex
 import threading
 from abc import ABC, abstractmethod
@@ -309,10 +310,8 @@ class Session(SharedBase):
         self = cls.shared()
         prev: Token | None = getattr(self._tls, "token", None)
         if prev is not None:
-            try:
+            with contextlib.suppress(LookupError):
                 _current.reset(prev)
-            except LookupError:
-                pass
             self._tls.token = None
         self._tls.token = _current.set(backend)
 
@@ -321,10 +320,8 @@ class Session(SharedBase):
         self = cls.shared()
         token: Token | None = getattr(self._tls, "token", None)
         if token is not None:
-            try:
+            with contextlib.suppress(LookupError):
                 _current.reset(token)
-            except LookupError:
-                pass
             self._tls.token = None
             return
         if _current.get() is not None:
