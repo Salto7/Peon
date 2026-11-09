@@ -68,13 +68,15 @@ class CrewAIBackend(AgentBackend):
         import crewai  # noqa: F401 — pay the import cost before the first job
 
     def run_project(self, request: AgentRunRequest) -> AgentRunResult:
-        err, scope, role = _open(request)
+        err, scope, _role = _open(request)
         if err is not None:
             return err
+        # Drop the id the job asked for, alias included.
+        role_id = resolve_role_id(scope)
         planned = tuple(
             str(r).strip()
             for r in (scope.role_ids or ())
-            if str(r).strip() and str(r).strip() != role.id
+            if str(r).strip() and str(r).strip() != role_id
         )
         extra_roles = scope.extras.get("crew_role_ids") or scope.extras.get(
             "specialist_role_ids"
