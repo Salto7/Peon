@@ -9,6 +9,7 @@ from django.utils import timezone as dj_tz
 
 from orchestrator.utils.commands import normalize_objective_commands
 from orchestrator.utils.paths import format_roe_block
+from peon.projects.db import ensure_project_database
 from peon.projects.models import (
     FINISHED_PROJECT_STATUSES,
     INACTIVE_PROJECT_STATUSES,
@@ -506,7 +507,7 @@ class ObjectivePlanSync:
         *,
         replace: bool = True,
     ) -> list[Objective]:
-        from peon.projects.db import ensure_project_database, using_project
+        from peon.projects.db import using_project
 
         alias = ensure_project_database(project.id)
         with using_project(project.id), transaction.atomic(using=alias):
