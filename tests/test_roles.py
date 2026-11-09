@@ -39,10 +39,6 @@ def _reasoning_kwargs(kwargs: dict) -> dict:
 
 def test_default_roles_agent_kwargs(monkeypatch):
     monkeypatch.setattr("crewai.Agent", _RecordingAgent)
-    monkeypatch.setattr(
-        "orchestrator.crew.roles.model.llm_id_for_crew",
-        lambda: "",
-    )
     built = {role.id: role for role in RoleRegistry().list_roles()}
     assert set(built) == {defn.id for defn in DEFAULT_ROLES}
 

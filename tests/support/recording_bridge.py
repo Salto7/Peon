@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import abc
-
 from orchestrator.agent.bridge_base import AgentBridgeBase
 
-_NONE_RESULTS = frozenset(
+_NONE = frozenset(
     {
         "emit",
         "append_transcript",
@@ -16,12 +14,12 @@ _NONE_RESULTS = frozenset(
 )
 
 
-def _recorded(name: str):
+def _method(name: str):
     def method(self, *args, **kwargs):
         self.calls.append((name, args, dict(kwargs)))
         if name == "drain_operator_guidance":
             return []
-        if name in _NONE_RESULTS:
+        if name in _NONE:
             return None
         return ""
 
@@ -29,14 +27,17 @@ def _recorded(name: str):
     return method
 
 
-class RecordingBridge(AgentBridgeBase):
-    """Records every port call. Implements the whole ABC so tests can bind a job."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, tuple, dict]] = []
+def _init(self) -> None:
+    self.calls: list[tuple[str, tuple, dict]] = []
 
 
-for _name in AgentBridgeBase.__abstractmethods__:
-    setattr(RecordingBridge, _name, _recorded(_name))
-
-abc.update_abstractmethods(RecordingBridge)
+RecordingBridge = type(
+    "RecordingBridge",
+    (AgentBridgeBase,),
+    {
+        "__doc__": "Records every port call.",
+        "__module__": __name__,
+        "__init__": _init,
+        **{name: _method(name) for name in AgentBridgeBase.__abstractmethods__},
+    },
+)

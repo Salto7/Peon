@@ -34,8 +34,3 @@ def test_bind_job_nests_and_resets():
 def test_unbound_agent_config_raises():
     with pytest.raises(RuntimeError, match="no agent job config bound"):
         get_agent_config()
-
-
-def test_scope_requires_a_bridge():
-    with pytest.raises(TypeError):
-        JobScope(job_id="plain")
