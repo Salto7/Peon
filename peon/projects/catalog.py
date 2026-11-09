@@ -321,6 +321,7 @@ def api_resolve(request: HttpRequest) -> JsonResponse:
             description,
             explicit=explicit or None,
             project=project,
+            focus_tags=preferred_tags or None,
         )
     return JsonResponse(
         {

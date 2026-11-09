@@ -9,6 +9,7 @@ configured in ``docker-compose.yml`` (OpenRouter + ``LITELLM_MODEL``).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -322,10 +323,8 @@ class CogneeBackend(SharedServiceBase):
             name = str(row.get("name") or row["id"])
             if name not in wanted:
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 self.clear_dataset(name)
-            except Exception:  # noqa: BLE001
-                pass
             try:
                 code, _ = self._request("DELETE", f"/api/v1/datasets/{row['id']}")
             except Exception as exc:  # noqa: BLE001

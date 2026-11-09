@@ -33,6 +33,7 @@ class RoleRouter(SharedServiceBase):
         *,
         explicit: list[str] | None = None,
         project: bool = True,
+        focus_tags: list[str] | None = None,
     ) -> list[str]:
         catalog = {r.id for r in RoleRegistry.shared().list_roles()}
         allowed = set(catalog_role_ids()) & catalog
@@ -69,6 +70,13 @@ class RoleRouter(SharedServiceBase):
                             "Never invent ids.\n\n"
                             f"Brief:\n{text[:3000]}\n\nproject={project}\n"
                             f"Allowed role ids: {', '.join(sorted(allowed))}\n"
+                            + (
+                                "Preferred focus tags (preference, not exclusive): "
+                                + ", ".join(focus_tags)
+                                + "\n"
+                                if focus_tags
+                                else ""
+                            )
                             + (f"\n{learned}\n" if learned else "")
                             + 'Reply ONLY JSON: {"roles":["id",...],"reason":"short"}'
                         ),

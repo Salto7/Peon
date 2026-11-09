@@ -30,7 +30,7 @@ import os
 import socket
 import threading
 import uuid
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -554,10 +554,8 @@ def _serve_conn(conn: socket.socket) -> None:
     except OSError:
         pass
     finally:
-        try:
+        with suppress(OSError):
             conn.close()
-        except OSError:
-            pass
 
 
 def serve() -> None:
@@ -569,10 +567,8 @@ def serve() -> None:
         path.unlink()
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(path))
-    try:
+    with suppress(OSError):
         os.chmod(path, 0o600)
-    except OSError:
-        pass
     Path(PID).write_text(str(os.getpid()), encoding="utf-8")
     server.listen(64)
     while True:

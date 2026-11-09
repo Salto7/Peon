@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import shutil
@@ -161,10 +162,8 @@ def remove_project_workspace(project_id: str) -> dict:
         path.rename(trash)
     except OSError as rename_exc:
         return {"action": "error", "path": str(path), "error": f"{error}; rename failed: {rename_exc}"}
-    try:
+    with contextlib.suppress(OSError):
         _remove_path(trash)
-    except OSError:
-        pass
     return {
         "action": "deferred" if trash.exists() else "removed",
         "path": str(path),
