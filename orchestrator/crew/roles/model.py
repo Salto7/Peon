@@ -1,4 +1,4 @@
-"""Role catalog DTOs + CrewAI Agent factory.
+"""Role catalog DTOs, neutral agent spec, and CrewAI Agent factory.
 
 Roles come from the platform role store (id / kind) and are decorated from
 affinity-bound skill packs.
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from orchestrator.config import get_config
-from orchestrator.crew.tools import build_tools, with_collab_tools
+from orchestrator.crew.tools.catalog import resolved_tool_names, with_collab_tools
 
 
 @dataclass(frozen=True)
@@ -62,53 +62,44 @@ class RoleSpec:
         return not self.is_manager and not self.is_analyzer
 
 
-def llm_id_for_crew() -> Any:
-    """Build the CrewAI ``Agent(llm=...)`` / ``planning_llm=...`` value.
-
-    A bare model string is enough for a provider CrewAI resolves from env
-    vars it already knows (OpenRouter's ``OPENROUTER_API_KEY``, etc.). A
-    custom endpoint (Ollama, any other OpenAI-compatible base) needs an
-    explicit ``crewai.LLM`` instead: CrewAI's native ``ollama``/``ollama_chat``
-    route reads its base URL from a ``base_url`` kwarg (or ``OLLAMA_HOST``),
-    never from ``api_base`` or a bare model string — passing only the model
-    id silently drops the endpoint and falls back to connecting to OpenAI.
-    """
-    cfg = get_config()
-    model = (cfg.litellm_model or "").strip()
-    if not model:
-        return ""
-    base = (cfg.litellm_api_base or "").strip()
-    if not base:
-        return model
-    from crewai.llm import LLM
-
-    return LLM(model=model, base_url=base, api_key=cfg.litellm_api_key or "ollama")
+@dataclass(frozen=True)
+class ReasoningConfig:
+    effort: str
+    max_attempts: int
 
 
-def build_crew_agent(
+@dataclass(frozen=True)
+class AgentSpec:
+    """Neutral prompt and tool allowlist for one role. No framework object."""
+
+    role_id: str
+    title: str
+    goal: str
+    system_prompt: str
+    tool_names: tuple[str, ...]
+    max_iterations: int
+    reasoning: ReasoningConfig | None
+    delegation: bool
+    skill_ids: tuple[str, ...]
+
+
+def build_agent_spec(
     role: RoleSpec,
     *,
-    tools: list[Any] | None = None,
     skill_ids: Iterable[str] | None = None,
     max_iterations: int | None = None,
     reasoning_effort: str | None = None,
     reasoning_max_attempts: int | None = None,
     collaborate: bool = False,
     dispatch_only: bool = False,
-) -> Any:
-    """Instantiate a CrewAI ``Agent`` for ``role`` (lazy crewai import).
+    tool_names: Iterable[str] | None = None,
+) -> AgentSpec:
+    """Assemble the prompt and tool allowlist for ``role``.
 
-    ``collaborate`` forces ``allow_delegation`` on, so CrewAI injects its native
-    "Ask question to coworker" / "Delegate work to coworker" tools and the agent
-    can talk to its crew peers directly (used for in-process engagement crews).
+    ``tool_names`` overrides the allowlist (an empty override yields no tools).
+    The dispatch-mode prompt is added only when the allowlist is computed here,
+    matching the old ``tools is None`` check on the CrewAI factory.
     """
-    try:
-        from crewai import Agent
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            "crewai is required for AGENT_MODULE=crewai (pip install 'crewai>=1.0.0')"
-        ) from exc
-
     from orchestrator.skills.bind import (
         effective_tools,
         progressive_tool_names,
@@ -202,7 +193,7 @@ def build_crew_agent(
             "plaintext of one, by name, for use in a command — never paste a "
             "secret value into a message, finding, or memory note."
         ).strip()
-    if dispatch_only and tools is None:
+    if dispatch_only and tool_names is None:
         backstory = (
             f"{backstory}\n\n## Dispatch mode\n"
             "You are the lane supervisor for this objective: you do **not** "
@@ -241,11 +232,8 @@ def build_crew_agent(
         1,
         int(max_iterations if max_iterations is not None else cfg.agent_max_iterations),
     )
-    tool_names = effective_tools(role, selected) if tools is None else None
-    if tools is not None:
-        agent_tools = tools
-    else:
-        names = list(with_collab_tools(role, tool_names=tool_names))
+    if tool_names is None:
+        names = list(with_collab_tools(role, tool_names=effective_tools(role, selected)))
         for extra in progressive_tool_names(selected, role_id=role.id):
             if extra not in names:
                 names.append(extra)
@@ -253,17 +241,10 @@ def build_crew_agent(
             from orchestrator.crew.tools.catalog import for_dispatch_only
 
             names = list(for_dispatch_only(names))
-        agent_tools = build_tools(names)
-    kwargs: dict[str, Any] = {
-        "role": role.crew_role,
-        "goal": role.goal,
-        "backstory": backstory,
-        "tools": agent_tools,
-        "allow_delegation": bool(role.allow_delegation or role.is_manager or collaborate),
-        "verbose": False,
-        "max_iter": min(role_iters, cap),
-        "llm": llm_id_for_crew(),
-    }
+        resolved = resolved_tool_names(names)
+    else:
+        resolved = resolved_tool_names(tool_names)
+    reasoning = None
     if role.reasoning:
         effort = (reasoning_effort or cfg.crew_reasoning_effort or "low").strip().lower()
         if effort not in {"low", "medium", "high"}:
@@ -279,16 +260,128 @@ def build_crew_agent(
                 ),
             ),
         )
+        reasoning = ReasoningConfig(effort=effort, max_attempts=attempts)
+    return AgentSpec(
+        role_id=role.id,
+        title=role.crew_role,
+        goal=role.goal,
+        system_prompt=backstory,
+        tool_names=resolved,
+        max_iterations=min(role_iters, cap),
+        reasoning=reasoning,
+        delegation=bool(role.allow_delegation or role.is_manager or collaborate),
+        skill_ids=tuple(selected),
+    )
+
+
+def llm_id_for_crew() -> Any:
+    """Build the CrewAI ``Agent(llm=...)`` / ``planning_llm=...`` value.
+
+    A bare model string is enough for a provider CrewAI resolves from env
+    vars it already knows (OpenRouter's ``OPENROUTER_API_KEY``, etc.). A
+    custom endpoint (Ollama, any other OpenAI-compatible base) needs an
+    explicit ``crewai.LLM`` instead: CrewAI's native ``ollama``/``ollama_chat``
+    route reads its base URL from a ``base_url`` kwarg (or ``OLLAMA_HOST``),
+    never from ``api_base`` or a bare model string — passing only the model
+    id silently drops the endpoint and falls back to connecting to OpenAI.
+    """
+    cfg = get_config()
+    model = (cfg.litellm_model or "").strip()
+    if not model:
+        return ""
+    base = (cfg.litellm_api_base or "").strip()
+    if not base:
+        return model
+    from crewai.llm import LLM
+
+    return LLM(model=model, base_url=base, api_key=cfg.litellm_api_key or "ollama")
+
+
+def _to_crewai_tools(names: tuple[str, ...]) -> list[Any]:
+    """Convert registered plain functions into CrewAI tools. No schema generator."""
+    from orchestrator.crew.tools.catalog import get_tool_spec, known_tool_names
+
+    try:
+        from crewai.tools import tool as crewai_tool
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "crewai is required for AGENT_MODULE=crewai (pip install 'crewai>=1.0.0')"
+        ) from exc
+
+    out: list[Any] = []
+    for name in names:
+        spec = get_tool_spec(name)
+        if spec is None:
+            known = ", ".join(known_tool_names()) or "(none)"
+            raise KeyError(f"unknown role tool {name!r}; known: {known}")
+        wrapped = crewai_tool(spec.name)(spec.fn)
+        if spec.description and hasattr(wrapped, "description"):
+            try:
+                wrapped.description = spec.description
+            except Exception:
+                pass
+        out.append(wrapped)
+    return out
+
+
+def build_crew_agent(
+    role: RoleSpec,
+    *,
+    tools: list[Any] | None = None,
+    skill_ids: Iterable[str] | None = None,
+    max_iterations: int | None = None,
+    reasoning_effort: str | None = None,
+    reasoning_max_attempts: int | None = None,
+    collaborate: bool = False,
+    dispatch_only: bool = False,
+) -> Any:
+    """Instantiate a CrewAI ``Agent`` for ``role`` (lazy crewai import).
+
+    Prompt and tool-allowlist assembly lives in ``build_agent_spec``. This
+    function only maps that spec onto ``Agent`` kwargs. ``collaborate`` forces
+    delegation on, so CrewAI injects its native coworker tools (in-process crews).
+    ``tools`` replaces the allowlist with already-built CrewAI tools (the
+    hierarchical manager passes ``[]``).
+    """
+    spec = build_agent_spec(
+        role,
+        skill_ids=skill_ids,
+        max_iterations=max_iterations,
+        reasoning_effort=reasoning_effort,
+        reasoning_max_attempts=reasoning_max_attempts,
+        collaborate=collaborate,
+        dispatch_only=dispatch_only,
+        tool_names=() if tools is not None else None,
+    )
+    try:
+        from crewai import Agent
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "crewai is required for AGENT_MODULE=crewai (pip install 'crewai>=1.0.0')"
+        ) from exc
+
+    agent_tools = tools if tools is not None else _to_crewai_tools(spec.tool_names)
+    kwargs: dict[str, Any] = {
+        "role": spec.title,
+        "goal": spec.goal,
+        "backstory": spec.system_prompt,
+        "tools": agent_tools,
+        "allow_delegation": spec.delegation,
+        "verbose": False,
+        "max_iter": spec.max_iterations,
+        "llm": llm_id_for_crew(),
+    }
+    if spec.reasoning is not None:
         try:
             from crewai.agent.planning_config import PlanningConfig
 
             kwargs["planning_config"] = PlanningConfig(
-                reasoning_effort=effort,
-                max_attempts=attempts,
+                reasoning_effort=spec.reasoning.effort,
+                max_attempts=spec.reasoning.max_attempts,
             )
         except Exception:
             kwargs["reasoning"] = True
-            kwargs["max_reasoning_attempts"] = attempts
+            kwargs["max_reasoning_attempts"] = spec.reasoning.max_attempts
     try:
         return Agent(**kwargs)
     except TypeError:
@@ -296,3 +389,4 @@ def build_crew_agent(
         kwargs.pop("reasoning", None)
         kwargs.pop("max_reasoning_attempts", None)
         return Agent(**kwargs)
+

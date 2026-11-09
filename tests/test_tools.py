@@ -226,6 +226,17 @@ def test_for_dispatch_only():
     )
 
 
+def test_tool_spec_keeps_the_plain_function():
+    from orchestrator.crew.tools.adapters import bash
+    from orchestrator.crew.tools.catalog import get_tool_spec
+
+    spec = get_tool_spec("bash")
+    assert spec is not None
+    assert spec.fn is bash
+    assert spec.tags == frozenset({"shell"})
+    assert spec.description.startswith("Claude Bash tool.")
+
+
 def test_bash_is_the_only_shell_tagged_tool():
     # commands.py treats a ``shell`` tag as the bash positional payload.
     assert [name for name in known_tool_names() if "shell" in tool_tags(name)] == [
